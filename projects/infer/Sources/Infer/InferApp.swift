@@ -25,6 +25,12 @@ struct InferApp: App {
                 Button("Save Transcript…") { chatVM.saveTranscript() }
                     .keyboardShortcut("s", modifiers: .command)
                     .disabled(chatVM.messages.isEmpty)
+                Divider()
+                Button("Export as HTML…") { chatVM.exportTranscriptHTML() }
+                    .disabled(chatVM.messages.isEmpty)
+                Button("Export as PDF…") { chatVM.exportTranscriptPDF() }
+                    .keyboardShortcut("e", modifiers: [.command, .shift])
+                    .disabled(chatVM.messages.isEmpty)
             }
             CommandGroup(replacing: .printItem) {
                 Button("Print Transcript…") { chatVM.printTranscript() }

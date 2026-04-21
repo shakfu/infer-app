@@ -109,6 +109,23 @@ final class ChatViewModel {
     var settings: InferSettings = InferSettings.load()
     var downloadProgress: Double? = nil
     var tokenUsage: TokenUsage? = nil
+    /// Number of stream pieces received for the current or most-recent
+    /// generation. For both backends, stream pieces correspond 1:1 with
+    /// sampled tokens in the common case (they may merge for multi-byte UTF-8
+    /// fragments — close enough for a user-facing tok/s readout).
+    var generationTokenCount: Int = 0
+    private var generationStart: Date? = nil
+    private var generationEnd: Date? = nil
+
+    /// Tokens + tok/s for the current (if generating) or most-recent
+    /// generation. Nil when no generation has happened in this session.
+    var generationStats: (tokens: Int, tps: Double)? {
+        guard let start = generationStart, generationTokenCount > 0 else { return nil }
+        let end = generationEnd ?? Date()
+        let elapsed = end.timeIntervalSince(start)
+        guard elapsed > 0 else { return nil }
+        return (generationTokenCount, Double(generationTokenCount) / elapsed)
+    }
     var recentLlamaPaths: [String] = UserDefaults.standard.stringArray(forKey: PersistKey.recentLlamaPaths) ?? []
     var recentMLXIds: [String] = UserDefaults.standard.stringArray(forKey: PersistKey.recentMLXIds) ?? []
 
@@ -337,6 +354,9 @@ final class ChatViewModel {
         let assistantIndex = messages.count - 1
         input = ""
         isGenerating = true
+        generationTokenCount = 0
+        generationStart = Date()
+        generationEnd = nil
 
         let backend = self.backend
         let maxTokens = self.settings.maxTokens
@@ -354,7 +374,9 @@ final class ChatViewModel {
                     if assistantIndex < self.messages.count {
                         self.messages[assistantIndex].text += piece
                     }
+                    self.generationTokenCount += 1
                 }
+                self.generationEnd = Date()
                 if self.ttsEnabled, assistantIndex < self.messages.count {
                     let finalText = self.messages[assistantIndex].text
                     self.speechSynthesizer.speak(
@@ -372,6 +394,7 @@ final class ChatViewModel {
             } catch {
                 self.errorMessage = "Generation error: \(error)"
             }
+            if self.generationEnd == nil { self.generationEnd = Date() }
             self.isGenerating = false
         }
     }
@@ -510,6 +533,32 @@ final class ChatViewModel {
         PrintRenderer.printTranscript(messages)
     }
 
+    func exportTranscriptHTML() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.html]
+        panel.nameFieldStringValue = "transcript.html"
+        panel.message = "Export transcript as HTML"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try PrintRenderer.exportHTML(messages, to: url)
+        } catch {
+            errorMessage = "Failed to export HTML: \(error.localizedDescription)"
+        }
+    }
+
+    func exportTranscriptPDF() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.nameFieldStringValue = "transcript.pdf"
+        panel.message = "Export transcript as PDF"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        PrintRenderer.exportPDF(messages, to: url) { [weak self] result in
+            if case .failure(let err) = result {
+                self?.errorMessage = "Failed to export PDF: \(err.localizedDescription)"
+            }
+        }
+    }
+
     func saveTranscript() {
         let panel = NSSavePanel()
         if let md = UTType(filenameExtension: "md") {
@@ -595,6 +644,9 @@ final class ChatViewModel {
     func reset() {
         stop()
         messages.removeAll()
+        generationTokenCount = 0
+        generationStart = nil
+        generationEnd = nil
         let b = self.backend
         Task {
             switch b {
@@ -646,6 +698,7 @@ struct ChatView: View {
         HStack(spacing: 12) {
             statusView
             tokenIndicator
+            generationRateView
 
             Spacer()
 
@@ -660,6 +713,16 @@ struct ChatView: View {
             .help(sidebarOpen ? "Hide sidebar" : "Show sidebar")
         }
         .padding(10)
+    }
+
+    @ViewBuilder
+    private var generationRateView: some View {
+        if let stats = vm.generationStats {
+            Text("\(stats.tokens) tok · \(String(format: "%.1f", stats.tps)) tok/s")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(vm.isGenerating ? SwiftUI.Color.accentColor : SwiftUI.Color.secondary)
+                .help(vm.isGenerating ? "Generation in progress" : "Last generation stats")
+        }
     }
 
     @ViewBuilder

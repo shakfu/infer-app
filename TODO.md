@@ -4,8 +4,6 @@ Roughly prioritized by user-facing impact / effort ratio. Items within a tier ar
 
 ## P0 — small, high value
 
-_(empty — all P0 items complete as of this commit)_
-
 ## P1 — feature completeness
 
 - [ ] **Restore backend context when loading a transcript.** Currently `loadTranscript()` replaces UI messages but resets both backends — the model has no memory of the loaded turns. Fix asymmetrically: **(llama)** add `LlamaRunner.setHistory(_: [(role, content)])` that replaces the private `messages` array, renders the full template with `addAssistant: false`, tokenizes it, submits one `llama_decode` batch to pre-fill the KV cache, and updates `prevFormattedLen`. Cost: one prompt-sized decode on load (same as the first turn of a long chat). **(MLX)** `ChatSession` encapsulates history with no injection hook, so genuine resume requires abandoning `ChatSession` and driving `ModelContainer` directly with a manual prompt builder — significant `MLXRunner` rewrite. Short-term: show a clear banner in the transcript when a load happens on MLX ("Conversation loaded for review — the model does not have this context"). Once the llama path lands, only MLX shows the banner.
@@ -17,6 +15,8 @@ _(empty — all P0 items complete as of this commit)_
 - [ ] **Regenerate last response.** Pop the last assistant message, rewind the backend's conversation state, re-send the previous user turn. On MLX: reset `ChatSession` and replay history up to that turn. On llama: rewind `prevFormattedLen` + pop the last two `messages` entries.
 
 - [ ] **Multi-language syntax highlighting in chat.** Splash is Swift-only. Swap for Highlightr (highlight.js via JavaScriptCore) behind the existing `CodeSyntaxHighlighter` interface; the call site in `MessageRow` doesn't change.
+
+- [ ] **Native syntax highlighting via SwiftTreeSitter (alternative path).** If we want to avoid the JavaScriptCore runtime that Highlightr pulls in, the native route is [SwiftTreeSitter](https://github.com/ChimeHQ/SwiftTreeSitter) + per-language parsers. Start narrow: bundle `tree-sitter-python` and `tree-sitter-swift` (the two languages most chat responses use), plus a highlights query per grammar copied from each parser repo's `queries/highlights.scm`. Implement `TreeSitterCodeHighlighter: CodeSyntaxHighlighter` that maps TS highlight capture names (`@keyword`, `@string`, `@function`, etc.) to SwiftUI `Color`s; fall back to plain monospaced `Text` for unknown languages. Cost: ~3 MB of bundled parser static libs per language, ~150 lines of Swift, and per-language grammar upkeep whenever syntax evolves. Pick this over Highlightr if coverage-by-handful (Python + Swift) is the real target and avoiding a JS runtime matters; pick Highlightr if paste-anything-highlights-it is the target.
 
 - [ ] **Syntax highlighting in printed PDF.** Inject a highlight.js stylesheet + `<script>` call into `PrintRenderer.wrap(body:)` so the WKWebView HTML picks up colors before `createPDF` snapshots it. One-liner once the JS CDN is embedded as a resource.
 
