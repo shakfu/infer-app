@@ -1344,12 +1344,12 @@ struct ChatView: View {
             vm.pickAttachment()
         } label: {
             Image(systemName: "paperclip")
-                .font(.system(size: 14, weight: .regular))
-                .frame(width: 22, height: 22)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 16, height: 16)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .foregroundStyle(.secondary)
         .help("Attach image or audio…")
         .disabled(vm.isGenerating || vm.isTranscribingFile)
     }
