@@ -6,10 +6,12 @@ import llama
 struct InferApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var chatVM = ChatViewModel()
+    @AppStorage("infer.appearance") private var appearanceRaw: String = AppearanceMode.light.rawValue
 
     var body: some Scene {
         WindowGroup("Infer") {
             ChatView(vm: chatVM)
+                .preferredColorScheme((AppearanceMode(rawValue: appearanceRaw) ?? .light).colorScheme)
                 .onAppear {
                     appDelegate.chatVM = chatVM
                     chatVM.autoLoadLastModel()

@@ -31,6 +31,31 @@ private enum PersistKey {
     static let temperature = "infer.temperature"
     static let topP = "infer.topP"
     static let maxTokens = "infer.maxTokens"
+    static let recentLlamaPaths = "infer.recentLlamaPaths"
+    static let recentMLXIds = "infer.recentMLXIds"
+    static let sidebarOpen = "infer.sidebarOpen"
+    static let appearance = "infer.appearance"
+}
+
+private let recentsLimit = 8
+
+enum AppearanceMode: String, CaseIterable, Identifiable {
+    case light, dark, system
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .light: return "Light"
+        case .dark: return "Dark"
+        case .system: return "System"
+        }
+    }
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .light: return .light
+        case .dark: return .dark
+        case .system: return nil
+        }
+    }
 }
 
 struct InferSettings {
@@ -80,6 +105,8 @@ final class ChatViewModel {
     var mlxModelId: String = ""
     var settings: InferSettings = InferSettings.load()
     var downloadProgress: Double? = nil
+    var recentLlamaPaths: [String] = UserDefaults.standard.stringArray(forKey: PersistKey.recentLlamaPaths) ?? []
+    var recentMLXIds: [String] = UserDefaults.standard.stringArray(forKey: PersistKey.recentMLXIds) ?? []
 
     let llama = LlamaRunner()
     let mlx = MLXRunner()
@@ -112,6 +139,34 @@ final class ChatViewModel {
         case .llama: pickLlamaModel()
         case .mlx: loadMLX(hfId: mlxModelId.trimmingCharacters(in: .whitespaces))
         }
+    }
+
+    /// Load a previously-used llama .gguf path from recents.
+    func loadLlamaPath(_ path: String) { loadLlama(at: path) }
+
+    /// Load a previously-used MLX HF id from recents.
+    func loadMLXId(_ id: String) {
+        mlxModelId = id
+        loadMLX(hfId: id)
+    }
+
+    func browseForLlamaModel() { pickLlamaModel() }
+
+    private func rememberRecent(llamaPath path: String) {
+        var list = recentLlamaPaths.filter { $0 != path && FileManager.default.fileExists(atPath: $0) }
+        list.insert(path, at: 0)
+        if list.count > recentsLimit { list = Array(list.prefix(recentsLimit)) }
+        recentLlamaPaths = list
+        UserDefaults.standard.set(list, forKey: PersistKey.recentLlamaPaths)
+    }
+
+    private func rememberRecent(mlxId id: String) {
+        guard !id.isEmpty else { return }
+        var list = recentMLXIds.filter { $0 != id }
+        list.insert(id, at: 0)
+        if list.count > recentsLimit { list = Array(list.prefix(recentsLimit)) }
+        recentMLXIds = list
+        UserDefaults.standard.set(list, forKey: PersistKey.recentMLXIds)
     }
 
     private func pickLlamaModel() {
@@ -156,6 +211,7 @@ final class ChatViewModel {
                     let d = UserDefaults.standard
                     d.set(Backend.llama.rawValue, forKey: PersistKey.backend)
                     d.set(path, forKey: PersistKey.llamaPath)
+                    self.rememberRecent(llamaPath: path)
                 }
             } catch is CancellationError {
                 await MainActor.run {
@@ -214,6 +270,7 @@ final class ChatViewModel {
                     let d = UserDefaults.standard
                     d.set(Backend.mlx.rawValue, forKey: PersistKey.backend)
                     d.set(hfId, forKey: PersistKey.mlxId)
+                    self.rememberRecent(mlxId: hfId)
                 }
             } catch is CancellationError {
                 await MainActor.run {
@@ -352,17 +409,28 @@ final class ChatViewModel {
 
 struct ChatView: View {
     @Bindable var vm: ChatViewModel
-    @State private var showingSettings = false
+    @AppStorage(PersistKey.sidebarOpen) private var sidebarOpen: Bool = true
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            transcript
-            Divider()
-            composer
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                header
+                Divider()
+                transcript
+                Divider()
+                composer
+            }
+            .frame(minWidth: 520)
+
+            if sidebarOpen {
+                Divider()
+                SidebarView(vm: vm)
+                    .frame(width: 280)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
         }
-        .frame(minWidth: 600, minHeight: 500)
+        .frame(minWidth: sidebarOpen ? 800 : 520, minHeight: 500)
+        .animation(.easeInOut(duration: 0.18), value: sidebarOpen)
         .alert("Error",
                isPresented: Binding(
                 get: { vm.errorMessage != nil },
@@ -374,50 +442,19 @@ struct ChatView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Picker("", selection: $vm.backend) {
-                ForEach(Backend.allCases) { b in
-                    Text(b.label).tag(b)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 180)
-            .disabled(vm.isLoadingModel || vm.isGenerating)
-
-            if vm.backend == .mlx {
-                TextField("HF repo id (empty = default)", text: $vm.mlxModelId)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 260)
-                    .disabled(vm.isLoadingModel || vm.isGenerating)
-            }
-
-            if vm.isLoadingModel {
-                Button(action: { vm.cancelLoad() }) {
-                    Label("Cancel", systemImage: "xmark.circle")
-                }
-            } else {
-                Button(action: { vm.loadCurrentBackend() }) {
-                    Label(vm.backend == .llama ? "Load Model…" : "Load",
-                          systemImage: "tray.and.arrow.down")
-                }
-                .disabled(vm.isGenerating)
-            }
-
             statusView
 
             Spacer()
 
-            Button(action: { showingSettings.toggle() }) {
-                Image(systemName: "gearshape")
-            }
-            .popover(isPresented: $showingSettings, arrowEdge: .bottom) {
-                SettingsView(initial: vm.settings) { applied in
-                    vm.applySettings(applied)
-                    showingSettings = false
-                }
-            }
-
             Button("Reset") { vm.reset() }
                 .disabled(vm.messages.isEmpty && !vm.isGenerating)
+
+            Button {
+                sidebarOpen.toggle()
+            } label: {
+                Image(systemName: sidebarOpen ? "sidebar.right" : "sidebar.squares.right")
+            }
+            .help(sidebarOpen ? "Hide sidebar" : "Show sidebar")
         }
         .padding(10)
     }
@@ -491,66 +528,245 @@ struct ChatView: View {
     }
 }
 
-private struct SettingsView: View {
-    @State private var draft: InferSettings
-    let onApply: (InferSettings) -> Void
-
-    init(initial: InferSettings, onApply: @escaping (InferSettings) -> Void) {
-        _draft = State(initialValue: initial)
-        self.onApply = onApply
-    }
+private struct SidebarView: View {
+    @Bindable var vm: ChatViewModel
+    @State private var draft: InferSettings = .defaults
+    @State private var showSystemPrompt = false
+    @State private var didSeed = false
+    @AppStorage(PersistKey.appearance) private var appearanceRaw: String = AppearanceMode.light.rawValue
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Settings").font(.headline)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                parametersSection
+                modelSection
+                appearanceSection
+                Spacer(minLength: 0)
+            }
+            .padding(14)
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear {
+            if !didSeed { draft = vm.settings; didSeed = true }
+        }
+    }
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text("System prompt").font(.caption).foregroundStyle(.secondary)
+    // MARK: Parameters
+
+    private var parametersSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(icon: "slider.horizontal.3", title: "Parameters")
+
+            ParamRow(label: "Temperature",
+                     value: String(format: "%.2f", draft.temperature)) {
+                Slider(value: $draft.temperature, in: 0...2, step: 0.05)
+            }
+
+            ParamRow(label: "Top P",
+                     value: String(format: "%.2f", draft.topP)) {
+                Slider(value: $draft.topP, in: 0...1, step: 0.01)
+            }
+
+            ParamRow(label: "Max tokens",
+                     value: "\(draft.maxTokens)") {
+                Slider(
+                    value: Binding(
+                        get: { Double(draft.maxTokens) },
+                        set: { draft.maxTokens = Int($0) }
+                    ),
+                    in: 64...8192,
+                    step: 64
+                )
+            }
+
+            DisclosureGroup(isExpanded: $showSystemPrompt) {
                 TextEditor(text: $draft.systemPrompt)
                     .font(.body)
-                    .frame(minHeight: 80, maxHeight: 140)
+                    .frame(minHeight: 70, maxHeight: 140)
                     .overlay(
                         RoundedRectangle(cornerRadius: 4)
                             .stroke(Color.secondary.opacity(0.3))
                     )
-                Text("Changes reset the conversation.")
-                    .font(.caption2).foregroundStyle(.tertiary)
+                Text("Applying a change resets the conversation.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } label: {
+                Text("System prompt").font(.caption).foregroundStyle(.secondary)
             }
 
             HStack {
-                Text("Temperature").frame(width: 90, alignment: .leading)
-                Slider(value: $draft.temperature, in: 0...2, step: 0.05)
-                Text(String(format: "%.2f", draft.temperature))
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 40, alignment: .trailing)
+                Button("Reset") { draft = .defaults }
+                    .controlSize(.small)
+                Spacer()
+                Button("Apply") { vm.applySettings(draft) }
+                    .controlSize(.small)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(draftMatchesCurrent)
             }
+            .padding(.top, 4)
+        }
+    }
 
-            HStack {
-                Text("top_p").frame(width: 90, alignment: .leading)
-                Slider(value: $draft.topP, in: 0...1, step: 0.01)
-                Text(String(format: "%.2f", draft.topP))
-                    .font(.caption.monospacedDigit())
-                    .frame(width: 40, alignment: .trailing)
-            }
+    private var draftMatchesCurrent: Bool {
+        let s = vm.settings
+        return s.systemPrompt == draft.systemPrompt
+            && s.temperature == draft.temperature
+            && s.topP == draft.topP
+            && s.maxTokens == draft.maxTokens
+    }
 
-            HStack {
-                Text("Max tokens").frame(width: 90, alignment: .leading)
-                Stepper(value: $draft.maxTokens, in: 64...8192, step: 64) {
-                    Text("\(draft.maxTokens)")
-                        .font(.body.monospacedDigit())
+    // MARK: Model
+
+    private var modelSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(icon: "cube.box", title: "Model")
+
+            Picker("Backend", selection: $vm.backend) {
+                ForEach(Backend.allCases) { b in
+                    Text(b.label).tag(b)
                 }
             }
+            .pickerStyle(.segmented)
+            .disabled(vm.isLoadingModel || vm.isGenerating)
+
+            modelPicker
+
+            if vm.backend == .mlx {
+                TextField("HF repo id (empty = default)", text: $vm.mlxModelId)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(vm.isLoadingModel || vm.isGenerating)
+            }
 
             HStack {
-                Button("Reset to defaults") { draft = .defaults }
-                Spacer()
-                Button("Apply") { onApply(draft) }
-                    .keyboardShortcut(.return, modifiers: [])
-                    .buttonStyle(.borderedProminent)
+                if vm.isLoadingModel {
+                    Button(role: .cancel) { vm.cancelLoad() } label: {
+                        Label("Cancel", systemImage: "xmark.circle")
+                            .frame(maxWidth: .infinity)
+                    }
+                } else {
+                    Button {
+                        vm.loadCurrentBackend()
+                    } label: {
+                        Label(vm.backend == .llama ? "Browse…" : "Load",
+                              systemImage: "tray.and.arrow.down")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(vm.isGenerating)
+                }
             }
+            .buttonStyle(.bordered)
         }
-        .padding(16)
-        .frame(width: 360)
+    }
+
+    @ViewBuilder
+    private var modelPicker: some View {
+        let title = modelPickerTitle
+        Menu {
+            switch vm.backend {
+            case .llama:
+                if vm.recentLlamaPaths.isEmpty {
+                    Text("No recent models").foregroundStyle(.secondary)
+                } else {
+                    ForEach(vm.recentLlamaPaths, id: \.self) { path in
+                        Button((path as NSString).lastPathComponent) {
+                            vm.loadLlamaPath(path)
+                        }
+                    }
+                }
+                Divider()
+                Button("Browse for .gguf…") { vm.browseForLlamaModel() }
+            case .mlx:
+                if vm.recentMLXIds.isEmpty {
+                    Text("No recent models").foregroundStyle(.secondary)
+                } else {
+                    ForEach(vm.recentMLXIds, id: \.self) { id in
+                        Button(id) { vm.loadMLXId(id) }
+                    }
+                }
+            }
+        } label: {
+            HStack {
+                Text(title)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.3))
+        )
+        .disabled(vm.isLoadingModel || vm.isGenerating)
+    }
+
+    // MARK: Appearance
+
+    private var appearanceSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader(icon: "paintbrush", title: "Appearance")
+            Picker("", selection: Binding(
+                get: { AppearanceMode(rawValue: appearanceRaw) ?? .light },
+                set: { appearanceRaw = $0.rawValue }
+            )) {
+                ForEach(AppearanceMode.allCases) { m in
+                    Text(m.label).tag(m)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+        }
+    }
+
+    private var modelPickerTitle: String {
+        switch vm.backend {
+        case .llama:
+            if let path = UserDefaults.standard.string(forKey: PersistKey.llamaPath), vm.modelLoaded {
+                return (path as NSString).lastPathComponent
+            }
+            return "No Selection"
+        case .mlx:
+            if vm.modelLoaded, !vm.mlxModelId.isEmpty { return vm.mlxModelId }
+            if vm.modelLoaded { return "default" }
+            return "No Selection"
+        }
+    }
+}
+
+private struct SectionHeader: View {
+    let icon: String
+    let title: String
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .foregroundStyle(.secondary)
+            Text(title).font(.headline)
+        }
+    }
+}
+
+private struct ParamRow<Control: View>: View {
+    let label: String
+    let value: String
+    @ViewBuilder var control: () -> Control
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(label).font(.caption)
+                Spacer()
+                Text(value)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            control()
+        }
     }
 }
 
