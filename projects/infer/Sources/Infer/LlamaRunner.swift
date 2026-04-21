@@ -12,6 +12,13 @@ enum LlamaError: Error {
     case cancelled
 }
 
+/// Context-window usage snapshot. `total` may be nil when the backend doesn't
+/// expose a configured context size (e.g. MLX estimates from character count).
+struct TokenUsage: Equatable, Sendable {
+    let used: Int
+    let total: Int?
+}
+
 /// Thread-safe cancellation flag usable from any isolation context.
 final class CancelFlag: @unchecked Sendable {
     private let lock = NSLock()
@@ -78,6 +85,21 @@ actor LlamaRunner {
     }
 
     var loadedModelPath: String? { modelPath }
+
+    /// Report current prompt token count vs configured context size.
+    /// Renders the chat template without the assistant tag and tokenizes it.
+    func tokenUsage() -> TokenUsage? {
+        guard let ctx, let vocab else { return nil }
+        let total = Int(llama_n_ctx(ctx))
+        guard !messages.isEmpty else { return TokenUsage(used: 0, total: total) }
+        guard let rendered = try? renderTemplate(addAssistant: false) else {
+            return TokenUsage(used: 0, total: total)
+        }
+        guard let tokens = try? Self.tokenize(vocab: vocab, text: rendered, addSpecial: false) else {
+            return TokenUsage(used: 0, total: total)
+        }
+        return TokenUsage(used: tokens.count, total: total)
+    }
 
     func requestStop() {
         cancelFlag.set()

@@ -19,7 +19,13 @@ struct InferApp: App {
         }
         .defaultSize(width: 780, height: 640)
         .commands {
-            CommandGroup(replacing: .newItem) { }
+            CommandGroup(replacing: .newItem) {
+                Button("Open Transcript…") { chatVM.loadTranscript() }
+                    .keyboardShortcut("o", modifiers: .command)
+                Button("Save Transcript…") { chatVM.saveTranscript() }
+                    .keyboardShortcut("s", modifiers: .command)
+                    .disabled(chatVM.messages.isEmpty)
+            }
             CommandGroup(replacing: .printItem) {
                 Button("Print Transcript…") { chatVM.printTranscript() }
                     .keyboardShortcut("p", modifiers: .command)

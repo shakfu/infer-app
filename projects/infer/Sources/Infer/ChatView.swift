@@ -108,6 +108,7 @@ final class ChatViewModel {
     var mlxModelId: String = ""
     var settings: InferSettings = InferSettings.load()
     var downloadProgress: Double? = nil
+    var tokenUsage: TokenUsage? = nil
     var recentLlamaPaths: [String] = UserDefaults.standard.stringArray(forKey: PersistKey.recentLlamaPaths) ?? []
     var recentMLXIds: [String] = UserDefaults.standard.stringArray(forKey: PersistKey.recentMLXIds) ?? []
 
@@ -230,6 +231,7 @@ final class ChatViewModel {
                     d.set(Backend.llama.rawValue, forKey: PersistKey.backend)
                     d.set(path, forKey: PersistKey.llamaPath)
                     self.rememberRecent(llamaPath: path)
+                    self.refreshTokenUsage()
                 }
             } catch is CancellationError {
                 await MainActor.run {
@@ -252,9 +254,13 @@ final class ChatViewModel {
         guard !isLoadingModel else { return }
         isLoadingModel = true
         modelLoaded = false
-        downloadProgress = 0
+        // Start as nil so statusView shows an indeterminate spinner during
+        // the HF metadata/resolution phase (before any byte-level progress
+        // callback fires). A stale 0% is misleading when the repo name is
+        // wrong and the resolver is retrying.
+        downloadProgress = nil
         let id = hfId.isEmpty ? nil : hfId
-        modelStatus = "Downloading \(id ?? "default")…"
+        modelStatus = "Resolving \(id ?? "default")…"
         errorMessage = nil
         let runner = self.mlx
         let s = self.settings
@@ -264,7 +270,11 @@ final class ChatViewModel {
                     ? Double(progress.completedUnitCount) / Double(progress.totalUnitCount)
                     : nil
                 Task { @MainActor in
-                    self?.downloadProgress = frac
+                    guard let self else { return }
+                    self.downloadProgress = frac
+                    if frac != nil, self.modelStatus.hasPrefix("Resolving ") {
+                        self.modelStatus = "Downloading \(id ?? "default")…"
+                    }
                 }
             }
             do {
@@ -289,6 +299,7 @@ final class ChatViewModel {
                     d.set(Backend.mlx.rawValue, forKey: PersistKey.backend)
                     d.set(hfId, forKey: PersistKey.mlxId)
                     self.rememberRecent(mlxId: hfId)
+                    self.refreshTokenUsage()
                 }
             } catch is CancellationError {
                 await MainActor.run {
@@ -351,6 +362,7 @@ final class ChatViewModel {
                         voiceIdentifier: self.ttsVoiceId.isEmpty ? nil : self.ttsVoiceId
                     )
                 }
+                self.refreshTokenUsage()
             } catch is CancellationError {
                 // user-initiated stop
             } catch LlamaError.cancelled {
@@ -405,6 +417,28 @@ final class ChatViewModel {
         }
     }
 
+    // MARK: - Token usage
+
+    /// Recompute context-window usage for the active backend. llama reports
+    /// real token counts; MLX has no cheap way to query, so approximate from
+    /// transcript character count (~4 chars/token for English).
+    func refreshTokenUsage() {
+        let b = self.backend
+        let msgs = self.messages
+        let systemChars = self.settings.systemPrompt.count
+        Task {
+            let usage: TokenUsage?
+            switch b {
+            case .llama:
+                usage = await self.llama.tokenUsage()
+            case .mlx:
+                let chars = msgs.reduce(0) { $0 + $1.text.count } + systemChars
+                usage = chars == 0 ? nil : TokenUsage(used: chars / 4, total: nil)
+            }
+            await MainActor.run { self.tokenUsage = usage }
+        }
+    }
+
     // MARK: - Voice-send trigger
 
     /// If `text` ends with the configured trigger phrase (case-insensitive,
@@ -456,19 +490,106 @@ final class ChatViewModel {
         return result
     }
 
-    // MARK: - Copy / Print
+    // MARK: - Copy / Print / Save / Load
 
-    func copyTranscriptAsMarkdown() {
-        let text = messages
+    /// Canonical markdown representation of the transcript. Used by Copy,
+    /// Save, and Load (which round-trips this exact format).
+    var transcriptMarkdown: String {
+        messages
             .map { "## \($0.role.rawValue)\n\n\($0.text)" }
             .joined(separator: "\n\n---\n\n")
+    }
+
+    func copyTranscriptAsMarkdown() {
         let pb = NSPasteboard.general
         pb.clearContents()
-        pb.setString(text, forType: .string)
+        pb.setString(transcriptMarkdown, forType: .string)
     }
 
     func printTranscript() {
         PrintRenderer.printTranscript(messages)
+    }
+
+    func saveTranscript() {
+        let panel = NSSavePanel()
+        if let md = UTType(filenameExtension: "md") {
+            panel.allowedContentTypes = [md, .plainText]
+        } else {
+            panel.allowedContentTypes = [.plainText]
+        }
+        panel.nameFieldStringValue = "transcript.md"
+        panel.message = "Save transcript as Markdown"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try transcriptMarkdown.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            errorMessage = "Failed to save transcript: \(error.localizedDescription)"
+        }
+    }
+
+    func loadTranscript() {
+        let panel = NSOpenPanel()
+        if let md = UTType(filenameExtension: "md") {
+            panel.allowedContentTypes = [md, .plainText]
+        } else {
+            panel.allowedContentTypes = [.plainText]
+        }
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.message = "Load transcript from Markdown"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let loaded = Self.parseTranscript(text)
+            guard !loaded.isEmpty else {
+                errorMessage = "Transcript file contains no recognizable messages."
+                return
+            }
+            stop()
+            messages = loaded
+            // Reset backend conversation state. MLX's `ChatSession` has no
+            // public API to inject a prior transcript, so for consistency we
+            // wipe both backends — the loaded transcript is for review; a
+            // follow-up message starts a fresh backend conversation.
+            let b = self.backend
+            Task {
+                switch b {
+                case .llama: await self.llama.resetConversation()
+                case .mlx: await self.mlx.resetConversation()
+                }
+                await MainActor.run { self.refreshTokenUsage() }
+            }
+        } catch {
+            errorMessage = "Failed to load transcript: \(error.localizedDescription)"
+        }
+    }
+
+    /// Parse the canonical Save format back into messages. Strict enough to
+    /// round-trip `transcriptMarkdown`; lenient about extra whitespace and
+    /// unknown roles (skipped).
+    static func parseTranscript(_ markdown: String) -> [ChatMessage] {
+        var result: [ChatMessage] = []
+        let chunks = markdown.components(separatedBy: "\n\n---\n\n")
+        for raw in chunks {
+            let chunk = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard chunk.hasPrefix("## ") else { continue }
+            guard let bodyBreak = chunk.range(of: "\n\n") else { continue }
+            let headerStart = chunk.index(chunk.startIndex, offsetBy: 3)
+            let header = chunk[headerStart..<bodyBreak.lowerBound]
+                .trimmingCharacters(in: .whitespaces)
+                .lowercased()
+            let body = String(chunk[bodyBreak.upperBound...])
+            let role: ChatMessage.Role
+            switch header {
+            case "user": role = .user
+            case "assistant": role = .assistant
+            case "system": role = .system
+            default: continue
+            }
+            result.append(ChatMessage(role: role, text: body))
+        }
+        return result
     }
 
     func reset() {
@@ -480,6 +601,7 @@ final class ChatViewModel {
             case .llama: await self.llama.resetConversation()
             case .mlx: await self.mlx.resetConversation()
             }
+            await MainActor.run { self.refreshTokenUsage() }
         }
     }
 }
@@ -489,6 +611,7 @@ struct ChatView: View {
     @AppStorage(PersistKey.sidebarOpen) private var sidebarOpen: Bool = true
     @State private var composerExpanded: Bool = false
     @FocusState private var composerFocused: Bool
+    @State private var pinnedToBottom: Bool = true
 
     var body: some View {
         HStack(spacing: 0) {
@@ -522,6 +645,7 @@ struct ChatView: View {
     private var header: some View {
         HStack(spacing: 12) {
             statusView
+            tokenIndicator
 
             Spacer()
 
@@ -536,6 +660,31 @@ struct ChatView: View {
             .help(sidebarOpen ? "Hide sidebar" : "Show sidebar")
         }
         .padding(10)
+    }
+
+    @ViewBuilder
+    private var tokenIndicator: some View {
+        if let usage = vm.tokenUsage {
+            if let total = usage.total, total > 0 {
+                let ratio = min(1.0, Double(usage.used) / Double(total))
+                let tint: SwiftUI.Color = ratio > 0.95 ? .red : (ratio > 0.80 ? .orange : .accentColor)
+                HStack(spacing: 6) {
+                    ProgressView(value: ratio)
+                        .progressViewStyle(.linear)
+                        .tint(tint)
+                        .frame(width: 80)
+                    Text("\(usage.used) / \(total)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .help("Context window: \(usage.used) of \(total) tokens used")
+            } else {
+                Text("~\(usage.used) tok")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .help("Approximate token count (backend does not expose context size)")
+            }
+        }
     }
 
     @ViewBuilder
@@ -575,14 +724,59 @@ struct ChatView: View {
                     ForEach(vm.messages) { msg in
                         MessageRow(message: msg).id(msg.id)
                     }
+                    // Bottom sentinel: when the LazyVStack has it in its
+                    // render range (user is near the bottom), we're pinned
+                    // and streaming auto-scrolls. Scrolling up unloads it
+                    // and unpins.
+                    Color.clear
+                        .frame(height: 1)
+                        .onAppear { pinnedToBottom = true }
+                        .onDisappear { pinnedToBottom = false }
+                        .id("_bottom_sentinel")
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .background(Color(.textBackgroundColor))
             .onChange(of: vm.messages.last?.text) { _, _ in
-                if let last = vm.messages.last { proxy.scrollTo(last.id, anchor: .bottom) }
+                if pinnedToBottom, let last = vm.messages.last {
+                    proxy.scrollTo(last.id, anchor: .bottom)
+                }
             }
+            .onChange(of: vm.messages.count) { _, _ in
+                // A new turn was appended — treat as a user intention to
+                // follow the conversation again.
+                pinnedToBottom = true
+                if let last = vm.messages.last {
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if !pinnedToBottom, !vm.messages.isEmpty {
+                    Button {
+                        pinnedToBottom = true
+                        if let last = vm.messages.last {
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo(last.id, anchor: .bottom)
+                            }
+                        }
+                    } label: {
+                        Label("Jump to latest", systemImage: "arrow.down.circle.fill")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.thinMaterial, in: Capsule())
+                            .overlay(Capsule().stroke(Color.secondary.opacity(0.25)))
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.bottom, 10)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+            }
+            .animation(.easeInOut(duration: 0.15), value: pinnedToBottom)
         }
     }
 
@@ -1054,6 +1248,8 @@ private struct ParamRow<Control: View>: View {
 
 private struct MessageRow: View {
     let message: ChatMessage
+    @State private var isHovered = false
+    @State private var justCopied = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -1065,6 +1261,32 @@ private struct MessageRow: View {
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .overlay(alignment: .topTrailing) {
+            if isHovered, !message.text.isEmpty {
+                Button {
+                    let pb = NSPasteboard.general
+                    pb.clearContents()
+                    pb.setString(message.text, forType: .string)
+                    justCopied = true
+                    Task {
+                        try? await Task.sleep(nanoseconds: 900_000_000)
+                        await MainActor.run { justCopied = false }
+                    }
+                } label: {
+                    Image(systemName: justCopied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(justCopied ? SwiftUI.Color.green : SwiftUI.Color.secondary)
+                        .padding(4)
+                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 4))
+                }
+                .buttonStyle(.plain)
+                .help("Copy message")
+                .transition(.opacity)
+            }
+        }
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: 0.1), value: isHovered)
+        .animation(.easeInOut(duration: 0.15), value: justCopied)
     }
 
     @ViewBuilder
