@@ -9,6 +9,9 @@ struct ChatMessage: Identifiable, Equatable {
     let id = UUID()
     let role: Role
     var text: String
+    /// Optional image attached to this user turn. Ephemeral — not persisted
+    /// to the vault or the `.md` transcript. Live session only.
+    var imageURL: URL? = nil
 }
 
 enum Backend: String, CaseIterable, Identifiable {
@@ -140,6 +143,10 @@ final class ChatViewModel {
     /// exclusive for simplicity — the second drop is ignored with a banner.
     var isTranscribingFile: Bool = false
     var transcriptionStatus: String? = nil
+
+    /// Image queued to be sent with the next message. Ephemeral: cleared on
+    /// send, on reset, or when the user clicks the × on the preview chip.
+    var pendingImageURL: URL? = nil
 
     private let vault = VaultStore.shared
 
@@ -368,10 +375,12 @@ final class ChatViewModel {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, modelLoaded, !isGenerating else { return }
 
-        messages.append(ChatMessage(role: .user, text: text))
+        let attachedImage = self.pendingImageURL
+        messages.append(ChatMessage(role: .user, text: text, imageURL: attachedImage))
         messages.append(ChatMessage(role: .assistant, text: ""))
         let assistantIndex = messages.count - 1
         input = ""
+        pendingImageURL = nil
         isGenerating = true
         generationTokenCount = 0
         generationStart = Date()
@@ -416,9 +425,15 @@ final class ChatViewModel {
                 let stream: AsyncThrowingStream<String, Error>
                 switch backend {
                 case .llama:
+                    // llama backend has no multimodal path here; the send
+                    // button is disabled when an image is attached, so this
+                    // branch will not carry one in practice.
                     stream = await self.llama.sendUserMessage(text, maxTokens: maxTokens)
                 case .mlx:
-                    stream = await self.mlx.sendUserMessage(text, maxTokens: maxTokens)
+                    let imgs: [URL] = attachedImage.map { [$0] } ?? []
+                    stream = await self.mlx.sendUserMessage(
+                        text, imageURLs: imgs, maxTokens: maxTokens
+                    )
                 }
                 for try await piece in stream {
                     if assistantIndex < self.messages.count {
@@ -727,6 +742,7 @@ final class ChatViewModel {
         generationStart = nil
         generationEnd = nil
         currentConversationId = nil
+        pendingImageURL = nil
         let b = self.backend
         Task {
             switch b {
@@ -837,6 +853,58 @@ final class ChatViewModel {
                 }
             }
         }
+    }
+
+    // MARK: - Attachments
+
+    /// Extensions routed to the whisper transcription pipeline.
+    private static let audioExtensions: Set<String> = [
+        "wav", "mp3", "m4a", "aac", "aiff", "aif", "caf",
+        "flac", "mp4", "mov", "mpeg", "mpg", "ogg", "opus"
+    ]
+
+    /// Extensions treated as image attachments for VLM input.
+    private static let imageExtensions: Set<String> = [
+        "png", "jpg", "jpeg", "heic", "heif", "webp", "gif", "bmp", "tiff", "tif"
+    ]
+
+    /// Open an NSOpenPanel for audio and image files. Audio routes to the
+    /// whisper transcription flow; image becomes a pending attachment for
+    /// the next send.
+    func pickAttachment() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        var allowed: [UTType] = [.audiovisualContent, .audio, .image]
+        panel.allowedContentTypes = allowed
+        _ = allowed
+        panel.message = "Attach an audio or image file"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        attachURL(url)
+    }
+
+    /// Route a URL (from picker or drag-drop) to the right attachment handler.
+    func attachURL(_ url: URL) {
+        let ext = url.pathExtension.lowercased()
+        if Self.audioExtensions.contains(ext) {
+            transcribeDroppedFile(url: url)
+        } else if Self.imageExtensions.contains(ext) {
+            pendingImageURL = url
+        } else {
+            errorMessage = "Unsupported attachment type: .\(ext)"
+        }
+    }
+
+    func clearPendingImage() {
+        pendingImageURL = nil
+    }
+
+    /// True when the current composer state can be submitted. Composer
+    /// validates send on top of this (non-empty text, model loaded, not
+    /// generating). A pending image requires the MLX backend.
+    var canSendAttachment: Bool {
+        pendingImageURL == nil || backend == .mlx
     }
 
     // MARK: - Whisper file transcription
@@ -1193,20 +1261,11 @@ struct ChatView: View {
     }
 
     private func handleAudioDrop(providers: [NSItemProvider]) -> Bool {
-        guard !vm.isTranscribingFile else { return false }
         for provider in providers {
             if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
                     guard let url else { return }
-                    let ext = url.pathExtension.lowercased()
-                    // Conservative whitelist; AVAudioFile can actually open a
-                    // broader set, but anything outside these is rarely audio.
-                    let allowed: Set<String> = [
-                        "wav", "mp3", "m4a", "aac", "aiff", "aif", "caf",
-                        "flac", "mp4", "mov", "mpeg", "mpg", "ogg", "opus"
-                    ]
-                    guard allowed.contains(ext) else { return }
-                    DispatchQueue.main.async { vm.transcribeDroppedFile(url: url) }
+                    DispatchQueue.main.async { vm.attachURL(url) }
                 }
                 return true
             }
@@ -1215,47 +1274,129 @@ struct ChatView: View {
     }
 
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            Button {
-                composerExpanded.toggle()
-                DispatchQueue.main.async { composerFocused = true }
-            } label: {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .rotationEffect(.degrees(composerExpanded ? 90 : 0))
-                    .frame(width: 16, height: 16)
-                    .contentShape(Rectangle())
+        VStack(alignment: .leading, spacing: 6) {
+            if let url = vm.pendingImageURL {
+                attachmentChip(url: url)
             }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .help(composerExpanded ? "Collapse editor" : "Expand editor")
-            .padding(.bottom, 4)
-
-            micButton
+            HStack(alignment: .bottom, spacing: 8) {
+                Button {
+                    composerExpanded.toggle()
+                    DispatchQueue.main.async { composerFocused = true }
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .semibold))
+                        .rotationEffect(.degrees(composerExpanded ? 90 : 0))
+                        .frame(width: 16, height: 16)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help(composerExpanded ? "Collapse editor" : "Expand editor")
                 .padding(.bottom, 4)
 
-            Group {
-                if composerExpanded {
-                    expandedEditor
-                } else {
-                    collapsedField
-                }
-            }
+                attachButton
+                    .padding(.bottom, 4)
 
-            if vm.isGenerating {
-                Button("Stop") { vm.stop() }
-                    .keyboardShortcut(".", modifiers: .command)
-            } else {
-                Button("Send") {
-                    vm.send()
-                    if composerExpanded { composerExpanded = false }
+                micButton
+                    .padding(.bottom, 4)
+
+                Group {
+                    if composerExpanded {
+                        expandedEditor
+                    } else {
+                        collapsedField
+                    }
                 }
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(!vm.modelLoaded || vm.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                if vm.isGenerating {
+                    Button("Stop") { vm.stop() }
+                        .keyboardShortcut(".", modifiers: .command)
+                } else {
+                    Button("Send") {
+                        vm.send()
+                        if composerExpanded { composerExpanded = false }
+                    }
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(!sendEnabled)
+                    .help(sendDisabledReason ?? "Send (⌘↵)")
+                }
             }
         }
         .padding(10)
         .animation(.easeInOut(duration: 0.15), value: composerExpanded)
+    }
+
+    private var sendEnabled: Bool {
+        vm.modelLoaded
+            && !vm.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && vm.canSendAttachment
+    }
+
+    private var sendDisabledReason: String? {
+        if !vm.canSendAttachment {
+            return "The current backend can't use image attachments. Switch to MLX with a vision-capable model (e.g. gemma-3-4b-it-4bit)."
+        }
+        return nil
+    }
+
+    private var attachButton: some View {
+        Button {
+            vm.pickAttachment()
+        } label: {
+            Image(systemName: "paperclip")
+                .font(.system(size: 14, weight: .regular))
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .help("Attach image or audio…")
+        .disabled(vm.isGenerating || vm.isTranscribingFile)
+    }
+
+    @ViewBuilder
+    private func attachmentChip(url: URL) -> some View {
+        let image = NSImage(contentsOf: url)
+        HStack(spacing: 8) {
+            Group {
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                } else {
+                    Image(systemName: "photo")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 28, height: 28)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(.secondary.opacity(0.3)))
+
+            Text(url.lastPathComponent)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            if !vm.canSendAttachment {
+                Text("MLX VLM only")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+
+            Spacer()
+
+            Button {
+                vm.clearPendingImage()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Remove attachment")
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private var micButton: some View {
@@ -1977,22 +2118,32 @@ private struct MessageRow: View {
 
     @ViewBuilder
     private var content: some View {
-        if message.text.isEmpty {
-            Text("…").foregroundStyle(.secondary)
-        } else {
-            switch message.role {
-            case .assistant:
-                Markdown(message.text)
-                    .markdownTheme(.gitHub)
-                    .markdownCodeSyntaxHighlighter(
-                        .splash(theme: .sundellsColors(withFont: .init(size: 14)))
-                    )
-                    .environment(\.openURL, OpenURLAction { url in
-                        NSWorkspace.shared.open(url)
-                        return .handled
-                    })
-            case .user, .system:
-                Text(message.text)
+        VStack(alignment: .leading, spacing: 6) {
+            if let url = message.imageURL, let img = NSImage(contentsOf: url) {
+                Image(nsImage: img)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 280, maxHeight: 280, alignment: .leading)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(.secondary.opacity(0.25)))
+            }
+            if message.text.isEmpty, message.imageURL == nil {
+                Text("…").foregroundStyle(.secondary)
+            } else if !message.text.isEmpty {
+                switch message.role {
+                case .assistant:
+                    Markdown(message.text)
+                        .markdownTheme(.gitHub)
+                        .markdownCodeSyntaxHighlighter(
+                            .splash(theme: .sundellsColors(withFont: .init(size: 14)))
+                        )
+                        .environment(\.openURL, OpenURLAction { url in
+                            NSWorkspace.shared.open(url)
+                            return .handled
+                        })
+                case .user, .system:
+                    Text(message.text)
+                }
             }
         }
     }

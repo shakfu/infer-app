@@ -1,5 +1,6 @@
 import Foundation
 import MLXLLM
+import MLXVLM
 import MLXLMCommon
 import MLXHuggingFace
 import HuggingFace
@@ -86,7 +87,11 @@ actor MLXRunner {
         }
     }
 
-    func sendUserMessage(_ text: String, maxTokens: Int = 512) -> AsyncThrowingStream<String, Error> {
+    func sendUserMessage(
+        _ text: String,
+        imageURLs: [URL] = [],
+        maxTokens: Int = 512
+    ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             guard !isGenerating else {
                 continuation.finish(throwing: MLXRunnerError.busy)
@@ -113,12 +118,18 @@ actor MLXRunner {
                 )
             }
             let activeSession = self.session ?? session
+            let images: [UserInput.Image] = imageURLs.map { .url($0) }
 
             isGenerating = true
             let task = Task {
                 defer { Task { self.finishGeneration() } }
                 do {
-                    for try await piece in activeSession.streamResponse(to: text) {
+                    let stream = activeSession.streamResponse(
+                        to: text,
+                        images: images,
+                        videos: []
+                    )
+                    for try await piece in stream {
                         if Task.isCancelled {
                             continuation.finish(throwing: MLXRunnerError.cancelled)
                             return
