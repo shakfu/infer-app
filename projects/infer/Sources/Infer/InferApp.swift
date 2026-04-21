@@ -68,6 +68,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await vm.llama.shutdown()
             await vm.mlx.requestStop()
             await vm.mlx.shutdown()
+            await MainActor.run { vm.audioRecorder.cancel() }
+            await WhisperRunner.shared.shutdown()
             await VaultStore.shared.shutdown()
             llama_backend_free()
             sem.signal()

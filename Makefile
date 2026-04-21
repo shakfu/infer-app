@@ -3,6 +3,9 @@ INFER_APP_BUNDLE := $(BUILD_DIR)/Infer.app
 LLAMA_XCFRAMEWORK := thirdparty/llama.xcframework
 LLAMA_FRAMEWORK := $(LLAMA_XCFRAMEWORK)/macos-arm64_x86_64/llama.framework
 LLAMA_TAG := b8848
+WHISPER_XCFRAMEWORK := thirdparty/whisper.xcframework
+WHISPER_FRAMEWORK := $(WHISPER_XCFRAMEWORK)/macos-arm64_x86_64/whisper.framework
+WHISPER_TAG := v1.8.4
 INFER_DIR := projects/infer
 INFER_BUILD_DIR := $(BUILD_DIR)/infer-xcode
 INFER_CONFIG := Debug
@@ -15,7 +18,7 @@ INFER_PRODUCT_DIR := $(INFER_BUILD_DIR)/Build/Products/$(INFER_CONFIG)
 INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 
 .PHONY: all build clean
-.PHONY: build-infer bundle-infer run-infer fetch-llama generate-icon
+.PHONY: build-infer bundle-infer run-infer fetch-llama fetch-whisper generate-icon
 
 all: build
 
@@ -31,7 +34,12 @@ $(LLAMA_XCFRAMEWORK):
 
 fetch-llama: $(LLAMA_XCFRAMEWORK)
 
-build-infer: $(LLAMA_XCFRAMEWORK)
+$(WHISPER_XCFRAMEWORK):
+	./scripts/fetch_whisper_framework.sh $(WHISPER_TAG)
+
+fetch-whisper: $(WHISPER_XCFRAMEWORK)
+
+build-infer: $(LLAMA_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK)
 	xcodebuild $(INFER_XCODE_FLAGS) build
 
 bundle-infer: build-infer $(INFER_DIR)/Resources/AppIcon.icns
@@ -43,6 +51,7 @@ bundle-infer: build-infer $(INFER_DIR)/Resources/AppIcon.icns
 	cp $(INFER_DIR)/Sources/Infer/Info.plist $(INFER_APP_BUNDLE)/Contents/Info.plist
 	cp $(INFER_DIR)/Resources/AppIcon.icns $(INFER_APP_BUNDLE)/Contents/Resources/AppIcon.icns
 	cp -R $(LLAMA_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/llama.framework
+	cp -R $(WHISPER_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/whisper.framework
 	@for bundle in $(INFER_PRODUCT_DIR)/*.bundle; do \
 		[ -e "$$bundle" ] || continue; \
 		cp -R "$$bundle" $(INFER_APP_BUNDLE)/Contents/Resources/; \

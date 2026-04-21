@@ -18,10 +18,25 @@ let package = Package(
             name: "llama",
             path: "../../thirdparty/llama.xcframework"
         ),
+        .binaryTarget(
+            name: "whisper",
+            path: "../../thirdparty/whisper.xcframework"
+        ),
+        // Narrow C bridge over whisper.cpp. Isolates whisper's ggml headers
+        // from the Swift-visible module graph so the Infer target can also
+        // import 'llama' (which ships its own, incompatible ggml.h) without
+        // a Clang type-redefinition error.
+        .target(
+            name: "CWhisperBridge",
+            dependencies: ["whisper"],
+            path: "Sources/CWhisperBridge",
+            publicHeadersPath: "include"
+        ),
         .executableTarget(
             name: "Infer",
             dependencies: [
                 "llama",
+                "CWhisperBridge",
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),

@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1]
+
 ### Added
+
+- **SQLite-backed conversation vault.** Every new chat is persisted to `~/Library/Application Support/Infer/vault.sqlite` (WAL mode) via GRDB. FTS5 full-text search across all past conversations from a **History** sidebar tab with search-as-you-type (250 ms debounce), recent-conversations list, per-row delete, and a guarded "Clear vault…" action. Clicking a result loads that conversation into the UI; further turns append to the same vault row. Vault writes are best-effort and never block generation. Conversation row is created lazily on first `send()`; `reset()`, system-prompt changes, and `.md` import all start a fresh row on the next send.
+
+- **whisper.cpp file transcription.** Drag audio or video onto the window (`.wav`, `.mp3`, `.m4a`, `.aac`, `.aiff`, `.caf`, `.flac`, `.mp4`, `.mov`, `.ogg`, `.opus`) → whisper transcribes → transcript appears in the composer prefixed with `[Transcript of <filename>]`. Fetched from `whisper.xcframework` v1.8.4 by `scripts/fetch_whisper_framework.sh` and bundled into `Infer.app/Contents/Frameworks/`. Default model is `base` (multilingual, 142 MB); `tiny` and `small` are also selectable. Models download to `~/Library/Application Support/Infer/whisper/ggml-<size>.bin` on first use with a progress bar in the sidebar and a banner above the composer. Translate-to-English toggle in the Voice tab. SFSpeechRecognizer live dictation is unchanged — whisper is file-only.
+
+- **In-app voice recording.** Record / Stop button in the Voice tab captures the mic to a `.wav` at the input device's native format (`~/Library/Application Support/Infer/recordings/recording-YYYYMMDD-HHmmss.wav`) and auto-transcribes via whisper on stop. Live duration readout while recording; cancel (×) discards the in-flight file. "Reveal in Finder" and "Clear recordings…" (NSAlert-confirmed) actions alongside.
+
+- **App icon.** Placeholder 1024×1024 squircle generated programmatically from `scripts/generate_app_icon.swift` (CoreGraphics → `iconutil`). Indigo→violet gradient with a three-input-to-one-output inference glyph. `bundle-infer` now copies `projects/infer/Resources/AppIcon.icns` into `Infer.app/Contents/Resources/`. Regeneratable via `make generate-icon`.
+
+- **CWhisperBridge** C target in `Package.swift`. Narrow wrapper over `whisper.h` that exposes only primitive-typed functions, isolating whisper's bundled `ggml.h` from the Swift module graph so the Infer target can also import `llama` (which ships its own, incompatible `ggml.h`) without a Clang type-redefinition error.
+
+- `VaultStore.shutdown()` and `WhisperRunner.shared.shutdown()` are wired into `AppDelegate.applicationWillTerminate` alongside the llama / MLX cleanups, giving the vault a deterministic WAL checkpoint on quit and releasing the whisper context.
 
 - Collapsible right sidebar (⌘-toggled via a header button) with four sections, replacing the previous gear popover:
 
@@ -48,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/space_bullets.py`: argparse-based utility that inserts blank lines between adjacent markdown bullets; supports `--in-place`, `--recursive` (with a dry-run by default), `--glob`, and `--exclude` (default excludes `.git`, `.build`, `build`, `node_modules`, `.venv`, `venv`).
 
 ### Changed
+
+- **Sidebar reorganized into icon tabs.** The sidebar is now four icon tabs at the top (Model, History, Voice, Appearance) instead of a single scrolling column of sections. The Model tab contains both Model and Parameters (both affect inference); single-content tabs drop their redundant section header. Selection is not persisted across launches.
 
 - Transcript auto-scroll is now conditional on a `pinnedToBottom` flag derived from a bottom-sentinel `onAppear` / `onDisappear` inside the `LazyVStack`, replacing the previous unconditional `proxy.scrollTo(last.id)` on every token.
 

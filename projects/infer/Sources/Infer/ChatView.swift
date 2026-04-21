@@ -133,6 +133,14 @@ final class ChatViewModel {
     let mlx = MLXRunner()
     let speechRecognizer = SpeechRecognizer()
     let speechSynthesizer = SpeechSynthesizer()
+    let whisperModels = WhisperModelManager()
+    let audioRecorder = AudioFileRecorder()
+
+    /// True while a dropped audio file is being transcribed. Mutually
+    /// exclusive for simplicity — the second drop is ignored with a banner.
+    var isTranscribingFile: Bool = false
+    var transcriptionStatus: String? = nil
+
     private let vault = VaultStore.shared
 
     /// Row id of the in-progress vault conversation, or nil if no turns have
@@ -831,6 +839,121 @@ final class ChatViewModel {
         }
     }
 
+    // MARK: - Whisper file transcription
+
+    /// Transcribe a dropped audio file with whisper.cpp. Output is prefixed
+    /// with the source filename so the LLM gets context about what it's
+    /// reading.
+    func transcribeDroppedFile(url: URL) {
+        transcribeURL(url, prefix: "[Transcript of \(url.lastPathComponent)]\n\n",
+                      statusLabel: url.lastPathComponent)
+    }
+
+    /// Transcribe an in-app recording. Output is inserted as bare text —
+    /// the user originates the recording, so they already know what it is.
+    func transcribeRecording(url: URL) {
+        transcribeURL(url, prefix: nil, statusLabel: "recording")
+    }
+
+    private func transcribeURL(_ url: URL, prefix: String?, statusLabel: String) {
+        guard !isTranscribingFile else {
+            errorMessage = "Already transcribing an audio file. Please wait."
+            return
+        }
+        isTranscribingFile = true
+        transcriptionStatus = "Preparing \(statusLabel)…"
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let modelURL = try await self.whisperModels.ensureDownloaded()
+                try await WhisperRunner.shared.load(modelPath: modelURL.path)
+
+                await MainActor.run {
+                    self.transcriptionStatus = "Transcribing \(statusLabel)…"
+                }
+                let translate = self.whisperModels.translate
+                let text = try await WhisperRunner.shared.transcribeFile(
+                    url: url, translate: translate
+                )
+
+                await MainActor.run {
+                    self.transcriptionStatus = nil
+                    self.isTranscribingFile = false
+                    if text.isEmpty {
+                        self.errorMessage = "Transcription of \(statusLabel) produced no text."
+                        return
+                    }
+                    let toInsert = (prefix ?? "") + text
+                    if self.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        self.input = toInsert
+                    } else {
+                        let sep = self.input.hasSuffix("\n") ? "\n" : "\n\n"
+                        self.input += sep + toInsert
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.transcriptionStatus = nil
+                    self.isTranscribingFile = false
+                    self.errorMessage = "Transcription failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// Toggle the mic recorder. On stop, kicks off transcription of the
+    /// recorded .wav. Runs concurrently with normal dictation (they use
+    /// separate AVAudioEngine instances) but is disabled in the UI when
+    /// dictation is active to avoid audio routing surprises.
+    func toggleAudioRecording() {
+        if audioRecorder.isRecording {
+            if let url = audioRecorder.stop() {
+                transcribeRecording(url: url)
+            }
+        } else {
+            do {
+                try audioRecorder.start()
+            } catch {
+                errorMessage = "Could not start recording: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func cancelAudioRecording() {
+        audioRecorder.cancel()
+    }
+
+    /// Open the recordings directory in Finder. Creates it on demand so the
+    /// user doesn't hit a "nothing selected" window on first use.
+    func revealRecordingsInFinder() {
+        do {
+            let dir = try AudioFileRecorder.recordingsDirectory()
+            NSWorkspace.shared.activateFileViewerSelecting([dir])
+        } catch {
+            errorMessage = "Could not open recordings folder: \(error.localizedDescription)"
+        }
+    }
+
+    /// Delete every `.wav` under the recordings directory. Caller is
+    /// expected to have confirmed via NSAlert.
+    func clearRecordings() {
+        do {
+            let dir = try AudioFileRecorder.recordingsDirectory()
+            let fm = FileManager.default
+            let urls = try fm.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+            for url in urls where url.pathExtension.lowercased() == "wav" {
+                try? fm.removeItem(at: url)
+            }
+        } catch {
+            errorMessage = "Could not clear recordings: \(error.localizedDescription)"
+        }
+    }
+
     /// Drop every conversation and message. Confirmed via `NSAlert` at the
     /// call site; this method assumes the user has already agreed.
     func clearVault() {
@@ -865,6 +988,7 @@ struct ChatView: View {
                 header
                 Divider()
                 transcript
+                transcriptionBanner
                 Divider()
                 composer
             }
@@ -879,6 +1003,9 @@ struct ChatView: View {
         }
         .frame(minWidth: sidebarOpen ? 800 : 520, minHeight: 500)
         .animation(.easeInOut(duration: 0.18), value: sidebarOpen)
+        .onDrop(of: [.audiovisualContent, .audio, .fileURL], isTargeted: nil) { providers in
+            handleAudioDrop(providers: providers)
+        }
         .alert("Error",
                isPresented: Binding(
                 get: { vm.errorMessage != nil },
@@ -1035,6 +1162,56 @@ struct ChatView: View {
             }
             .animation(.easeInOut(duration: 0.15), value: pinnedToBottom)
         }
+    }
+
+    @ViewBuilder
+    private var transcriptionBanner: some View {
+        if let status = vm.transcriptionStatus {
+            HStack(spacing: 8) {
+                if let p = vm.whisperModels.downloadProgress {
+                    ProgressView(value: p)
+                        .progressViewStyle(.linear)
+                        .frame(width: 80)
+                    Text("\(Int(p * 100))%")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.thinMaterial)
+            .overlay(Divider(), alignment: .top)
+        }
+    }
+
+    private func handleAudioDrop(providers: [NSItemProvider]) -> Bool {
+        guard !vm.isTranscribingFile else { return false }
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    let ext = url.pathExtension.lowercased()
+                    // Conservative whitelist; AVAudioFile can actually open a
+                    // broader set, but anything outside these is rarely audio.
+                    let allowed: Set<String> = [
+                        "wav", "mp3", "m4a", "aac", "aiff", "aif", "caf",
+                        "flac", "mp4", "mov", "mpeg", "mpg", "ogg", "opus"
+                    ]
+                    guard allowed.contains(ext) else { return }
+                    DispatchQueue.main.async { vm.transcribeDroppedFile(url: url) }
+                }
+                return true
+            }
+        }
+        return false
     }
 
     private var composer: some View {
@@ -1516,7 +1693,155 @@ private struct SidebarView: View {
             case .idle, .recording:
                 EmptyView()
             }
+
+            Divider().padding(.vertical, 4)
+
+            whisperSubsection
         }
+    }
+
+    private var whisperSubsection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("File transcription (whisper.cpp)")
+                .font(.caption).foregroundStyle(.secondary)
+
+            HStack {
+                Text("Model").font(.caption)
+                Spacer()
+                whisperModelMenu
+            }
+
+            Toggle("Translate to English", isOn: Binding(
+                get: { vm.whisperModels.translate },
+                set: { vm.whisperModels.setTranslate($0) }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+
+            HStack(spacing: 6) {
+                Button {
+                    vm.toggleAudioRecording()
+                } label: {
+                    Label(
+                        vm.audioRecorder.isRecording ? "Stop & Transcribe" : "Record",
+                        systemImage: vm.audioRecorder.isRecording ? "stop.circle.fill" : "record.circle"
+                    )
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(vm.audioRecorder.isRecording ? SwiftUI.Color.red : SwiftUI.Color.primary)
+                }
+                .controlSize(.small)
+                .disabled(vm.isTranscribingFile && !vm.audioRecorder.isRecording)
+
+                if vm.audioRecorder.isRecording {
+                    Text(Self.formatDuration(vm.audioRecorder.duration))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.red)
+                    Button {
+                        vm.cancelAudioRecording()
+                    } label: {
+                        Image(systemName: "xmark.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("Discard recording")
+                }
+                Spacer()
+            }
+
+            if case .error(let msg) = vm.audioRecorder.state {
+                Text(msg)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text("Record from the mic or drop audio/video files onto the window. Transcripts are inserted into the composer.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 6) {
+                Button {
+                    vm.revealRecordingsInFinder()
+                } label: {
+                    Label("Reveal in Finder", systemImage: "folder")
+                }
+                .controlSize(.small)
+
+                Button {
+                    let alert = NSAlert()
+                    alert.messageText = "Delete all recordings?"
+                    alert.informativeText = "Every .wav file under ~/Library/Application Support/Infer/recordings/ will be removed. This cannot be undone."
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "Delete")
+                    alert.addButton(withTitle: "Cancel")
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        vm.clearRecordings()
+                    }
+                } label: {
+                    Label("Clear recordings…", systemImage: "trash")
+                }
+                .controlSize(.small)
+                .disabled(vm.audioRecorder.isRecording)
+
+                Spacer()
+            }
+
+            if let msg = vm.whisperModels.statusMessage {
+                HStack(spacing: 6) {
+                    if let p = vm.whisperModels.downloadProgress {
+                        ProgressView(value: p)
+                            .progressViewStyle(.linear)
+                            .frame(width: 80)
+                        Text("\(Int(p * 100))%")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
+                    Text(msg)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+        }
+    }
+
+    static func formatDuration(_ t: TimeInterval) -> String {
+        let total = Int(t)
+        let m = total / 60
+        let s = total % 60
+        return String(format: "%d:%02d", m, s)
+    }
+
+    private var whisperModelMenu: some View {
+        let current = vm.whisperModels.selected
+        let downloaded = current.isDownloaded()
+        let title = "\(current.label) (\(downloaded ? "ready" : current.approxSize))"
+        return Menu {
+            ForEach(WhisperModelChoice.allCases) { m in
+                Button(action: { vm.whisperModels.setSelected(m) }) {
+                    HStack {
+                        Text(m.label)
+                        Spacer()
+                        Text(m.isDownloaded() ? "ready" : m.approxSize)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(title).font(.caption)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(vm.isTranscribingFile || vm.whisperModels.downloadProgress != nil)
     }
 
     private var voiceMenu: some View {

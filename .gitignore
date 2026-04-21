@@ -40,7 +40,7 @@ playground.xcworkspace
 
 .build/
 build/
-thirdparty/llama.xcframework/
+thirdparty/*
 projects/infer/.build/
 projects/infer/Package.resolved
 
