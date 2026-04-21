@@ -133,6 +133,17 @@ final class ChatViewModel {
     let mlx = MLXRunner()
     let speechRecognizer = SpeechRecognizer()
     let speechSynthesizer = SpeechSynthesizer()
+    private let vault = VaultStore.shared
+
+    /// Row id of the in-progress vault conversation, or nil if no turns have
+    /// been recorded yet (next `send()` will create a new row).
+    private var currentConversationId: Int64? = nil
+
+    // Vault search UI state.
+    var vaultQuery: String = ""
+    var vaultResults: [VaultSearchHit] = []
+    var vaultRecents: [VaultConversationSummary] = []
+    private var vaultSearchTask: Task<Void, Never>? = nil
 
     var ttsEnabled: Bool = UserDefaults.standard.bool(forKey: PersistKey.ttsEnabled) {
         didSet { UserDefaults.standard.set(ttsEnabled, forKey: PersistKey.ttsEnabled) }
@@ -361,6 +372,37 @@ final class ChatViewModel {
         let backend = self.backend
         let maxTokens = self.settings.maxTokens
 
+        // Record the turn in the vault (best-effort; never blocks generation).
+        let systemPrompt = self.settings.systemPrompt
+        let modelIdForVault = self.vaultModelId()
+        let backendName = backend.rawValue
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let cid: Int64
+                if let existing = self.currentConversationId {
+                    cid = existing
+                } else {
+                    cid = try await self.vault.startConversation(
+                        backend: backendName,
+                        modelId: modelIdForVault,
+                        systemPrompt: systemPrompt
+                    )
+                    await MainActor.run { self.currentConversationId = cid }
+                }
+                try await self.vault.appendMessage(
+                    conversationId: cid, role: "user", content: text
+                )
+                await MainActor.run { self.refreshVaultRecents() }
+            } catch {
+                // Vault errors are non-fatal. Surface once per session by
+                // printing to stderr; do not disturb the chat UI.
+                FileHandle.standardError.write(
+                    Data("vault write failed: \(error)\n".utf8)
+                )
+            }
+        }
+
         generationTask = Task {
             do {
                 let stream: AsyncThrowingStream<String, Error>
@@ -377,6 +419,28 @@ final class ChatViewModel {
                     self.generationTokenCount += 1
                 }
                 self.generationEnd = Date()
+                // Persist the assistant reply to the vault. Only on success —
+                // cancellations and errors are caught below and skip this.
+                if assistantIndex < self.messages.count,
+                   let cid = self.currentConversationId {
+                    let finalText = self.messages[assistantIndex].text
+                    let stats = self.generationStats
+                    Task { [vault = self.vault] in
+                        do {
+                            try await vault.appendMessage(
+                                conversationId: cid,
+                                role: "assistant",
+                                content: finalText,
+                                tokens: stats?.tokens,
+                                tokPerSec: stats?.tps
+                            )
+                        } catch {
+                            FileHandle.standardError.write(
+                                Data("vault write failed: \(error)\n".utf8)
+                            )
+                        }
+                    }
+                }
                 if self.ttsEnabled, assistantIndex < self.messages.count {
                     let finalText = self.messages[assistantIndex].text
                     self.speechSynthesizer.speak(
@@ -435,7 +499,11 @@ final class ChatViewModel {
             )
             if prevSystemPrompt != sp {
                 await self.llama.setSystemPrompt(sp.isEmpty ? nil : sp)
-                await MainActor.run { self.messages.removeAll() }
+                await MainActor.run {
+                    self.messages.removeAll()
+                    // New system prompt => new vault conversation on next send.
+                    self.currentConversationId = nil
+                }
             }
         }
     }
@@ -597,6 +665,9 @@ final class ChatViewModel {
             }
             stop()
             messages = loaded
+            // Imported `.md` is file-only: not linked to any vault row.
+            // Next send() will start a fresh vault conversation.
+            currentConversationId = nil
             // Reset backend conversation state. MLX's `ChatSession` has no
             // public API to inject a prior transcript, so for consistency we
             // wipe both backends — the loaded transcript is for review; a
@@ -647,6 +718,7 @@ final class ChatViewModel {
         generationTokenCount = 0
         generationStart = nil
         generationEnd = nil
+        currentConversationId = nil
         let b = self.backend
         Task {
             switch b {
@@ -654,6 +726,128 @@ final class ChatViewModel {
             case .mlx: await self.mlx.resetConversation()
             }
             await MainActor.run { self.refreshTokenUsage() }
+        }
+    }
+
+    // MARK: - Vault
+
+    /// Stable identifier string used as the vault's `model_id` column.
+    private func vaultModelId() -> String {
+        switch backend {
+        case .llama:
+            return UserDefaults.standard.string(forKey: PersistKey.llamaPath) ?? ""
+        case .mlx:
+            return mlxModelId.isEmpty ? "default" : mlxModelId
+        }
+    }
+
+    func refreshVaultRecents() {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let recents = try await self.vault.recentConversations()
+                await MainActor.run { self.vaultRecents = recents }
+            } catch {
+                FileHandle.standardError.write(
+                    Data("vault read failed: \(error)\n".utf8)
+                )
+            }
+        }
+    }
+
+    /// Debounced search against the vault. Empty query shows recents in the
+    /// sidebar; non-empty triggers FTS search 250 ms after the last keystroke.
+    func scheduleVaultSearch() {
+        vaultSearchTask?.cancel()
+        let q = vaultQuery
+        vaultSearchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if Task.isCancelled { return }
+            guard let self else { return }
+            if q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                await MainActor.run { self.vaultResults = [] }
+                return
+            }
+            do {
+                let hits = try await self.vault.search(query: q)
+                await MainActor.run {
+                    // Only apply if the query is still current.
+                    if self.vaultQuery == q { self.vaultResults = hits }
+                }
+            } catch {
+                FileHandle.standardError.write(
+                    Data("vault search failed: \(error)\n".utf8)
+                )
+            }
+        }
+    }
+
+    /// Load a conversation from the vault into the UI. Backend memory is
+    /// wiped (same caveat as `loadTranscript`). Further turns append to the
+    /// same vault row — a continuation of the saved thread.
+    func loadVaultConversation(id: Int64) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let rows = try await self.vault.loadConversation(id: id)
+                let msgs: [ChatMessage] = rows.compactMap { row in
+                    guard let role = ChatMessage.Role(rawValue: row.role) else { return nil }
+                    return ChatMessage(role: role, text: row.content)
+                }
+                guard !msgs.isEmpty else { return }
+                await MainActor.run {
+                    self.stop()
+                    self.messages = msgs
+                    self.currentConversationId = id
+                }
+                switch self.backend {
+                case .llama: await self.llama.resetConversation()
+                case .mlx: await self.mlx.resetConversation()
+                }
+                await MainActor.run { self.refreshTokenUsage() }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Failed to load conversation: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func deleteVaultConversation(id: Int64) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.vault.deleteConversation(id: id)
+                if self.currentConversationId == id {
+                    await MainActor.run { self.currentConversationId = nil }
+                }
+                await MainActor.run { self.refreshVaultRecents() }
+                self.scheduleVaultSearch()
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Failed to delete conversation: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// Drop every conversation and message. Confirmed via `NSAlert` at the
+    /// call site; this method assumes the user has already agreed.
+    func clearVault() {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.vault.clearAll()
+                await MainActor.run {
+                    self.currentConversationId = nil
+                    self.vaultResults = []
+                    self.vaultRecents = []
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Failed to clear vault: \(error.localizedDescription)"
+                }
+            }
         }
     }
 }
@@ -954,27 +1148,134 @@ struct ChatView: View {
     }
 }
 
+private enum SidebarTab: String, CaseIterable, Identifiable {
+    case model, history, voice, appearance
+    var id: String { rawValue }
+    var icon: String {
+        switch self {
+        case .model: return "cube.box"
+        case .history: return "clock.arrow.circlepath"
+        case .voice: return "waveform"
+        case .appearance: return "paintbrush"
+        }
+    }
+    var label: String {
+        switch self {
+        case .model: return "Model"
+        case .history: return "History"
+        case .voice: return "Voice"
+        case .appearance: return "Appearance"
+        }
+    }
+}
+
 private struct SidebarView: View {
     @Bindable var vm: ChatViewModel
     @State private var draft: InferSettings = .defaults
     @State private var showSystemPrompt = false
     @State private var didSeed = false
+    @State private var tab: SidebarTab = .model
     @AppStorage(PersistKey.appearance) private var appearanceRaw: String = AppearanceMode.light.rawValue
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                parametersSection
-                modelSection
-                speechSection
-                appearanceSection
-                Spacer(minLength: 0)
+        VStack(spacing: 0) {
+            tabBar
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    switch tab {
+                    case .model:
+                        modelSection
+                        parametersSection
+                    case .history:
+                        historySection
+                    case .voice:
+                        speechSection
+                    case .appearance:
+                        appearanceSection
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(14)
             }
-            .padding(14)
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
             if !didSeed { draft = vm.settings; didSeed = true }
+            vm.refreshVaultRecents()
+        }
+    }
+
+    private var tabBar: some View {
+        Picker("", selection: $tab) {
+            ForEach(SidebarTab.allCases) { t in
+                Image(systemName: t.icon)
+                    .help(t.label)
+                    .tag(t)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+
+    // MARK: History
+
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Search conversations", text: Binding(
+                get: { vm.vaultQuery },
+                set: { vm.vaultQuery = $0; vm.scheduleVaultSearch() }
+            ))
+            .textFieldStyle(.roundedBorder)
+            .controlSize(.small)
+
+            let isSearching = !vm.vaultQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+            if isSearching {
+                if vm.vaultResults.isEmpty {
+                    Text("No matches").font(.caption2).foregroundStyle(.tertiary)
+                } else {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(vm.vaultResults) { hit in
+                            VaultHitRow(hit: hit) { vm.loadVaultConversation(id: hit.conversationId) }
+                        }
+                    }
+                }
+            } else {
+                if vm.vaultRecents.isEmpty {
+                    Text("No saved conversations yet.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(vm.vaultRecents) { conv in
+                            VaultConversationRow(
+                                conv: conv,
+                                onOpen: { vm.loadVaultConversation(id: conv.id) },
+                                onDelete: { vm.deleteVaultConversation(id: conv.id) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Clear vault…") {
+                    let alert = NSAlert()
+                    alert.messageText = "Clear all saved conversations?"
+                    alert.informativeText = "This removes every conversation in the vault and cannot be undone."
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "Clear")
+                    alert.addButton(withTitle: "Cancel")
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        vm.clearVault()
+                    }
+                }
+                .controlSize(.small)
+            }
         }
     }
 
@@ -1137,8 +1438,6 @@ private struct SidebarView: View {
 
     private var speechSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(icon: "waveform", title: "Speech")
-
             Toggle("Read responses aloud", isOn: Binding(
                 get: { vm.ttsEnabled },
                 set: { vm.ttsEnabled = $0; if !$0 { vm.speechSynthesizer.stop() } }
@@ -1249,7 +1548,6 @@ private struct SidebarView: View {
 
     private var appearanceSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(icon: "paintbrush", title: "Appearance")
             Picker("", selection: Binding(
                 get: { AppearanceMode(rawValue: appearanceRaw) ?? .light },
                 set: { appearanceRaw = $0.rawValue }
@@ -1380,5 +1678,115 @@ private struct MessageRow: View {
         case .assistant: return "assistant"
         case .system: return "system"
         }
+    }
+}
+
+// MARK: - Vault row views
+
+private struct VaultConversationRow: View {
+    let conv: VaultConversationSummary
+    let onOpen: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(conv.title)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundStyle(.primary)
+                    HStack(spacing: 4) {
+                        Text(conv.backend)
+                        Text("·")
+                        Text(Self.relativeDate(conv.updatedAt))
+                        Text("·")
+                        Text("\(conv.messageCount) msg")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+            .padding(.vertical, 2)
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Open", action: onOpen)
+            Divider()
+            Button("Delete", role: .destructive, action: onDelete)
+        }
+    }
+
+    private static let relFormatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
+
+    static func relativeDate(_ d: Date) -> String {
+        relFormatter.localizedString(for: d, relativeTo: Date())
+    }
+}
+
+private struct VaultHitRow: View {
+    let hit: VaultSearchHit
+    let onOpen: () -> Void
+
+    var body: some View {
+        Button(action: onOpen) {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 4) {
+                    Text(hit.conversationTitle)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 4)
+                    Text(hit.role)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Text(Self.attributed(from: hit.snippet))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .padding(.vertical, 2)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Parse FTS5 snippet output (`...<mark>term</mark>...`) into an
+    /// AttributedString with highlighted runs. Unknown `<mark>` HTML is the
+    /// only markup our snippet() call emits, so this parser is intentionally
+    /// trivial rather than going through NSAttributedString's HTML import.
+    static func attributed(from snippet: String) -> AttributedString {
+        var out = AttributedString()
+        var remaining = Substring(snippet)
+        while let openRange = remaining.range(of: "<mark>") {
+            let before = remaining[..<openRange.lowerBound]
+            if !before.isEmpty {
+                out.append(AttributedString(String(before)))
+            }
+            let afterOpen = remaining[openRange.upperBound...]
+            guard let closeRange = afterOpen.range(of: "</mark>") else {
+                out.append(AttributedString(String(afterOpen)))
+                return out
+            }
+            let marked = afterOpen[..<closeRange.lowerBound]
+            var run = AttributedString(String(marked))
+            run.backgroundColor = .yellow.opacity(0.4)
+            run.foregroundColor = .primary
+            out.append(run)
+            remaining = afterOpen[closeRange.upperBound...]
+        }
+        if !remaining.isEmpty {
+            out.append(AttributedString(String(remaining)))
+        }
+        return out
     }
 }

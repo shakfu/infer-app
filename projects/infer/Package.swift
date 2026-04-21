@@ -11,6 +11,7 @@ let package = Package(
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
         .package(url: "https://github.com/JohnSundell/Splash", from: "0.16.0"),
         .package(url: "https://github.com/swiftlang/swift-markdown", from: "0.7.0"),
+        .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
     ],
     targets: [
         .binaryTarget(
@@ -29,6 +30,7 @@ let package = Package(
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
                 .product(name: "Splash", package: "Splash"),
                 .product(name: "Markdown", package: "swift-markdown"),
+                .product(name: "GRDB", package: "GRDB.swift"),
             ],
             path: "Sources/Infer",
             exclude: ["Info.plist"],

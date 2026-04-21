@@ -15,7 +15,7 @@ INFER_PRODUCT_DIR := $(INFER_BUILD_DIR)/Build/Products/$(INFER_CONFIG)
 INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 
 .PHONY: all build clean
-.PHONY: build-infer bundle-infer run-infer fetch-llama
+.PHONY: build-infer bundle-infer run-infer fetch-llama generate-icon
 
 all: build
 
@@ -34,13 +34,14 @@ fetch-llama: $(LLAMA_XCFRAMEWORK)
 build-infer: $(LLAMA_XCFRAMEWORK)
 	xcodebuild $(INFER_XCODE_FLAGS) build
 
-bundle-infer: build-infer
+bundle-infer: build-infer $(INFER_DIR)/Resources/AppIcon.icns
 	rm -rf $(INFER_APP_BUNDLE)
 	mkdir -p $(INFER_APP_BUNDLE)/Contents/MacOS
 	mkdir -p $(INFER_APP_BUNDLE)/Contents/Resources
 	mkdir -p $(INFER_APP_BUNDLE)/Contents/Frameworks
 	cp $(INFER_BIN) $(INFER_APP_BUNDLE)/Contents/MacOS/Infer
 	cp $(INFER_DIR)/Sources/Infer/Info.plist $(INFER_APP_BUNDLE)/Contents/Info.plist
+	cp $(INFER_DIR)/Resources/AppIcon.icns $(INFER_APP_BUNDLE)/Contents/Resources/AppIcon.icns
 	cp -R $(LLAMA_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/llama.framework
 	@for bundle in $(INFER_PRODUCT_DIR)/*.bundle; do \
 		[ -e "$$bundle" ] || continue; \
@@ -50,3 +51,11 @@ bundle-infer: build-infer
 
 run-infer: bundle-infer
 	open $(INFER_APP_BUNDLE)
+
+# Regenerate the placeholder app icon. The .icns is committed, so this only
+# needs to run when the design changes. Requires /usr/bin/iconutil (ships
+# with macOS).
+$(INFER_DIR)/Resources/AppIcon.icns: scripts/generate_app_icon.swift
+	swift scripts/generate_app_icon.swift
+
+generate-icon: $(INFER_DIR)/Resources/AppIcon.icns

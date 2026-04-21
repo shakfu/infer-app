@@ -68,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await vm.llama.shutdown()
             await vm.mlx.requestStop()
             await vm.mlx.shutdown()
+            await VaultStore.shared.shutdown()
             llama_backend_free()
             sem.signal()
         }
