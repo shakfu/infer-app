@@ -20,7 +20,7 @@ Roughly prioritized by user-facing impact / effort ratio. Items within a tier ar
 - [ ] **Syntax highlighting in printed PDF.** Inject a highlight.js stylesheet + `<script>` call into `PrintRenderer.wrap(body:)` so the WKWebView HTML picks up colors before `createPDF` snapshots it. One-liner once the JS CDN is embedded as a resource.
 - [ ] **Recent MLX model id history.** The HF id text field has no history; back it with a small `UserDefaults` array and a `Picker`/menu.
 
-- [ ] **Add support Whisper.cpp** -- see <https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.4/whisper-v1.8.4-xcframework.zip>
+- [ ] **Whisper.cpp speech-to-text backend.** Current speech input uses `SFSpeechRecognizer` (on-device) which is mechanically free but constrained by Apple's model quality and locale coverage. Add whisper.cpp as an alternative via the xcframework at <https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.4/whisper-v1.8.4-xcframework.zip>, fetched by a new `scripts/fetch_whisper_framework.sh` mirroring `fetch_llama_framework.sh`. Wrap behind a `WhisperRunner` actor with `load(modelPath:)` / `transcribe(audioURL:) -> String`; bundle the framework into `Infer.app/Contents/Frameworks/` from `bundle-infer`; wire cleanup into `AppDelegate.applicationWillTerminate`. UX: segmented control (SFSpeechRecognizer vs Whisper) in the Speech sidebar section; on first whisper use, download a ggml model (start with `tiny.en` ~75 MB) into `Application Support/`. Reuse the existing mic button — only the ASR backend changes.
 
 ## P2 — hygiene & infra
 

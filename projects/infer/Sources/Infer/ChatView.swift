@@ -35,6 +35,9 @@ private enum PersistKey {
     static let recentMLXIds = "infer.recentMLXIds"
     static let sidebarOpen = "infer.sidebarOpen"
     static let appearance = "infer.appearance"
+    static let ttsEnabled = "infer.ttsEnabled"
+    static let ttsVoiceId = "infer.ttsVoiceId"
+    static let voiceSendPhrase = "infer.voiceSendPhrase"
 }
 
 private let recentsLimit = 8
@@ -110,6 +113,21 @@ final class ChatViewModel {
 
     let llama = LlamaRunner()
     let mlx = MLXRunner()
+    let speechRecognizer = SpeechRecognizer()
+    let speechSynthesizer = SpeechSynthesizer()
+
+    var ttsEnabled: Bool = UserDefaults.standard.bool(forKey: PersistKey.ttsEnabled) {
+        didSet { UserDefaults.standard.set(ttsEnabled, forKey: PersistKey.ttsEnabled) }
+    }
+    var ttsVoiceId: String = UserDefaults.standard.string(forKey: PersistKey.ttsVoiceId) ?? "" {
+        didSet { UserDefaults.standard.set(ttsVoiceId, forKey: PersistKey.ttsVoiceId) }
+    }
+    /// Trailing phrase that, when detected at the end of dictated text,
+    /// strips itself and submits the message. Empty disables voice send.
+    var voiceSendPhrase: String = UserDefaults.standard.string(forKey: PersistKey.voiceSendPhrase) ?? "send it" {
+        didSet { UserDefaults.standard.set(voiceSendPhrase, forKey: PersistKey.voiceSendPhrase) }
+    }
+
     private var generationTask: Task<Void, Never>? = nil
     private var loadTask: Task<Void, Never>? = nil
 
@@ -326,6 +344,13 @@ final class ChatViewModel {
                         self.messages[assistantIndex].text += piece
                     }
                 }
+                if self.ttsEnabled, assistantIndex < self.messages.count {
+                    let finalText = self.messages[assistantIndex].text
+                    self.speechSynthesizer.speak(
+                        finalText,
+                        voiceIdentifier: self.ttsVoiceId.isEmpty ? nil : self.ttsVoiceId
+                    )
+                }
             } catch is CancellationError {
                 // user-initiated stop
             } catch LlamaError.cancelled {
@@ -349,6 +374,7 @@ final class ChatViewModel {
         }
         generationTask?.cancel()
         generationTask = nil
+        speechSynthesizer.stop()
     }
 
     // MARK: - Settings
@@ -377,6 +403,57 @@ final class ChatViewModel {
                 await MainActor.run { self.messages.removeAll() }
             }
         }
+    }
+
+    // MARK: - Voice-send trigger
+
+    /// If `text` ends with the configured trigger phrase (case-insensitive,
+    /// ignoring trailing punctuation/whitespace), return the text with the
+    /// phrase removed. Returns nil otherwise. Returns nil if `phrase` is empty.
+    static func stripTrailingTrigger(_ text: String, phrase: String) -> String? {
+        let trigger = phrase.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trigger.isEmpty else { return nil }
+
+        let trailingPunct = CharacterSet(charactersIn: " .,!?;:\n\t")
+        // Peel trailing whitespace/punctuation off the text for comparison.
+        var lowered = text.lowercased()
+        while let last = lowered.unicodeScalars.last, trailingPunct.contains(last) {
+            lowered.unicodeScalars.removeLast()
+        }
+        guard lowered.hasSuffix(trigger) else { return nil }
+
+        // Require a word boundary before the trigger so "resend it"
+        // doesn't match "send it". Boundary = start-of-string or whitespace.
+        let triggerStartLowered = lowered.index(lowered.endIndex, offsetBy: -trigger.count)
+        if triggerStartLowered > lowered.startIndex {
+            let prev = lowered[lowered.index(before: triggerStartLowered)]
+            if !prev.isWhitespace { return nil }
+        }
+
+        // Map the lowercased boundary back to the original string by length
+        // (lowercasing doesn't change UTF-16 length for ASCII triggers; for
+        // non-ASCII we conservatively measure from the end of the stripped
+        // lowered string in the original).
+        let strippedLoweredCount = lowered.count
+        // Find corresponding index in `text` by walking from the end past
+        // the same number of trailing punct/whitespace scalars we peeled.
+        var peelOffset = 0
+        var scratch = text
+        while let last = scratch.unicodeScalars.last, trailingPunct.contains(last) {
+            scratch.unicodeScalars.removeLast()
+            peelOffset += 1
+        }
+        let originalCore = text.prefix(text.count - peelOffset)
+        guard originalCore.count >= trigger.count else { return nil }
+        let triggerStart = originalCore.index(originalCore.endIndex, offsetBy: -trigger.count)
+        var result = String(originalCore[..<triggerStart])
+        _ = strippedLoweredCount
+        // Trim the now-trailing comma/space/period left behind.
+        let tailTrim = CharacterSet(charactersIn: " ,.;:\n\t")
+        while let last = result.unicodeScalars.last, tailTrim.contains(last) {
+            result.unicodeScalars.removeLast()
+        }
+        return result
     }
 
     // MARK: - Copy / Print
@@ -526,6 +603,9 @@ struct ChatView: View {
             .help(composerExpanded ? "Collapse editor" : "Expand editor")
             .padding(.bottom, 4)
 
+            micButton
+                .padding(.bottom, 4)
+
             Group {
                 if composerExpanded {
                     expandedEditor
@@ -548,6 +628,32 @@ struct ChatView: View {
         }
         .padding(10)
         .animation(.easeInOut(duration: 0.15), value: composerExpanded)
+    }
+
+    private var micButton: some View {
+        let recording = vm.speechRecognizer.isRecording
+        let starting = vm.speechRecognizer.isStarting
+        let active = recording || starting
+        return Button {
+            vm.speechRecognizer.toggle(baseline: vm.input) { text in
+                if let stripped = ChatViewModel.stripTrailingTrigger(text, phrase: vm.voiceSendPhrase) {
+                    vm.input = stripped
+                    vm.speechRecognizer.cancel()
+                    if vm.modelLoaded, !stripped.isEmpty { vm.send() }
+                } else {
+                    vm.input = text
+                }
+            }
+        } label: {
+            Image(systemName: active ? "mic.fill" : "mic")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(active ? .red : .secondary)
+                .frame(width: 16, height: 16)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .disabled(starting && !recording)
+        .help(recording ? "Stop dictation" : "Dictate (on-device)")
     }
 
     private var collapsedField: some View {
@@ -603,6 +709,7 @@ private struct SidebarView: View {
             VStack(alignment: .leading, spacing: 18) {
                 parametersSection
                 modelSection
+                speechSection
                 appearanceSection
                 Spacer(minLength: 0)
             }
@@ -767,6 +874,118 @@ private struct SidebarView: View {
                 .stroke(Color.secondary.opacity(0.3))
         )
         .disabled(vm.isLoadingModel || vm.isGenerating)
+    }
+
+    // MARK: Speech
+
+    private var speechSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(icon: "waveform", title: "Speech")
+
+            Toggle("Read responses aloud", isOn: Binding(
+                get: { vm.ttsEnabled },
+                set: { vm.ttsEnabled = $0; if !$0 { vm.speechSynthesizer.stop() } }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+
+            HStack {
+                Text("Voice").font(.caption)
+                Spacer()
+                voiceMenu
+            }
+            .disabled(!vm.ttsEnabled)
+
+            HStack(spacing: 6) {
+                Button {
+                    let sample = "The quick brown fox jumps over the lazy dog."
+                    vm.speechSynthesizer.speak(
+                        sample,
+                        voiceIdentifier: vm.ttsVoiceId.isEmpty ? nil : vm.ttsVoiceId
+                    )
+                } label: {
+                    Label("Preview", systemImage: "play.circle")
+                }
+                .controlSize(.small)
+                .disabled(!vm.ttsEnabled)
+
+                Button {
+                    vm.speechSynthesizer.stop()
+                } label: {
+                    Label("Stop", systemImage: "stop.circle")
+                }
+                .controlSize(.small)
+                .disabled(!vm.speechSynthesizer.isSpeaking)
+
+                Spacer()
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Voice-send phrase").font(.caption).foregroundStyle(.secondary)
+                TextField("e.g. send it", text: Binding(
+                    get: { vm.voiceSendPhrase },
+                    set: { vm.voiceSendPhrase = $0 }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                Text("Saying this at the end of a dictation submits the message. Leave empty to disable.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 4)
+
+            if !vm.speechRecognizer.supportsOnDevice {
+                Text("On-device dictation unavailable for this locale.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+
+            switch vm.speechRecognizer.state {
+            case .error(let msg):
+                Text(msg)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .unauthorized:
+                Text("Microphone or speech-recognition permission denied. Enable in System Settings > Privacy & Security.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .unavailable(let msg):
+                Text(msg)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            case .idle, .recording:
+                EmptyView()
+            }
+        }
+    }
+
+    private var voiceMenu: some View {
+        let voices = SpeechSynthesizer.availableVoices()
+        let current = voices.first { $0.identifier == vm.ttsVoiceId }
+        let title = current.map { "\($0.name) (\($0.language))" } ?? "System default"
+        return Menu {
+            Button("System default") { vm.ttsVoiceId = "" }
+            Divider()
+            ForEach(voices, id: \.identifier) { v in
+                Button("\(v.name) — \(v.language)") { vm.ttsVoiceId = v.identifier }
+            }
+        } label: {
+            HStack {
+                Text(title)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
     }
 
     // MARK: Appearance

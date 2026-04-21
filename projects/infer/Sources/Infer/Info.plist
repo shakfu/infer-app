@@ -20,5 +20,9 @@
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Infer uses the microphone to transcribe your speech into the chat composer.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Infer uses on-device speech recognition to convert your voice into text. No audio leaves your Mac.</string>
 </dict>
 </plist>
