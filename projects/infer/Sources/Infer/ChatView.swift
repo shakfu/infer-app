@@ -410,6 +410,8 @@ final class ChatViewModel {
 struct ChatView: View {
     @Bindable var vm: ChatViewModel
     @AppStorage(PersistKey.sidebarOpen) private var sidebarOpen: Bool = true
+    @State private var composerExpanded: Bool = false
+    @FocusState private var composerFocused: Bool
 
     var body: some View {
         HStack(spacing: 0) {
@@ -509,22 +511,83 @@ struct ChatView: View {
 
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            TextField("Message", text: $vm.input, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...6)
-                .font(.body)
-                .onSubmit { vm.send() }
+            Button {
+                composerExpanded.toggle()
+                DispatchQueue.main.async { composerFocused = true }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .rotationEffect(.degrees(composerExpanded ? 90 : 0))
+                    .frame(width: 16, height: 16)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help(composerExpanded ? "Collapse editor" : "Expand editor")
+            .padding(.bottom, 4)
+
+            Group {
+                if composerExpanded {
+                    expandedEditor
+                } else {
+                    collapsedField
+                }
+            }
 
             if vm.isGenerating {
                 Button("Stop") { vm.stop() }
                     .keyboardShortcut(".", modifiers: .command)
             } else {
-                Button("Send") { vm.send() }
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!vm.modelLoaded || vm.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Send") {
+                    vm.send()
+                    if composerExpanded { composerExpanded = false }
+                }
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(!vm.modelLoaded || vm.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(10)
+        .animation(.easeInOut(duration: 0.15), value: composerExpanded)
+    }
+
+    private var collapsedField: some View {
+        TextField("Message", text: $vm.input, axis: .vertical)
+            .textFieldStyle(.roundedBorder)
+            .lineLimit(1...6)
+            .font(.body)
+            .focused($composerFocused)
+            .onKeyPress(keys: [.return], phases: .down) { keyPress in
+                if keyPress.modifiers.contains(.shift) {
+                    // NSTextField can't insert newlines, so auto-expand
+                    // into the TextEditor and carry the newline forward.
+                    vm.input += "\n"
+                    composerExpanded = true
+                    DispatchQueue.main.async { composerFocused = true }
+                    return .handled
+                }
+                vm.send()
+                return .handled
+            }
+    }
+
+    private var expandedEditor: some View {
+        TextEditor(text: $vm.input)
+            .font(.body)
+            .focused($composerFocused)
+            .scrollContentBackground(.hidden)
+            .padding(6)
+            .frame(minHeight: 120, maxHeight: 260)
+            .background(Color(nsColor: .textBackgroundColor))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.secondary.opacity(0.35))
+            )
+            .overlay(alignment: .bottomTrailing) {
+                Text("Cmd+Return to send")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .padding(6)
+            }
     }
 }
 
