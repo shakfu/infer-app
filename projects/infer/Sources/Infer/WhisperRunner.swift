@@ -136,9 +136,9 @@ actor WhisperRunner {
         loadedPath = nil
     }
 
-    deinit {
-        if let c = ctx { whisper_bridge_free(c) }
-    }
+    // No deinit: same reason as LlamaRunner — actor-isolated C pointers
+    // aren't reachable from a Swift 6 nonisolated deinit. `shutdown()` is
+    // the cleanup path, called from `AppDelegate.applicationWillTerminate`.
 }
 
 // MARK: - Audio decoding

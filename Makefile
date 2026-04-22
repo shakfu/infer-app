@@ -17,7 +17,7 @@ INFER_XCODE_FLAGS := -workspace $(INFER_DIR) -scheme Infer \
 INFER_PRODUCT_DIR := $(INFER_BUILD_DIR)/Build/Products/$(INFER_CONFIG)
 INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 
-.PHONY: all build clean test
+.PHONY: all build clean clean-infer clean-mlx-cache test
 .PHONY: build-infer bundle-infer run-infer fetch-llama fetch-whisper generate-icon
 
 all: build
@@ -26,6 +26,29 @@ build: build-infer
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+# Remove only the xcodebuild derived-data for the Infer scheme. Faster
+# than `clean` when you want a fresh build without also blowing away the
+# bundled .app.
+clean-infer:
+	rm -rf $(INFER_BUILD_DIR)
+
+# Delete the Hugging Face cache (MLX model downloads). Grows unbounded —
+# 20 GB+ after heavy experimentation. Requires explicit confirmation since
+# re-downloading can be slow and bandwidth-costly.
+clean-mlx-cache:
+	@dir="$${HF_HOME:-$$HOME/.cache/huggingface}/hub"; \
+	if [ ! -d "$$dir" ]; then \
+		echo "No HF cache found at $$dir"; \
+		exit 0; \
+	fi; \
+	size=$$(du -sh "$$dir" 2>/dev/null | awk '{print $$1}'); \
+	printf "This will delete %s (%s). Continue? [y/N] " "$$dir" "$$size"; \
+	read ans; \
+	case "$$ans" in \
+		[yY]|[yY][eE][sS]) rm -rf "$$dir"; echo "Removed $$dir";; \
+		*) echo "Aborted.";; \
+	esac
 
 # Runs the pure-Swift InferCore test suite under swift-test. Does not require
 # the Metal Toolchain or the fetched llama/whisper xcframeworks — the Infer

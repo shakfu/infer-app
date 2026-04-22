@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import UniformTypeIdentifiers
+import InferCore
 
 extension ChatViewModel {
     /// UTTypes accepted by the transcript save/load panels. `.md` may not
@@ -15,9 +16,9 @@ extension ChatViewModel {
     /// Canonical markdown representation of the transcript. Used by Copy,
     /// Save, and Load (which round-trips this exact format).
     var transcriptMarkdown: String {
-        messages
-            .map { "## \($0.role.rawValue)\n\n\($0.text)" }
-            .joined(separator: "\n\n---\n\n")
+        TranscriptMarkdown.render(
+            messages.map { TranscriptMarkdown.Turn(role: $0.role.rawValue, text: $0.text) }
+        )
     }
 
     func copyTranscriptAsMarkdown() {
@@ -125,26 +126,9 @@ extension ChatViewModel {
     /// round-trip `transcriptMarkdown`; lenient about extra whitespace and
     /// unknown roles (skipped).
     static func parseTranscript(_ markdown: String) -> [ChatMessage] {
-        var result: [ChatMessage] = []
-        let chunks = markdown.components(separatedBy: "\n\n---\n\n")
-        for raw in chunks {
-            let chunk = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard chunk.hasPrefix("## ") else { continue }
-            guard let bodyBreak = chunk.range(of: "\n\n") else { continue }
-            let headerStart = chunk.index(chunk.startIndex, offsetBy: 3)
-            let header = chunk[headerStart..<bodyBreak.lowerBound]
-                .trimmingCharacters(in: .whitespaces)
-                .lowercased()
-            let body = String(chunk[bodyBreak.upperBound...])
-            let role: ChatMessage.Role
-            switch header {
-            case "user": role = .user
-            case "assistant": role = .assistant
-            case "system": role = .system
-            default: continue
-            }
-            result.append(ChatMessage(role: role, text: body))
+        TranscriptMarkdown.parse(markdown).compactMap { turn in
+            guard let role = ChatMessage.Role(rawValue: turn.role) else { return nil }
+            return ChatMessage(role: role, text: turn.text)
         }
-        return result
     }
 }

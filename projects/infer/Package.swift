@@ -65,9 +65,6 @@ let package = Package(
             ],
             path: "Sources/Infer",
             exclude: ["Info.plist"],
-            swiftSettings: [
-                .swiftLanguageMode(.v5),
-            ],
             linkerSettings: [
                 .unsafeFlags([
                     "-Xlinker", "-rpath",

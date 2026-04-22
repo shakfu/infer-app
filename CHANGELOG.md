@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Swift 6 strict concurrency.** Dropped `.swiftLanguageMode(.v5)` from `Package.swift`. `LlamaRunner.backendInitialized: static var` replaced with a `static let backendOnce: Void` dispatch-once pattern — Swift's thread-safe `static let` runs the initializer exactly once and later reads are free. Removed both runners' `deinit` bodies (Swift 6 disallows accessing actor-isolated non-Sendable C pointers from a nonisolated deinit); `shutdown()` via `AppDelegate.applicationWillTerminate` remains the cleanup path. Added a `LlamaHandles: @unchecked Sendable` struct to package the llama C pointers (`ctx` / `sampler` / `vocab`) for handoff into `Task.detached` — Sendability is asserted with a comment explaining why it's safe (actor serializes pointer lifecycle against in-flight decodes).
+
+- **Pure text helpers extracted to `InferCore`.** `stripTrailingTrigger` (voice-send phrase detection) moved to `InferCore/VoiceTrigger.swift`; canonical transcript markdown rendering / parsing moved to `InferCore/TranscriptMarkdown.swift` with an intermediate `Turn(role: String, text: String)` shape so the parser doesn't need to know about `ChatMessage`. `ChatViewModel` keeps thin forwarders (`transcriptMarkdown`, `parseTranscript`, `stripTrailingTrigger`) so call sites in the Infer target don't need to change imports. New tests: `VoiceTriggerTests` (8 cases — case-insensitive, punctuation peeling, word-boundary enforcement, empty phrase, custom phrase, text-shorter-than-phrase, phrase-in-middle); `TranscriptMarkdownTests` (7 cases — single/multi-turn round-trip, unknown roles skipped, embedded `---` in content, empty/malformed input, case-insensitive headers). Test count 16 → 31.
+
+- **Deprecation warnings fixed.** Three `String(cString:)` call sites in `LlamaRunner.renderTemplate` and `piece(vocab:token:)` replaced with a shared `decodeCChars(_:length:)` helper that maps `CChar → UInt8` via `bitPattern:` and feeds `String(decoding:as: UTF8.self)`. Also removed the now-unnecessary null-terminator zeroing — the helper uses an explicit byte length rather than walking to a null.
+
+### Added
+
+- **Makefile hygiene targets.**
+  - `make clean-infer` — removes only `build/infer-xcode` (xcodebuild derived data). Useful when you want a fresh xcodebuild without blowing away the bundled `.app`.
+  - `make clean-mlx-cache` — reports `du -sh` of `$HF_HOME/hub` (defaults to `~/.cache/huggingface`) and prompts for confirmation before `rm -rf`. MLX model downloads grow unbounded; this is the safe way to reclaim the disk.
+
 ## [0.1.4]
 
 ### Changed

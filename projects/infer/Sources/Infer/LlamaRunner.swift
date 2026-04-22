@@ -29,6 +29,18 @@ final class CancelFlag: @unchecked Sendable {
     func reset() { lock.lock(); flag = false; lock.unlock() }
 }
 
+/// Transportable bundle of llama C pointers for handoff to a detached
+/// decode task. OpaquePointer / UnsafeMutablePointer aren't Sendable by
+/// default; we assert it here because (a) they're trivially-copyable
+/// primitive values and (b) the actor serializes their lifetime — the
+/// pointers outlive any in-flight decode because `shutdown` / `load`
+/// only run when `isGenerating == false`.
+private struct LlamaHandles: @unchecked Sendable {
+    let ctx: OpaquePointer
+    let sampler: UnsafeMutablePointer<llama_sampler>
+    let vocab: OpaquePointer
+}
+
 /// Owns all llama.cpp state. The actor serializes mutation of model/context/
 /// conversation state; the hot decode loop runs on a detached task so that
 /// other actor messages (e.g. `requestStop`) can be processed while a
@@ -57,14 +69,18 @@ actor LlamaRunner {
 
     private let cancelFlag = CancelFlag()
 
-    private static var backendInitialized = false
+    /// One-shot `llama_backend_init`. Swift's `static let` is thread-safe
+    /// and runs its initializer exactly once; `_ = backendOnce` is a cheap
+    /// re-read after the first call. Avoids the previous `static var` flag
+    /// that tripped Swift 6 strict concurrency.
+    private static let backendOnce: Void = {
+        llama_backend_init()
+    }()
 
     init() {}
 
     static func ensureBackend() {
-        guard !backendInitialized else { return }
-        llama_backend_init()
-        backendInitialized = true
+        _ = backendOnce
     }
 
     /// Explicit teardown. Call from AppDelegate.applicationWillTerminate so
@@ -83,11 +99,12 @@ actor LlamaRunner {
         isGenerating = false
     }
 
-    deinit {
-        if let sampler { llama_sampler_free(sampler) }
-        if let ctx { llama_free(ctx) }
-        if let model { llama_model_free(model) }
-    }
+    // No deinit: Swift 6 strict concurrency can't access actor-isolated
+    // non-Sendable C pointers from a nonisolated deinit, and the app
+    // already frees these via `shutdown()` in `AppDelegate.applicationWillTerminate`.
+    // The runner is held by `ChatViewModel` for the app's lifetime, so the
+    // actor is never deallocated at runtime; explicit shutdown is the only
+    // cleanup path that matters.
 
     var loadedModelPath: String? { modelPath }
 
@@ -319,13 +336,14 @@ actor LlamaRunner {
             cancelFlag.reset()
             isGenerating = true
             let flag = cancelFlag
+            let handles = LlamaHandles(ctx: ctx, sampler: sampler, vocab: vocab)
 
             Task.detached {
                 var assistant = ""
                 var thrown: Error? = nil
                 do {
                     try Self.runDecodeLoop(
-                        ctx: ctx, sampler: sampler, vocab: vocab,
+                        ctx: handles.ctx, sampler: handles.sampler, vocab: handles.vocab,
                         prompt: promptDelta, maxTokens: maxTokens,
                         cancel: flag
                     ) { piece in
@@ -417,11 +435,21 @@ actor LlamaRunner {
             }
         }
         if n < 0 { throw LlamaError.templateFailed }
-        buf[Int(n)] = 0
-        return String(cString: buf)
+        return Self.decodeCChars(buf, length: Int(n))
     }
 
     // MARK: - Decode loop (runs off-actor)
+
+    /// Decode a known-length `[CChar]` buffer (not necessarily null-terminated
+    /// within the length) to a Swift `String`. Replaces the now-deprecated
+    /// `String(cString:)` which required the caller to zero-terminate the
+    /// buffer and walked to find the terminator. CChar → UInt8 via
+    /// `bitPattern:` since on Apple platforms they share bit layout; MaxASCII
+    /// safety is handled by `String(decoding:as:)`'s UTF-8 replacement of
+    /// invalid sequences.
+    private static func decodeCChars(_ buf: [CChar], length: Int) -> String {
+        String(decoding: buf.prefix(length).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    }
 
     private static func tokenize(vocab: OpaquePointer, text: String, addSpecial: Bool) throws -> [llama_token] {
         let cstr = Array(text.utf8CString)
@@ -443,12 +471,10 @@ actor LlamaRunner {
             buf = [CChar](repeating: 0, count: Int(-n) + 1)
             let n2 = llama_token_to_piece(vocab, token, &buf, Int32(buf.count), 0, false)
             if n2 <= 0 { return "" }
-            buf[Int(n2)] = 0
-            return String(cString: buf)
+            return decodeCChars(buf, length: Int(n2))
         }
         if n == 0 { return "" }
-        buf[Int(n)] = 0
-        return String(cString: buf)
+        return decodeCChars(buf, length: Int(n))
     }
 
     private static func runDecodeLoop(

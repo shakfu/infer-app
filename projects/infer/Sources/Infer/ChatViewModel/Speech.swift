@@ -1,49 +1,13 @@
 import Foundation
 import AppKit
+import InferCore
 
 extension ChatViewModel {
-    /// If `text` ends with the configured trigger phrase (case-insensitive,
-    /// ignoring trailing punctuation/whitespace), return the text with the
-    /// phrase removed. Returns nil otherwise. Returns nil if `phrase` is empty.
+    /// Forwarder to `InferCore.VoiceTrigger.stripTrailingTrigger`. Kept as
+    /// a static on `ChatViewModel` so existing call sites don't need to
+    /// import `InferCore` themselves.
     static func stripTrailingTrigger(_ text: String, phrase: String) -> String? {
-        let trigger = phrase.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !trigger.isEmpty else { return nil }
-
-        let trailingPunct = CharacterSet(charactersIn: " .,!?;:\n\t")
-        // Peel trailing whitespace/punctuation off the text for comparison.
-        var lowered = text.lowercased()
-        while let last = lowered.unicodeScalars.last, trailingPunct.contains(last) {
-            lowered.unicodeScalars.removeLast()
-        }
-        guard lowered.hasSuffix(trigger) else { return nil }
-
-        // Require a word boundary before the trigger so "resend it"
-        // doesn't match "send it". Boundary = start-of-string or whitespace.
-        let triggerStartLowered = lowered.index(lowered.endIndex, offsetBy: -trigger.count)
-        if triggerStartLowered > lowered.startIndex {
-            let prev = lowered[lowered.index(before: triggerStartLowered)]
-            if !prev.isWhitespace { return nil }
-        }
-
-        // Map the lowercased boundary back to the original string by walking
-        // from the end past the same number of trailing punct/whitespace
-        // scalars we peeled.
-        var peelOffset = 0
-        var scratch = text
-        while let last = scratch.unicodeScalars.last, trailingPunct.contains(last) {
-            scratch.unicodeScalars.removeLast()
-            peelOffset += 1
-        }
-        let originalCore = text.prefix(text.count - peelOffset)
-        guard originalCore.count >= trigger.count else { return nil }
-        let triggerStart = originalCore.index(originalCore.endIndex, offsetBy: -trigger.count)
-        var result = String(originalCore[..<triggerStart])
-        // Trim the now-trailing comma/space/period left behind.
-        let tailTrim = CharacterSet(charactersIn: " ,.;:\n\t")
-        while let last = result.unicodeScalars.last, tailTrim.contains(last) {
-            result.unicodeScalars.removeLast()
-        }
-        return result
+        VoiceTrigger.stripTrailingTrigger(text, phrase: phrase)
     }
 
     /// Transcribe a dropped audio file with whisper.cpp. Output is prefixed
