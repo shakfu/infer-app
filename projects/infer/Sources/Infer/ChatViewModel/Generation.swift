@@ -137,18 +137,7 @@ extension ChatViewModel {
     /// No-op when a generation is in flight, when the last two messages
     /// aren't a user→assistant pair, or when no model is loaded.
     func regenerateLast() {
-        guard modelLoaded, !isGenerating else { return }
-        guard messages.count >= 2 else { return }
-        let last = messages.count - 1
-        guard messages[last].role == .assistant,
-              messages[last - 1].role == .user
-        else { return }
-
-        let userTurn = messages[last - 1]
-        messages.removeSubrange((last - 1)...last)
-        input = userTurn.text
-        pendingImageURL = userTurn.imageURL
-
+        guard unspoolLastTurn() else { return }
         let b = self.backend
         Task {
             switch b {
@@ -157,5 +146,39 @@ extension ChatViewModel {
             }
             await MainActor.run { self.send() }
         }
+    }
+
+    /// Pop the most recent user turn (and its assistant reply) back into the
+    /// composer for editing. Next press of Send re-runs the turn. Same rewind
+    /// mechanics as `regenerateLast` — the backend's pre-turn state is
+    /// restored — but control returns to the user before sending.
+    func editLastUserMessage() {
+        guard unspoolLastTurn() else { return }
+        let b = self.backend
+        Task {
+            switch b {
+            case .llama: await self.llama.rewindLastTurn()
+            case .mlx: await self.mlx.rewindLastTurn()
+            }
+        }
+    }
+
+    /// Shared precondition + transcript mutation for regenerate and
+    /// edit-and-resend. Returns `true` when the last user+assistant pair was
+    /// popped and the composer repopulated with the original user text +
+    /// image; `false` means the caller should abort (no-op).
+    private func unspoolLastTurn() -> Bool {
+        guard modelLoaded, !isGenerating else { return false }
+        guard messages.count >= 2 else { return false }
+        let last = messages.count - 1
+        guard messages[last].role == .assistant,
+              messages[last - 1].role == .user
+        else { return false }
+
+        let userTurn = messages[last - 1]
+        messages.removeSubrange((last - 1)...last)
+        input = userTurn.text
+        pendingImageURL = userTurn.imageURL
+        return true
     }
 }

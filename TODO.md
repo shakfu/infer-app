@@ -6,8 +6,6 @@ Roughly prioritized by user-facing impact / effort ratio. Items within a tier ar
 
 ## P1 — feature completeness
 
-- [ ] **Restore backend context when loading a transcript.** Currently `loadTranscript()` replaces UI messages but resets both backends — the model has no memory of the loaded turns. **(MLX)** Now cheap: `MLXRunner.setHistory(_: [Chat.Message])` already exists (landed with the multi-turn fix). Wire `loadTranscript` / `loadVaultConversation` to translate `[ChatMessage]` → `[Chat.Message]` and call it; next send pre-fills the KV cache via `ChatSession(history:)`. **(llama)** Add `LlamaRunner.setHistory(_: [(role, content)])` that replaces the private `messages` array, renders the full template with `addAssistant: false`, tokenizes it, submits one `llama_decode` batch to pre-fill the KV cache, and updates `prevFormattedLen`. Cost: one prompt-sized decode on load (same as the first turn of a long chat).
-
 - [ ] **Timestamps per message.** Stash `Date` on each `ChatMessage`, show as `HH:mm` in the gutter. Helps when triaging long sessions.
 
 - [ ] **Multi-language syntax highlighting in chat.** Splash is Swift-only. Swap for Highlightr (highlight.js via JavaScriptCore) behind the existing `CodeSyntaxHighlighter` interface; the call site in `MessageRow` doesn't change.
@@ -17,8 +15,6 @@ Roughly prioritized by user-facing impact / effort ratio. Items within a tier ar
 - [ ] **Syntax highlighting in printed PDF.** Inject a highlight.js stylesheet + `<script>` call into `PrintRenderer.wrap(body:)` so the WKWebView HTML picks up colors before `createPDF` snapshots it. One-liner once the JS CDN is embedded as a resource.
 
 - [ ] **Voice-loop mode.** Full hands-free cycle: after TTS finishes reading an assistant response, auto-arm the mic; the user dictates a reply, the existing voice-send trigger phrase submits it, and the TTS-on-completion hook reads the next response aloud. Toggle in the Speech sidebar section ("Continuous voice"). Builds on three already-shipped pieces (SFSpeechRecognizer dictation, AVSpeechSynthesizer readout, trigger-phrase send) — this one item is what makes Infer a legitimately novel local voice-chat app.
-
-- [ ] **Edit + resend last user message.** Pencil icon on the most recent user turn. Pops it off, rewinds backend conversation state, re-populates the composer with the original text. Cheap — the rewind plumbing (`LlamaRunner.rewindLastTurn()` / `MLXRunner.rewindLastTurn()`) already exists from Regenerate; this is almost entirely UI.
 
 - [ ] **Seed + reproducibility.** Add a `seed: UInt64?` field to `InferSettings`. llama supports it via `llama_sampler_init_dist(seed)`; MLX exposes it through `GenerateParameters`. Optional (nil = random); when set, identical prompt + params + seed produces identical output. Essential for debugging model behavior and for comparing sampler settings.
 

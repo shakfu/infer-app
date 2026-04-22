@@ -198,6 +198,55 @@ actor LlamaRunner {
         resetConversation()
     }
 
+    /// Replace the conversation with `history` and pre-fill the KV cache so
+    /// the next `sendUserMessage` sees the restored context. The system
+    /// prompt (if configured) is prepended automatically — pass only
+    /// user/assistant turns. Throws on tokenize/decode failure; partial
+    /// state is rolled back to an empty conversation.
+    ///
+    /// Cost: one prompt-sized decode (equivalent to the first turn of a
+    /// long chat).
+    func setHistory(_ history: [(role: String, content: String)]) throws {
+        guard let ctx, let vocab else { throw LlamaError.backendNotReady }
+
+        llama_memory_clear(llama_get_memory(ctx), true)
+        messages.removeAll()
+        if let sp = systemPrompt {
+            messages.append((role: "system", content: sp))
+        }
+        messages.append(contentsOf: history)
+        prevFormattedLen = 0
+
+        // Nothing to pre-fill when there are no user/assistant turns.
+        guard !history.isEmpty else { return }
+
+        let rendered: String
+        do {
+            rendered = try renderTemplate(addAssistant: false)
+        } catch {
+            resetConversation()
+            throw error
+        }
+        var tokens: [llama_token]
+        do {
+            tokens = try Self.tokenize(vocab: vocab, text: rendered, addSpecial: false)
+        } catch {
+            resetConversation()
+            throw error
+        }
+        guard !tokens.isEmpty else { return }
+
+        let rc = tokens.withUnsafeMutableBufferPointer { buf -> Int32 in
+            let batch = llama_batch_get_one(buf.baseAddress, Int32(buf.count))
+            return llama_decode(ctx, batch)
+        }
+        if rc != 0 {
+            resetConversation()
+            throw LlamaError.decodeFailed(rc)
+        }
+        prevFormattedLen = ChatPromptDelta.byteLength(of: rendered)
+    }
+
     /// Drop the most recent user+assistant turn pair and clear the KV cache.
     /// The next `sendUserMessage` re-renders the full template from scratch
     /// and pre-fills in one batch. Intended for regenerate / edit-and-resend.

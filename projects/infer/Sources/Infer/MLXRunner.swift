@@ -107,9 +107,20 @@ actor MLXRunner {
 
     /// Replace the runner's conversation history wholesale. Used by
     /// transcript-load and regenerate flows. Caller supplies the messages
-    /// that should be in the KV cache as of the next send.
-    func setHistory(_ messages: [Chat.Message]) {
-        self.history = messages
+    /// that should be in the KV cache as of the next send; the next send
+    /// triggers pre-fill via `ChatSession(history:)`. Role strings follow
+    /// our app convention: "user", "assistant", "system" (other values are
+    /// skipped).
+    func setHistory(_ messages: [(role: String, content: String, imageURLs: [URL])]) {
+        self.history = messages.compactMap { m in
+            let images: [UserInput.Image] = m.imageURLs.map { .url($0) }
+            switch m.role {
+            case "user": return .user(m.content, images: images)
+            case "assistant": return .assistant(m.content, images: images)
+            case "system": return .system(m.content, images: images)
+            default: return nil
+            }
+        }
     }
 
     func sendUserMessage(

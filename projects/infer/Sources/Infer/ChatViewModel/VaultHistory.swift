@@ -59,12 +59,8 @@ extension ChatViewModel {
                     self.stop()
                     self.messages = msgs
                     self.currentConversationId = id
+                    self.restoreBackendHistory(msgs)
                 }
-                switch self.backend {
-                case .llama: await self.llama.resetConversation()
-                case .mlx: await self.mlx.resetConversation()
-                }
-                await MainActor.run { self.refreshTokenUsage() }
             } catch {
                 await MainActor.run {
                     self.errorMessage = "Failed to load conversation: \(error.localizedDescription)"

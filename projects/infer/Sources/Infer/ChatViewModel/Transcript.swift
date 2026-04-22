@@ -88,20 +88,38 @@ extension ChatViewModel {
             // Imported `.md` is file-only: not linked to any vault row.
             // Next send() will start a fresh vault conversation.
             currentConversationId = nil
-            // Reset backend conversation state. MLX's `ChatSession` has no
-            // public API to inject a prior transcript, so for consistency we
-            // wipe both backends — the loaded transcript is for review; a
-            // follow-up message starts a fresh backend conversation.
-            let b = self.backend
-            Task {
-                switch b {
-                case .llama: await self.llama.resetConversation()
-                case .mlx: await self.mlx.resetConversation()
-                }
-                await MainActor.run { self.refreshTokenUsage() }
-            }
+            restoreBackendHistory(loaded)
         } catch {
             errorMessage = "Failed to load transcript: \(error.localizedDescription)"
+        }
+    }
+
+    /// Push `restored` into the active backend's KV cache so continued turns
+    /// have context. System turns are filtered out — the current
+    /// `settings.systemPrompt` is what each runner prepends automatically.
+    /// Llama's pre-fill can throw (tokenize/decode); on failure we silently
+    /// fall back to a reset so the transcript is still readable.
+    func restoreBackendHistory(_ restored: [ChatMessage]) {
+        let turns = restored.filter { $0.role != .system }
+        let b = self.backend
+        Task {
+            switch b {
+            case .llama:
+                let history = turns.map { (role: $0.role.rawValue, content: $0.text) }
+                do {
+                    try await self.llama.setHistory(history)
+                } catch {
+                    await self.llama.resetConversation()
+                }
+            case .mlx:
+                let history = turns.map { msg in
+                    (role: msg.role.rawValue,
+                     content: msg.text,
+                     imageURLs: msg.imageURL.map { [$0] } ?? [])
+                }
+                await self.mlx.setHistory(history)
+            }
+            await MainActor.run { self.refreshTokenUsage() }
         }
     }
 

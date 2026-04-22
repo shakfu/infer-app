@@ -11,7 +11,8 @@ extension ChatView {
                     ForEach(Array(vm.messages.enumerated()), id: \.element.id) { idx, msg in
                         MessageRow(
                             message: msg,
-                            onRegenerate: canRegenerate(at: idx) ? { vm.regenerateLast() } : nil
+                            onRegenerate: canRegenerate(at: idx) ? { vm.regenerateLast() } : nil,
+                            onEdit: canEdit(at: idx) ? { vm.editLastUserMessage() } : nil
                         )
                         .id(msg.id)
                     }
@@ -81,6 +82,17 @@ extension ChatView {
             && vm.messages[idx - 1].role == .user
     }
 
+    /// True when the message at `idx` is the user turn immediately preceding
+    /// the last assistant turn, and the VM is idle — the conditions under
+    /// which edit-and-resend is well-defined.
+    func canEdit(at idx: Int) -> Bool {
+        guard !vm.isGenerating, vm.modelLoaded else { return false }
+        let last = vm.messages.count - 1
+        guard idx == last - 1, idx >= 0, last > 0 else { return false }
+        return vm.messages[idx].role == .user
+            && vm.messages[last].role == .assistant
+    }
+
     @ViewBuilder
     var transcriptionBanner: some View {
         if let status = vm.transcriptionStatus {
@@ -115,6 +127,10 @@ struct MessageRow: View {
     /// When non-nil, hover reveals a regenerate button that invokes this.
     /// Wired only for the latest assistant turn when the VM is idle.
     var onRegenerate: (() -> Void)? = nil
+    /// When non-nil, hover reveals an edit button that invokes this. Wired
+    /// only for the last user turn (preceding the latest assistant) when the
+    /// VM is idle.
+    var onEdit: (() -> Void)? = nil
     @State private var isHovered = false
     @State private var justCopied = false
 
@@ -131,6 +147,17 @@ struct MessageRow: View {
         .overlay(alignment: .topTrailing) {
             if isHovered, !message.text.isEmpty {
                 HStack(spacing: 4) {
+                    if let onEdit {
+                        Button(action: onEdit) {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(SwiftUI.Color.secondary)
+                                .padding(4)
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 4))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Edit and resend")
+                    }
                     if let onRegenerate {
                         Button(action: onRegenerate) {
                             Image(systemName: "arrow.clockwise")
