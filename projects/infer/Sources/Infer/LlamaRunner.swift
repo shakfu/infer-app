@@ -1,5 +1,6 @@
 import Foundation
 import llama
+import InferCore
 
 enum LlamaError: Error {
     case backendNotReady
@@ -238,14 +239,10 @@ actor LlamaRunner {
             // Delta is the portion of the formatted prompt the model has not
             // yet seen. First turn: whole render. Later turns: substring after
             // the previously-committed formatted length.
-            let promptDelta: String
-            if prevFormattedLen == 0 {
-                promptDelta = fullWithAss
-            } else {
-                let utf8 = Array(fullWithAss.utf8)
-                let start = min(prevFormattedLen, utf8.count)
-                promptDelta = String(decoding: utf8[start...], as: UTF8.self)
-            }
+            let promptDelta = ChatPromptDelta.delta(
+                fullRendered: fullWithAss,
+                previousByteLength: prevFormattedLen
+            )
 
             cancelFlag.reset()
             isGenerating = true
@@ -285,7 +282,7 @@ actor LlamaRunner {
         if !assistantText.isEmpty {
             messages.append((role: "assistant", content: assistantText))
             if let rendered = try? renderTemplate(addAssistant: false) {
-                prevFormattedLen = rendered.utf8.count
+                prevFormattedLen = ChatPromptDelta.byteLength(of: rendered)
             }
         } else if error != nil {
             // Roll back the user message if we failed without producing anything.

@@ -17,7 +17,7 @@ INFER_XCODE_FLAGS := -workspace $(INFER_DIR) -scheme Infer \
 INFER_PRODUCT_DIR := $(INFER_BUILD_DIR)/Build/Products/$(INFER_CONFIG)
 INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 
-.PHONY: all build clean
+.PHONY: all build clean test
 .PHONY: build-infer bundle-infer run-infer fetch-llama fetch-whisper generate-icon
 
 all: build
@@ -26,6 +26,12 @@ build: build-infer
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+# Runs the pure-Swift InferCore test suite under swift-test. Does not require
+# the Metal Toolchain or the fetched llama/whisper xcframeworks — the Infer
+# executable target is not built here, only InferCore + its tests.
+test:
+	cd $(INFER_DIR) && swift test
 
 # --- Infer app (SwiftPM + llama.framework + MLX) ---
 

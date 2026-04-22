@@ -14,6 +14,18 @@ let package = Package(
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
     ],
     targets: [
+        // Pure-Swift library for logic that does not depend on binary
+        // frameworks (llama, whisper, MLX). Exists so it can be unit-tested
+        // under `swift test` without the Metal Toolchain or fetched xcframeworks.
+        .target(
+            name: "InferCore",
+            path: "Sources/InferCore"
+        ),
+        .testTarget(
+            name: "InferCoreTests",
+            dependencies: ["InferCore"],
+            path: "Tests/InferCoreTests"
+        ),
         .binaryTarget(
             name: "llama",
             path: "../../thirdparty/llama.xcframework"
@@ -35,6 +47,7 @@ let package = Package(
         .executableTarget(
             name: "Infer",
             dependencies: [
+                "InferCore",
                 "llama",
                 "CWhisperBridge",
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Unified model picker.** A single dropdown in the Model sidebar lists every downloaded model across both backends, tagged `[GGUF]` or `[MLX]`. Sources are unioned: (1) vault-tracked entries ordered by last-used, (2) a scan of `$HF_HOME/hub/models--*/snapshots/` for MLX weights, (3) a scan of the configured GGUF folder for `*.gguf` files. Selecting an entry switches the backend segment and fills the text field; Load performs the actual load so the choice is always explicit.
+
+- **Unified model input.** One text field, interpretation driven by the backend segment. MLX: HF repo id (empty = registry default). Llama: absolute `.gguf` path, bare filename resolved against the configured GGUF folder, or `http(s)://` URL — URLs stream-download via `URLSession` into the GGUF folder (progress bar + Cancel), then load. `Content-Disposition` filename is honored; collisions get a `-N` suffix.
+
+- **GGUF folder setting.** Configurable via the Model sidebar ("Change…" / "Reset"). Default: `~/Library/Application Support/Infer/Models/` (auto-created). Persists in `UserDefaults` under `infer.ggufDirectory`.
+
+- **Model registry in the vault.** New `models` table (migration `v2_models`) tracks `(backend, model_id, source_url, last_used_at)`. Every successful load upserts a row; autoload on launch iterates the table in last-used order and picks the first entry whose artifact still exists on disk (stats path for llama, checks HF snapshot dir for MLX).
+
+### Changed
+
+- **Model sidebar redesign.** Replaces the previous per-backend "recent models" dropdown + separate HF-id text field + Browse-or-Load button with a unified dropdown, always-visible text field, and a dedicated Load button (Browse… appears alongside for llama). Removed `infer.recentLlamaPaths`, `infer.recentMLXIds`, `infer.lastLlamaPath`, `infer.lastMLXId` UserDefaults keys — the vault's `models` table supersedes them.
+
+### Fixed
+
+- **`Clear vault…` crash.** `VaultStore.clearAll()` was issuing `VACUUM` inside a GRDB write transaction, which SQLite rejects. Split into a transactional `DELETE` followed by `writeWithoutTransaction { VACUUM }`.
+
 ## [0.1.1]
 
 ### Added

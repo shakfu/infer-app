@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import MarkdownUI
 import Splash
+import InferCore
 
 struct ChatMessage: Identifiable, Equatable {
     enum Role: String { case user, assistant, system }
@@ -26,20 +27,6 @@ enum Backend: String, CaseIterable, Identifiable {
     }
 }
 
-private enum PersistKey {
-    static let backend = "infer.lastBackend"
-    static let systemPrompt = "infer.systemPrompt"
-    static let temperature = "infer.temperature"
-    static let topP = "infer.topP"
-    static let maxTokens = "infer.maxTokens"
-    static let sidebarOpen = "infer.sidebarOpen"
-    static let appearance = "infer.appearance"
-    static let ttsEnabled = "infer.ttsEnabled"
-    static let ttsVoiceId = "infer.ttsVoiceId"
-    static let voiceSendPhrase = "infer.voiceSendPhrase"
-    static let ggufDirectory = "infer.ggufDirectory"
-}
-
 enum AppearanceMode: String, CaseIterable, Identifiable {
     case light, dark, system
     var id: String { rawValue }
@@ -56,38 +43,6 @@ enum AppearanceMode: String, CaseIterable, Identifiable {
         case .dark: return .dark
         case .system: return nil
         }
-    }
-}
-
-struct InferSettings {
-    var systemPrompt: String
-    var temperature: Double
-    var topP: Double
-    var maxTokens: Int
-
-    static let defaults = InferSettings(
-        systemPrompt: "",
-        temperature: 0.8,
-        topP: 0.95,
-        maxTokens: 512
-    )
-
-    static func load() -> InferSettings {
-        let d = UserDefaults.standard
-        return InferSettings(
-            systemPrompt: d.string(forKey: PersistKey.systemPrompt) ?? "",
-            temperature: d.object(forKey: PersistKey.temperature) as? Double ?? 0.8,
-            topP: d.object(forKey: PersistKey.topP) as? Double ?? 0.95,
-            maxTokens: d.object(forKey: PersistKey.maxTokens) as? Int ?? 512
-        )
-    }
-
-    func save() {
-        let d = UserDefaults.standard
-        d.set(systemPrompt, forKey: PersistKey.systemPrompt)
-        d.set(temperature, forKey: PersistKey.temperature)
-        d.set(topP, forKey: PersistKey.topP)
-        d.set(maxTokens, forKey: PersistKey.maxTokens)
     }
 }
 
