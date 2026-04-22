@@ -6,6 +6,8 @@ LLAMA_TAG := b8848
 WHISPER_XCFRAMEWORK := thirdparty/whisper.xcframework
 WHISPER_FRAMEWORK := $(WHISPER_XCFRAMEWORK)/macos-arm64_x86_64/whisper.framework
 WHISPER_TAG := v1.8.4
+WEBASSETS_DIR := thirdparty/webassets
+WEBASSETS_MARKER := $(WEBASSETS_DIR)/katex/katex.min.js
 INFER_DIR := projects/infer
 INFER_BUILD_DIR := $(BUILD_DIR)/infer-xcode
 INFER_CONFIG := Debug
@@ -18,7 +20,7 @@ INFER_PRODUCT_DIR := $(INFER_BUILD_DIR)/Build/Products/$(INFER_CONFIG)
 INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 
 .PHONY: all build clean clean-infer clean-mlx-cache test
-.PHONY: build-infer bundle-infer run-infer fetch-llama fetch-whisper generate-icon
+.PHONY: build-infer bundle-infer run-infer fetch-llama fetch-whisper fetch-webassets generate-icon
 
 all: build
 
@@ -68,10 +70,15 @@ $(WHISPER_XCFRAMEWORK):
 
 fetch-whisper: $(WHISPER_XCFRAMEWORK)
 
+$(WEBASSETS_MARKER):
+	./scripts/fetch_webassets.sh
+
+fetch-webassets: $(WEBASSETS_MARKER)
+
 build-infer: $(LLAMA_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK)
 	xcodebuild $(INFER_XCODE_FLAGS) build
 
-bundle-infer: build-infer $(INFER_DIR)/Resources/AppIcon.icns
+bundle-infer: build-infer $(INFER_DIR)/Resources/AppIcon.icns $(WEBASSETS_MARKER)
 	rm -rf $(INFER_APP_BUNDLE)
 	mkdir -p $(INFER_APP_BUNDLE)/Contents/MacOS
 	mkdir -p $(INFER_APP_BUNDLE)/Contents/Resources
@@ -81,6 +88,7 @@ bundle-infer: build-infer $(INFER_DIR)/Resources/AppIcon.icns
 	cp $(INFER_DIR)/Resources/AppIcon.icns $(INFER_APP_BUNDLE)/Contents/Resources/AppIcon.icns
 	cp -R $(LLAMA_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/llama.framework
 	cp -R $(WHISPER_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/whisper.framework
+	cp -R $(WEBASSETS_DIR) $(INFER_APP_BUNDLE)/Contents/Resources/WebAssets
 	@for bundle in $(INFER_PRODUCT_DIR)/*.bundle; do \
 		[ -e "$$bundle" ] || continue; \
 		cp -R "$$bundle" $(INFER_APP_BUNDLE)/Contents/Resources/; \

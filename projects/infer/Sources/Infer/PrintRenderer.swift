@@ -43,9 +43,13 @@ enum PrintRenderer {
         }
     }
 
-    /// Write a rendered HTML copy of the transcript to `url`. Fully self-
-    /// contained (external CSS/JS references to highlight.js's CDN); opens in
-    /// any browser and round-trips through Safari's reader mode cleanly.
+    /// Write a rendered HTML copy of the transcript to `url`. References
+    /// are relative to a `WebAssets/` directory (bundled KaTeX +
+    /// highlight.js) — so opened standalone, code blocks fall back to plain
+    /// `<pre>` styling and math stays as raw `$…$` delimiters. For a fully
+    /// self-contained artifact with rendered math/highlighting, use Export
+    /// as PDF instead; that pipeline snapshots the WebView after KaTeX and
+    /// hljs run against the bundled assets.
     static func exportHTML(_ messages: [ChatMessage], to url: URL) throws {
         let html = transcriptHTML(messages)
         try html.write(to: url, atomically: true, encoding: .utf8)
@@ -136,6 +140,14 @@ enum PrintRenderer {
 
     // MARK: - HTML generation
 
+    /// Heuristic: does the rendered body contain LaTeX math delimiters KaTeX
+    /// should render? Inline `$...$` is intentionally excluded to avoid
+    /// false positives on prose like "$5 and $10" — users can switch to
+    /// `\(...\)` for inline math.
+    private static func containsMath(_ body: String) -> Bool {
+        body.contains("$$") || body.contains("\\(") || body.contains("\\[")
+    }
+
     /// Full wrapped HTML for the transcript. Exposed so export-as-HTML and
     /// the print pipeline share one source of truth for styling.
     static func transcriptHTML(_ messages: [ChatMessage]) -> String {
@@ -148,14 +160,19 @@ enum PrintRenderer {
     }
 
     private static func wrap(body: String) -> String {
-        """
+        let wantMath = containsMath(body)
+        let mathHead = wantMath
+            ? #"<link rel="stylesheet" href="WebAssets/katex/katex.min.css">"#
+            : ""
+        return """
         <!doctype html>
         <html>
         <head>
           <meta charset="utf-8">
           <title>Infer transcript</title>
-          <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
-          <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+          <link rel="stylesheet" href="WebAssets/highlight/github.min.css">
+          <script src="WebAssets/highlight/highlight.min.js"></script>
+          \(mathHead)
           <style>
             body { font: 13px -apple-system, system-ui, sans-serif; color: #111; margin: 0; }
             h1 { font-size: 20px; border-bottom: 1px solid #ccc; padding-bottom: 4px; margin: 24px 0 12px; }
@@ -183,18 +200,46 @@ enum PrintRenderer {
         <body>
         \(body)
         <script>
-          // Runs synchronously once the external hljs script has loaded (it's
-          // a parser-blocking <script src>), before WKWebView fires
-          // didFinish. If the CDN is unreachable the blocks degrade to the
-          // plain <pre> styling above.
+          // Both hljs and KaTeX are loaded from the bundled WebAssets/ dir
+          // via parser-blocking <script src> tags above; by the time this
+          // inline script runs they're available. WKWebView's didFinish
+          // waits for this synchronous path, so createPDF snapshots a
+          // fully-rendered page.
           if (typeof hljs !== 'undefined') {
             try { hljs.highlightAll(); } catch (e) { console.warn('hljs failed:', e); }
           }
         </script>
+        \(wantMath ? mathScripts : "")
         </body>
         </html>
         """
     }
+
+    /// KaTeX auto-render scripts. Emitted only when the transcript contains
+    /// math delimiters. Loaded parser-blocking (no `defer`) and placed at
+    /// end-of-body so the call to `renderMathInElement` fires synchronously
+    /// before WKWebView's `didFinish`, keeping the PDF snapshot flow
+    /// straightforward. Code blocks (`<pre>`, `<code>`) are skipped by
+    /// KaTeX's default `ignoredTags` so fenced code with `$` characters
+    /// isn't mis-rendered.
+    private static let mathScripts = #"""
+        <script src="WebAssets/katex/katex.min.js"></script>
+        <script src="WebAssets/katex/contrib/auto-render.min.js"></script>
+        <script>
+          if (typeof renderMathInElement !== 'undefined') {
+            try {
+              renderMathInElement(document.body, {
+                delimiters: [
+                  {left: '$$', right: '$$', display: true},
+                  {left: '\\[', right: '\\]', display: true},
+                  {left: '\\(', right: '\\)', display: false}
+                ],
+                throwOnError: false
+              });
+            } catch (e) { console.warn('KaTeX failed:', e); }
+          }
+        </script>
+        """#
 
     // MARK: - Shared WKWebView → PDF pipeline
 
@@ -231,7 +276,13 @@ enum PrintRenderer {
         let holder = Holder(webView: webView, host: host, completion: completion)
         pending[ObjectIdentifier(holder)] = holder
         webView.navigationDelegate = holder
-        webView.loadHTMLString(html, baseURL: nil)
+        // `baseURL` is the app's Resources/ dir so the HTML's relative
+        // `WebAssets/...` references resolve to the bundled KaTeX /
+        // highlight.js files. `loadFileURL` would be needed for true
+        // `file://` reads, but `loadHTMLString` with a file baseURL works
+        // for <link>/<script src> in WKWebView.
+        let base = Bundle.main.resourceURL
+        webView.loadHTMLString(html, baseURL: base)
     }
 
     // MARK: - Holder
