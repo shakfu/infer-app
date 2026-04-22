@@ -14,12 +14,16 @@ enum MLXRunnerError: Error {
 
 actor MLXRunner {
     private var container: ModelContainer?
-    private var session: ChatSession?
     private var modelId: String?
     private var isGenerating = false
 
     private var systemPrompt: String?
     private var genParams = GenerateParameters()
+
+    /// Completed conversation turns. Does NOT include the in-flight user turn
+    /// being sent — that is added only after the assistant reply streams to
+    /// completion, so a cancelled/failed send doesn't corrupt the record.
+    private var history: [Chat.Message] = []
 
     private var activeTask: Task<Void, Never>?
 
@@ -38,9 +42,9 @@ actor MLXRunner {
         topP: Float = 1.0,
         progress: (@Sendable (Progress) -> Void)? = nil
     ) async throws {
-        session = nil
         container = nil
         modelId = nil
+        history = []
 
         let configuration: ModelConfiguration
         if let hfId {
@@ -65,26 +69,47 @@ actor MLXRunner {
         try Task.checkCancellation()
 
         self.container = loaded
-        self.session = buildSession(container: loaded)
         self.modelId = configuration.name
     }
 
-    private func buildSession(container: ModelContainer) -> ChatSession {
-        ChatSession(
+    /// Build a session pre-filled with the current conversation history.
+    /// ChatSession's KV cache is per-instance; rebuilds (for per-turn
+    /// `maxTokens` overrides or settings changes) pass `history:` so prior
+    /// context survives.
+    private func buildSession(
+        container: ModelContainer,
+        maxTokens: Int? = nil
+    ) -> ChatSession {
+        let params: GenerateParameters
+        if let maxTokens {
+            params = GenerateParameters(
+                maxTokens: maxTokens,
+                temperature: genParams.temperature,
+                topP: genParams.topP
+            )
+        } else {
+            params = genParams
+        }
+        return ChatSession(
             container,
             instructions: systemPrompt,
-            generateParameters: genParams
+            history: history,
+            generateParameters: params
         )
     }
 
-    /// Replace the current sampling / system-prompt settings. Forces a session
-    /// rebuild (conversation history is lost).
+    /// Replace the current sampling / system-prompt settings. The next send
+    /// rebuilds the session with these params; history is preserved.
     func updateSettings(systemPrompt: String?, temperature: Float, topP: Float) {
         self.systemPrompt = systemPrompt?.isEmpty == true ? nil : systemPrompt
         self.genParams = GenerateParameters(temperature: temperature, topP: topP)
-        if let container {
-            self.session = buildSession(container: container)
-        }
+    }
+
+    /// Replace the runner's conversation history wholesale. Used by
+    /// transcript-load and regenerate flows. Caller supplies the messages
+    /// that should be in the KV cache as of the next send.
+    func setHistory(_ messages: [Chat.Message]) {
+        self.history = messages
     }
 
     func sendUserMessage(
@@ -97,34 +122,22 @@ actor MLXRunner {
                 continuation.finish(throwing: MLXRunnerError.busy)
                 return
             }
-            guard let session else {
+            guard let container else {
                 continuation.finish(throwing: MLXRunnerError.notLoaded)
                 return
             }
 
-            // ChatSession's generation params are captured at init. Rebuild
-            // with the current maxTokens so per-send limits apply.
-            if let container {
-                let params = GenerateParameters(
-                    maxTokens: maxTokens,
-                    temperature: genParams.temperature,
-                    topP: genParams.topP
-                )
-                self.genParams = params
-                self.session = ChatSession(
-                    container,
-                    instructions: systemPrompt,
-                    generateParameters: params
-                )
-            }
-            let activeSession = self.session ?? session
             let images: [UserInput.Image] = imageURLs.map { .url($0) }
+            // Rebuild per send so per-turn `maxTokens` applies; `history:`
+            // keeps prior turns in the KV cache.
+            let session = buildSession(container: container, maxTokens: maxTokens)
 
             isGenerating = true
             let task = Task {
                 defer { Task { self.finishGeneration() } }
+                var reply = ""
                 do {
-                    let stream = activeSession.streamResponse(
+                    let stream = session.streamResponse(
                         to: text,
                         images: images,
                         videos: []
@@ -134,8 +147,17 @@ actor MLXRunner {
                             continuation.finish(throwing: MLXRunnerError.cancelled)
                             return
                         }
+                        reply += piece
                         continuation.yield(piece)
                     }
+                    // Only record on clean completion; a cancelled/failed
+                    // generation leaves history untouched so the next send
+                    // isn't anchored to a partial reply.
+                    self.appendCompletedTurn(
+                        userText: text,
+                        userImages: images,
+                        assistant: reply
+                    )
                     continuation.finish()
                 } catch is CancellationError {
                     continuation.finish(throwing: MLXRunnerError.cancelled)
@@ -145,6 +167,15 @@ actor MLXRunner {
             }
             activeTask = task
         }
+    }
+
+    private func appendCompletedTurn(
+        userText: String,
+        userImages: [UserInput.Image],
+        assistant: String
+    ) {
+        history.append(.user(userText, images: userImages))
+        history.append(.assistant(assistant))
     }
 
     private func finishGeneration() {
@@ -157,17 +188,15 @@ actor MLXRunner {
     }
 
     func resetConversation() async {
-        if let container {
-            session = buildSession(container: container)
-        }
+        history = []
     }
 
     func shutdown() {
         activeTask?.cancel()
         activeTask = nil
-        session = nil
         container = nil
         modelId = nil
+        history = []
         isGenerating = false
     }
 }

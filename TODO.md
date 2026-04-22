@@ -10,8 +10,6 @@ Roughly prioritized by user-facing impact / effort ratio. Items within a tier ar
 
 - [ ] **Timestamps per message.** Stash `Date` on each `ChatMessage`, show as `HH:mm` in the gutter. Helps when triaging long sessions.
 
-- [ ] **Tokens / sec readout.** Both runners know token count and wall clock; surface tok/s + total tokens in the footer while generating.
-
 - [ ] **Regenerate last response.** Pop the last assistant message, rewind the backend's conversation state, re-send the previous user turn. On MLX: reset `ChatSession` and replay history up to that turn. On llama: rewind `prevFormattedLen` + pop the last two `messages` entries.
 
 - [ ] **Multi-language syntax highlighting in chat.** Splash is Swift-only. Swap for Highlightr (highlight.js via JavaScriptCore) behind the existing `CodeSyntaxHighlighter` interface; the call site in `MessageRow` doesn't change.
@@ -61,8 +59,6 @@ Roughly prioritized by user-facing impact / effort ratio. Items within a tier ar
 - [ ] **Log file export.** Debug panel with the last N log lines from both runners (model load status, generation stats, errors), with a "Copy" and a "Save to file…" action. Makes bug reports and model-behavior investigations much easier.
 
 ## P3 — nice to have
-
-- [ ] **VLM support.** `mlx-swift-lm` exposes `MLXVLM`; add a drag-target for images and route through `UserInput.Image`.
 
 - [ ] **Curated MLX model picker.** Instead of a raw HF id text field, a dropdown populated from `LLMRegistry` entries + a "custom…" option.
 

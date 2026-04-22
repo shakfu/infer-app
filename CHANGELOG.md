@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **MLX multi-turn context loss.** `MLXRunner.sendUserMessage` rebuilt the `ChatSession` on every send to apply per-turn `maxTokens`, but the new session initialized with an empty KV cache — so prior-turn context was silently discarded on every message. `MLXRunner` now tracks a `history: [Chat.Message]` array and rebuilds via `ChatSession(..., history:)`, preserving context across rebuilds. Completed turns are appended only on clean stream completion so a cancelled/errored send doesn't anchor the next turn to a partial reply. `updateSettings` no longer eagerly rebuilds (next send picks up the new params with history intact); `resetConversation` / `shutdown` clear history. New `setHistory(_:)` entry point unblocks upcoming regenerate / transcript-restore flows.
+
 ## [0.1.2]
 
 ### Changed
