@@ -259,7 +259,8 @@ extension ChatViewModel {
                     systemPrompt: s.systemPrompt,
                     temperature: Float(s.temperature),
                     topP: Float(s.topP),
-                    topK: 40
+                    topK: 40,
+                    seed: s.seed
                 )
                 try Task.checkCancellation()
                 await MainActor.run {
@@ -329,6 +330,7 @@ extension ChatViewModel {
                     systemPrompt: s.systemPrompt,
                     temperature: Float(s.temperature),
                     topP: Float(s.topP),
+                    seed: s.seed,
                     progress: progressHandler
                 )
                 try Task.checkCancellation()

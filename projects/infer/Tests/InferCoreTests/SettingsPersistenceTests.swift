@@ -27,10 +27,32 @@ final class SettingsPersistenceTests: XCTestCase {
             systemPrompt: "you are a helpful assistant",
             temperature: 0.42,
             topP: 0.77,
-            maxTokens: 2048
+            maxTokens: 2048,
+            seed: 42
         )
         original.save(to: defaults)
         XCTAssertEqual(InferSettings.load(from: defaults), original)
+    }
+
+    func testSeedRoundTripsLargeValue() {
+        // UInt64 values above Int64.max require string-based persistence;
+        // verify the whole range survives a save/load cycle.
+        let original = InferSettings.defaults
+        var withSeed = original
+        withSeed.seed = .max
+        withSeed.save(to: defaults)
+        XCTAssertEqual(InferSettings.load(from: defaults).seed, .max)
+    }
+
+    func testSeedNilIsPersistedAsAbsence() {
+        // Writing a seed then clearing it should leave no residue: load()
+        // returns nil, not the prior value.
+        var s = InferSettings.defaults
+        s.seed = 12345
+        s.save(to: defaults)
+        s.seed = nil
+        s.save(to: defaults)
+        XCTAssertNil(InferSettings.load(from: defaults).seed)
     }
 
     func testPartialPersistFallsBackToDefaultsPerField() {

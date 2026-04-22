@@ -89,6 +89,8 @@ extension SidebarView {
                 )
             }
 
+            seedRow
+
             DisclosureGroup(isExpanded: $showSystemPrompt) {
                 TextEditor(text: $draft.systemPrompt)
                     .font(.body)
@@ -123,6 +125,50 @@ extension SidebarView {
             && s.temperature == draft.temperature
             && s.topP == draft.topP
             && s.maxTokens == draft.maxTokens
+            && s.seed == draft.seed
+    }
+
+    /// Seed editor. Empty field = random (non-deterministic). A numeric
+    /// value is parsed as UInt64 and pinned as the sampling seed until
+    /// cleared. Invalid input (non-digits) leaves `draft.seed` unchanged.
+    var seedRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Seed").font(.caption)
+                Spacer()
+                if draft.seed == nil {
+                    Text("random").font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+            HStack(spacing: 6) {
+                TextField("random", text: Binding(
+                    get: { draft.seed.map(String.init) ?? "" },
+                    set: { s in
+                        let trimmed = s.trimmingCharacters(in: .whitespaces)
+                        if trimmed.isEmpty {
+                            draft.seed = nil
+                        } else if let v = UInt64(trimmed) {
+                            draft.seed = v
+                        }
+                    }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                .font(.caption.monospacedDigit())
+
+                Button("Random") { draft.seed = UInt64.random(in: 0...UInt64.max) }
+                    .controlSize(.small)
+                    .help("Generate a new fixed seed")
+                Button("Clear") { draft.seed = nil }
+                    .controlSize(.small)
+                    .disabled(draft.seed == nil)
+                    .help("Use a fresh random seed for each generation")
+            }
+            Text("Set a seed to get identical output for the same prompt + params.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     // MARK: Model

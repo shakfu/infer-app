@@ -16,8 +16,6 @@ Roughly prioritized by user-facing impact / effort ratio. Items within a tier ar
 
 - [ ] **Voice-loop mode.** Full hands-free cycle: after TTS finishes reading an assistant response, auto-arm the mic; the user dictates a reply, the existing voice-send trigger phrase submits it, and the TTS-on-completion hook reads the next response aloud. Toggle in the Speech sidebar section ("Continuous voice"). Builds on three already-shipped pieces (SFSpeechRecognizer dictation, AVSpeechSynthesizer readout, trigger-phrase send) — this one item is what makes Infer a legitimately novel local voice-chat app.
 
-- [ ] **Seed + reproducibility.** Add a `seed: UInt64?` field to `InferSettings`. llama supports it via `llama_sampler_init_dist(seed)`; MLX exposes it through `GenerateParameters`. Optional (nil = random); when set, identical prompt + params + seed produces identical output. Essential for debugging model behavior and for comparing sampler settings.
-
 - [ ] **System prompt presets.** Named library of system prompts (Coding Assistant, Research, Concise, Creative, etc.). Small JSON file in `Application Support/` + a picker in the sidebar's System Prompt disclosure. Save-current-as and delete actions. Pairs naturally with the existing System Prompt field.
 
 - [ ] **Cmd+F transcript search.** In-transcript find bar. Scroll to next/previous match with Cmd+G / Shift+Cmd+G, highlight matches in `MessageRow`. `AttributedString` with background-color runs on matched ranges works inside `MarkdownUI`.

@@ -13,13 +13,15 @@ extension ChatViewModel {
         let temp = Float(new.temperature)
         let top = Float(new.topP)
         let sp = new.systemPrompt
+        let seed = new.seed
 
         Task {
-            await self.llama.updateSampling(temperature: temp, topP: top, topK: 40)
+            await self.llama.updateSampling(temperature: temp, topP: top, topK: 40, seed: seed)
             await self.mlx.updateSettings(
                 systemPrompt: sp,
                 temperature: temp,
-                topP: top
+                topP: top,
+                seed: seed
             )
             if prevSystemPrompt != sp {
                 await self.llama.setSystemPrompt(sp.isEmpty ? nil : sp)

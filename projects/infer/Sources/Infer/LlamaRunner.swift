@@ -45,6 +45,10 @@ actor LlamaRunner {
     private var samplerTemperature: Float = 0.8
     private var samplerTopP: Float = 0.95
     private var samplerTopK: Int32 = 40
+    /// Optional fixed seed. `nil` uses `LLAMA_DEFAULT_SEED` (random). Stored
+    /// as UInt32 since that's what `llama_sampler_init_dist` takes — the
+    /// UInt64 upstream is truncated.
+    private var samplerSeed: UInt32 = UInt32(LLAMA_DEFAULT_SEED)
     private var messages: [(role: String, content: String)] = []
     /// Length (in bytes) of the last template render with `add_ass=false`.
     /// Used to compute the prompt delta for each new turn.
@@ -113,12 +117,14 @@ actor LlamaRunner {
         systemPrompt: String? = nil,
         temperature: Float = 0.8,
         topP: Float = 0.95,
-        topK: Int32 = 40
+        topK: Int32 = 40,
+        seed: UInt64? = nil
     ) throws {
         self.systemPrompt = systemPrompt?.isEmpty == true ? nil : systemPrompt
         self.samplerTemperature = temperature
         self.samplerTopP = topP
         self.samplerTopK = topK
+        self.samplerSeed = seed.map { UInt32(truncatingIfNeeded: $0) } ?? UInt32(LLAMA_DEFAULT_SEED)
         Self.ensureBackend()
 
         // Tear down any prior state.
@@ -158,7 +164,7 @@ actor LlamaRunner {
         llama_sampler_chain_add(chain, llama_sampler_init_top_k(samplerTopK))
         llama_sampler_chain_add(chain, llama_sampler_init_top_p(samplerTopP, 1))
         llama_sampler_chain_add(chain, llama_sampler_init_temp(samplerTemperature))
-        llama_sampler_chain_add(chain, llama_sampler_init_dist(LLAMA_DEFAULT_SEED))
+        llama_sampler_chain_add(chain, llama_sampler_init_dist(samplerSeed))
         self.sampler = chain
 
         // Grab the model's chat template (may be NULL for base models).
@@ -176,10 +182,11 @@ actor LlamaRunner {
     }
 
     /// Rebuild the sampler chain with new parameters. Preserves conversation state.
-    func updateSampling(temperature: Float, topP: Float, topK: Int32) {
+    func updateSampling(temperature: Float, topP: Float, topK: Int32, seed: UInt64? = nil) {
         self.samplerTemperature = temperature
         self.samplerTopP = topP
         self.samplerTopK = topK
+        self.samplerSeed = seed.map { UInt32(truncatingIfNeeded: $0) } ?? UInt32(LLAMA_DEFAULT_SEED)
         guard model != nil, ctx != nil else { return }
         if let old = sampler { llama_sampler_free(old); self.sampler = nil }
         let sparams = llama_sampler_chain_default_params()
@@ -187,7 +194,7 @@ actor LlamaRunner {
         llama_sampler_chain_add(chain, llama_sampler_init_top_k(topK))
         llama_sampler_chain_add(chain, llama_sampler_init_top_p(topP, 1))
         llama_sampler_chain_add(chain, llama_sampler_init_temp(temperature))
-        llama_sampler_chain_add(chain, llama_sampler_init_dist(LLAMA_DEFAULT_SEED))
+        llama_sampler_chain_add(chain, llama_sampler_init_dist(samplerSeed))
         self.sampler = chain
     }
 

@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift-lm", from: "3.0.0"),
+        .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.25.0"),
         .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.8.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.2.0"),
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
@@ -54,6 +55,7 @@ let package = Package(
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
+                .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Tokenizers", package: "swift-transformers"),
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),

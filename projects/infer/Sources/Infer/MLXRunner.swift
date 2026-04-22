@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import MLXLLM
 import MLXVLM
 import MLXLMCommon
@@ -19,6 +20,9 @@ actor MLXRunner {
 
     private var systemPrompt: String?
     private var genParams = GenerateParameters()
+    /// Optional fixed seed. Applied via `MLXRandom.seed` immediately before
+    /// each generation. nil = non-deterministic (MLX's default RNG state).
+    private var seed: UInt64?
 
     /// Completed conversation turns. Does NOT include the in-flight user turn
     /// being sent — that is added only after the assistant reply streams to
@@ -40,6 +44,7 @@ actor MLXRunner {
         systemPrompt: String? = nil,
         temperature: Float = 0.6,
         topP: Float = 1.0,
+        seed: UInt64? = nil,
         progress: (@Sendable (Progress) -> Void)? = nil
     ) async throws {
         container = nil
@@ -55,6 +60,7 @@ actor MLXRunner {
 
         self.systemPrompt = systemPrompt?.isEmpty == true ? nil : systemPrompt
         self.genParams = GenerateParameters(temperature: temperature, topP: topP)
+        self.seed = seed
 
         let loaded: ModelContainer
         if let progress {
@@ -100,9 +106,15 @@ actor MLXRunner {
 
     /// Replace the current sampling / system-prompt settings. The next send
     /// rebuilds the session with these params; history is preserved.
-    func updateSettings(systemPrompt: String?, temperature: Float, topP: Float) {
+    func updateSettings(
+        systemPrompt: String?,
+        temperature: Float,
+        topP: Float,
+        seed: UInt64? = nil
+    ) {
         self.systemPrompt = systemPrompt?.isEmpty == true ? nil : systemPrompt
         self.genParams = GenerateParameters(temperature: temperature, topP: topP)
+        self.seed = seed
     }
 
     /// Replace the runner's conversation history wholesale. Used by
@@ -142,6 +154,14 @@ actor MLXRunner {
             // Rebuild per send so per-turn `maxTokens` applies; `history:`
             // keeps prior turns in the KV cache.
             let session = buildSession(container: container, maxTokens: maxTokens)
+
+            // Apply a fixed seed before each generation so runs with the same
+            // seed + prompt + params are reproducible. MLX.seed sets a global
+            // RNG; fine here because we serialize generations via the
+            // `isGenerating` guard.
+            if let seed {
+                MLX.seed(seed)
+            }
 
             isGenerating = true
             let task = Task {
