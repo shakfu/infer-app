@@ -11,6 +11,13 @@ struct VaultConversationSummary: Identifiable, Sendable, Equatable {
     let messageCount: Int
 }
 
+struct VaultModelEntry: Sendable, Equatable, Hashable {
+    let backend: String
+    let modelId: String
+    let sourceURL: String?
+    let lastUsedAt: Date
+}
+
 struct VaultSearchHit: Identifiable, Sendable, Equatable {
     let id: Int64              // messages.id
     let conversationId: Int64
@@ -117,6 +124,21 @@ actor VaultStore {
                 END
             """)
         }
+        m.registerMigration("v2_models") { db in
+            try db.execute(sql: """
+                CREATE TABLE models (
+                    backend TEXT NOT NULL,
+                    model_id TEXT NOT NULL,
+                    source_url TEXT,
+                    last_used_at INTEGER NOT NULL,
+                    PRIMARY KEY (backend, model_id)
+                )
+            """)
+            try db.execute(sql: """
+                CREATE INDEX idx_models_last_used
+                    ON models(last_used_at DESC)
+            """)
+        }
         return m
     }()
 
@@ -195,10 +217,52 @@ actor VaultStore {
 
     func clearAll() async throws {
         let db = try pool()
+        // Cascade handles messages; messages_fts triggers fire on delete.
         try await db.write { db in
-            // Cascade handles messages; messages_fts triggers fire on delete.
             try db.execute(sql: "DELETE FROM conversations")
+        }
+        // VACUUM cannot run inside a transaction. GRDB's `writeWithoutTransaction`
+        // issues the statement at the connection level.
+        try await db.writeWithoutTransaction { db in
             try db.execute(sql: "VACUUM")
+        }
+    }
+
+    // MARK: - Models
+
+    func recordModel(backend: String, modelId: String, sourceURL: String? = nil) async throws {
+        let db = try pool()
+        let now = Int64(Date().timeIntervalSince1970)
+        try await db.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO models (backend, model_id, source_url, last_used_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(backend, model_id) DO UPDATE SET
+                            last_used_at = excluded.last_used_at,
+                            source_url = COALESCE(excluded.source_url, models.source_url)
+                """,
+                arguments: [backend, modelId, sourceURL, now]
+            )
+        }
+    }
+
+    func listModels() async throws -> [VaultModelEntry] {
+        let db = try pool()
+        return try await db.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT backend, model_id, source_url, last_used_at
+                    FROM models
+                    ORDER BY last_used_at DESC
+            """)
+            return rows.map { row in
+                VaultModelEntry(
+                    backend: row["backend"],
+                    modelId: row["model_id"],
+                    sourceURL: row["source_url"],
+                    lastUsedAt: Date(timeIntervalSince1970: TimeInterval(row["last_used_at"] as Int64))
+                )
+            }
         }
     }
 

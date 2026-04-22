@@ -28,22 +28,17 @@ enum Backend: String, CaseIterable, Identifiable {
 
 private enum PersistKey {
     static let backend = "infer.lastBackend"
-    static let llamaPath = "infer.lastLlamaPath"
-    static let mlxId = "infer.lastMLXId"
     static let systemPrompt = "infer.systemPrompt"
     static let temperature = "infer.temperature"
     static let topP = "infer.topP"
     static let maxTokens = "infer.maxTokens"
-    static let recentLlamaPaths = "infer.recentLlamaPaths"
-    static let recentMLXIds = "infer.recentMLXIds"
     static let sidebarOpen = "infer.sidebarOpen"
     static let appearance = "infer.appearance"
     static let ttsEnabled = "infer.ttsEnabled"
     static let ttsVoiceId = "infer.ttsVoiceId"
     static let voiceSendPhrase = "infer.voiceSendPhrase"
+    static let ggufDirectory = "infer.ggufDirectory"
 }
-
-private let recentsLimit = 8
 
 enum AppearanceMode: String, CaseIterable, Identifiable {
     case light, dark, system
@@ -107,8 +102,23 @@ final class ChatViewModel {
     var isLoadingModel = false
     var isGenerating = false
     var errorMessage: String? = nil
-    /// User-entered HF repo id for MLX; empty => registry default.
-    var mlxModelId: String = ""
+    /// User-entered model input. For MLX this is an HF repo id (empty =>
+    /// registry default). For llama this is an absolute path, a bare filename
+    /// resolved against the configured GGUF directory, or an http(s):// URL
+    /// to download before loading.
+    var modelInput: String = ""
+    /// Canonical id of the currently-loaded model; populated on successful load.
+    /// For llama this is the absolute .gguf path; for MLX the HF id (or the
+    /// registry default's resolved name).
+    var currentModelId: String? = nil
+    /// Directory used to store .gguf files downloaded via URL and to resolve
+    /// bare filenames from the text field. Empty => ModelStore default.
+    var ggufDirectory: String = UserDefaults.standard.string(forKey: PersistKey.ggufDirectory) ?? "" {
+        didSet { UserDefaults.standard.set(ggufDirectory, forKey: PersistKey.ggufDirectory) }
+    }
+    /// Previously-loaded models from the vault, filtered to those whose local
+    /// artifact still exists. Refreshed after each successful load and on init.
+    var availableModels: [VaultModelEntry] = []
     var settings: InferSettings = InferSettings.load()
     var downloadProgress: Double? = nil
     var tokenUsage: TokenUsage? = nil
@@ -129,11 +139,9 @@ final class ChatViewModel {
         guard elapsed > 0 else { return nil }
         return (generationTokenCount, Double(generationTokenCount) / elapsed)
     }
-    var recentLlamaPaths: [String] = UserDefaults.standard.stringArray(forKey: PersistKey.recentLlamaPaths) ?? []
-    var recentMLXIds: [String] = UserDefaults.standard.stringArray(forKey: PersistKey.recentMLXIds) ?? []
-
     let llama = LlamaRunner()
     let mlx = MLXRunner()
+    private let ggufDownloader = GGUFDownloader()
     let speechRecognizer = SpeechRecognizer()
     let speechSynthesizer = SpeechSynthesizer()
     let whisperModels = WhisperModelManager()
@@ -177,61 +185,79 @@ final class ChatViewModel {
 
     // MARK: - Loading
 
+    /// Autoload the most-recently-used model whose artifact still exists on
+    /// disk. Iterates the vault's `models` table in last-used order; the first
+    /// entry that passes the availability check wins.
     func autoLoadLastModel() {
         guard !modelLoaded, !isLoadingModel else { return }
-        let d = UserDefaults.standard
-        guard let raw = d.string(forKey: PersistKey.backend),
-              let last = Backend(rawValue: raw) else { return }
-        switch last {
-        case .llama:
-            guard let path = d.string(forKey: PersistKey.llamaPath),
-                  FileManager.default.fileExists(atPath: path) else { return }
-            backend = .llama
-            loadLlama(at: path)
-        case .mlx:
-            let id = d.string(forKey: PersistKey.mlxId) ?? ""
-            backend = .mlx
-            mlxModelId = id
-            loadMLX(hfId: id)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let entries = try await self.vault.listModels()
+                for entry in entries {
+                    guard let b = Backend(rawValue: entry.backend) else { continue }
+                    switch b {
+                    case .llama where ModelStore.llamaArtifactExists(path: entry.modelId):
+                        await MainActor.run {
+                            self.backend = .llama
+                            self.modelInput = entry.modelId
+                            self.loadLlama(at: entry.modelId)
+                        }
+                        return
+                    case .mlx where ModelStore.mlxArtifactExists(hfId: entry.modelId):
+                        await MainActor.run {
+                            self.backend = .mlx
+                            self.modelInput = entry.modelId
+                            self.loadMLX(hfId: entry.modelId)
+                        }
+                        return
+                    default:
+                        continue
+                    }
+                }
+            } catch {
+                FileHandle.standardError.write(
+                    Data("vault listModels failed: \(error)\n".utf8)
+                )
+            }
         }
     }
 
+    /// Entry point from the sidebar's Load button. Interprets `modelInput`
+    /// according to the current backend.
     func loadCurrentBackend() {
+        let raw = modelInput.trimmingCharacters(in: .whitespacesAndNewlines)
         switch backend {
-        case .llama: pickLlamaModel()
-        case .mlx: loadMLX(hfId: mlxModelId.trimmingCharacters(in: .whitespaces))
+        case .mlx:
+            loadMLX(hfId: raw)
+        case .llama:
+            if raw.isEmpty {
+                errorMessage = "Enter a .gguf path, filename, or URL — or click Browse."
+                return
+            }
+            if let url = URL(string: raw), let scheme = url.scheme?.lowercased(),
+               scheme == "http" || scheme == "https" {
+                downloadAndLoadLlama(url: url)
+                return
+            }
+            let path = resolveLocalGGUFPath(raw)
+            if ModelStore.llamaArtifactExists(path: path) {
+                loadLlama(at: path)
+            } else {
+                errorMessage = "No .gguf found at \(path)"
+            }
         }
     }
 
-    /// Load a previously-used llama .gguf path from recents.
-    func loadLlamaPath(_ path: String) { loadLlama(at: path) }
-
-    /// Load a previously-used MLX HF id from recents.
-    func loadMLXId(_ id: String) {
-        mlxModelId = id
-        loadMLX(hfId: id)
+    /// Select a model from the unified dropdown. Populates the text field and
+    /// switches the backend segment but does not load — user presses Load.
+    func selectAvailableModel(_ entry: VaultModelEntry) {
+        guard let b = Backend(rawValue: entry.backend) else { return }
+        backend = b
+        modelInput = entry.modelId
     }
 
-    func browseForLlamaModel() { pickLlamaModel() }
-
-    private func rememberRecent(llamaPath path: String) {
-        var list = recentLlamaPaths.filter { $0 != path && FileManager.default.fileExists(atPath: $0) }
-        list.insert(path, at: 0)
-        if list.count > recentsLimit { list = Array(list.prefix(recentsLimit)) }
-        recentLlamaPaths = list
-        UserDefaults.standard.set(list, forKey: PersistKey.recentLlamaPaths)
-    }
-
-    private func rememberRecent(mlxId id: String) {
-        guard !id.isEmpty else { return }
-        var list = recentMLXIds.filter { $0 != id }
-        list.insert(id, at: 0)
-        if list.count > recentsLimit { list = Array(list.prefix(recentsLimit)) }
-        recentMLXIds = list
-        UserDefaults.standard.set(list, forKey: PersistKey.recentMLXIds)
-    }
-
-    private func pickLlamaModel() {
+    func browseForLlamaModel() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
@@ -241,11 +267,163 @@ final class ChatViewModel {
         }
         panel.message = "Select a .gguf model file"
         if panel.runModal() == .OK, let url = panel.url {
-            loadLlama(at: url.path)
+            modelInput = url.path
         }
     }
 
-    private func loadLlama(at path: String) {
+    func pickGGUFDirectory() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.message = "Select a folder to store .gguf downloads"
+        if panel.runModal() == .OK, let url = panel.url {
+            ggufDirectory = url.path
+        }
+    }
+
+    func resetGGUFDirectory() {
+        ggufDirectory = ""
+    }
+
+    var resolvedGGUFDirectory: URL {
+        ModelStore.resolvedGGUFDirectory(setting: ggufDirectory)
+    }
+
+    private func resolveLocalGGUFPath(_ raw: String) -> String {
+        let expanded = (raw as NSString).expandingTildeInPath
+        if (expanded as NSString).isAbsolutePath { return expanded }
+        if raw.contains("/") {
+            // Treat as a relative path from the working dir; rare but honor it.
+            return (FileManager.default.currentDirectoryPath as NSString)
+                .appendingPathComponent(expanded)
+        }
+        return resolvedGGUFDirectory.appendingPathComponent(expanded).path
+    }
+
+    /// Public-from-view entry point for the sidebar's onAppear. Refreshes
+    /// whenever the Model tab is shown.
+    func refreshAvailableModelsIfNeeded() {
+        refreshAvailableModels()
+    }
+
+    private func refreshAvailableModels() {
+        let ggufDir = resolvedGGUFDirectory
+        Task { [weak self] in
+            guard let self else { return }
+            let vaultEntries: [VaultModelEntry]
+            do {
+                vaultEntries = try await self.vault.listModels()
+            } catch {
+                FileHandle.standardError.write(
+                    Data("vault listModels failed: \(error)\n".utf8)
+                )
+                vaultEntries = []
+            }
+
+            // Vault entries ranked by recency, filtered to those still on disk.
+            var seen = Set<String>()
+            var merged: [VaultModelEntry] = []
+            for entry in vaultEntries {
+                let present: Bool
+                switch entry.backend {
+                case Backend.llama.rawValue:
+                    present = ModelStore.llamaArtifactExists(path: entry.modelId)
+                case Backend.mlx.rawValue:
+                    present = ModelStore.mlxArtifactExists(hfId: entry.modelId)
+                default:
+                    present = false
+                }
+                guard present else { continue }
+                seen.insert("\(entry.backend):\(entry.modelId)")
+                merged.append(entry)
+            }
+
+            // Union with filesystem scan for models the vault hasn't seen yet
+            // (e.g. pre-existing HF cache entries from before the models table,
+            // or .gguf files dropped into the folder manually). These sort
+            // after vault entries since they have no last-used timestamp.
+            let scannedMLX = ModelStore.scanMLXCache()
+            for id in scannedMLX where !seen.contains("mlx:\(id)") {
+                merged.append(VaultModelEntry(
+                    backend: Backend.mlx.rawValue,
+                    modelId: id,
+                    sourceURL: nil,
+                    lastUsedAt: .distantPast
+                ))
+                seen.insert("mlx:\(id)")
+            }
+            let scannedGGUF = ModelStore.scanGGUFDirectory(ggufDir)
+            for path in scannedGGUF where !seen.contains("llama:\(path)") {
+                merged.append(VaultModelEntry(
+                    backend: Backend.llama.rawValue,
+                    modelId: path,
+                    sourceURL: nil,
+                    lastUsedAt: .distantPast
+                ))
+                seen.insert("llama:\(path)")
+            }
+
+            await MainActor.run { self.availableModels = merged }
+        }
+    }
+
+    private func downloadAndLoadLlama(url: URL) {
+        guard !isLoadingModel else { return }
+        isLoadingModel = true
+        modelLoaded = false
+        downloadProgress = 0
+        modelStatus = "Downloading \(url.lastPathComponent)…"
+        errorMessage = nil
+        let dir = resolvedGGUFDirectory
+        let downloader = self.ggufDownloader
+        loadTask = Task { [weak self] in
+            do {
+                try Task.checkCancellation()
+                let destination = try await downloader.download(
+                    url: url,
+                    destinationDir: dir,
+                    progress: { frac in
+                        Task { @MainActor in
+                            guard let self else { return }
+                            self.downloadProgress = frac
+                        }
+                    }
+                )
+                try Task.checkCancellation()
+                await MainActor.run {
+                    guard let self else { return }
+                    self.isLoadingModel = false
+                    self.downloadProgress = nil
+                    self.loadTask = nil
+                    self.modelInput = destination.path
+                    // Hand off to the normal load path. Records source URL on
+                    // success so the entry is traceable back to its origin.
+                    self.loadLlama(at: destination.path, sourceURL: url.absoluteString)
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    guard let self else { return }
+                    self.modelStatus = "Download cancelled"
+                    self.isLoadingModel = false
+                    self.downloadProgress = nil
+                    self.loadTask = nil
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self else { return }
+                    self.errorMessage = "Download failed: \(error.localizedDescription)"
+                    self.modelStatus = "No model loaded"
+                    self.isLoadingModel = false
+                    self.downloadProgress = nil
+                    self.loadTask = nil
+                }
+            }
+        }
+    }
+
+    private func loadLlama(at path: String, sourceURL: String? = nil) {
         guard !isLoadingModel else { return }
         isLoadingModel = true
         modelLoaded = false
@@ -270,12 +448,16 @@ final class ChatViewModel {
                     self.modelStatus = "llama: \((path as NSString).lastPathComponent)"
                     self.isLoadingModel = false
                     self.loadTask = nil
-                    let d = UserDefaults.standard
-                    d.set(Backend.llama.rawValue, forKey: PersistKey.backend)
-                    d.set(path, forKey: PersistKey.llamaPath)
-                    self.rememberRecent(llamaPath: path)
+                    self.currentModelId = path
+                    UserDefaults.standard.set(Backend.llama.rawValue, forKey: PersistKey.backend)
                     self.refreshTokenUsage()
                 }
+                try? await self.vault.recordModel(
+                    backend: Backend.llama.rawValue,
+                    modelId: path,
+                    sourceURL: sourceURL
+                )
+                await MainActor.run { self.refreshAvailableModels() }
             } catch is CancellationError {
                 await MainActor.run {
                     self.modelStatus = "Load cancelled"
@@ -307,6 +489,7 @@ final class ChatViewModel {
         errorMessage = nil
         let runner = self.mlx
         let s = self.settings
+        let vault = self.vault
         loadTask = Task { [weak self] in
             let progressHandler: @Sendable (Progress) -> Void = { progress in
                 let frac = progress.totalUnitCount > 0
@@ -338,11 +521,16 @@ final class ChatViewModel {
                     self.isLoadingModel = false
                     self.downloadProgress = nil
                     self.loadTask = nil
-                    let d = UserDefaults.standard
-                    d.set(Backend.mlx.rawValue, forKey: PersistKey.backend)
-                    d.set(hfId, forKey: PersistKey.mlxId)
-                    self.rememberRecent(mlxId: hfId)
+                    self.currentModelId = shown
+                    UserDefaults.standard.set(Backend.mlx.rawValue, forKey: PersistKey.backend)
                     self.refreshTokenUsage()
+                }
+                try? await vault.recordModel(
+                    backend: Backend.mlx.rawValue,
+                    modelId: shown
+                )
+                await MainActor.run { [weak self] in
+                    self?.refreshAvailableModels()
                 }
             } catch is CancellationError {
                 await MainActor.run {
@@ -757,12 +945,7 @@ final class ChatViewModel {
 
     /// Stable identifier string used as the vault's `model_id` column.
     private func vaultModelId() -> String {
-        switch backend {
-        case .llama:
-            return UserDefaults.standard.string(forKey: PersistKey.llamaPath) ?? ""
-        case .mlx:
-            return mlxModelId.isEmpty ? "default" : mlxModelId
-        }
+        currentModelId ?? ""
     }
 
     func refreshVaultRecents() {
@@ -1677,13 +1860,17 @@ private struct SidebarView: View {
 
             modelPicker
 
-            if vm.backend == .mlx {
-                TextField("HF repo id (empty = default)", text: $vm.mlxModelId)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(vm.isLoadingModel || vm.isGenerating)
-            }
+            TextField(
+                vm.backend == .mlx
+                    ? "HF repo id (empty = default)"
+                    : ".gguf path, filename, or https:// URL",
+                text: $vm.modelInput
+            )
+            .textFieldStyle(.roundedBorder)
+            .disabled(vm.isLoadingModel || vm.isGenerating)
+            .onSubmit { vm.loadCurrentBackend() }
 
-            HStack {
+            HStack(spacing: 6) {
                 if vm.isLoadingModel {
                     Button(role: .cancel) { vm.cancelLoad() } label: {
                         Label("Cancel", systemImage: "xmark.circle")
@@ -1693,46 +1880,47 @@ private struct SidebarView: View {
                     Button {
                         vm.loadCurrentBackend()
                     } label: {
-                        Label(vm.backend == .llama ? "Browse…" : "Load",
-                              systemImage: "tray.and.arrow.down")
+                        Label("Load", systemImage: "tray.and.arrow.down")
                             .frame(maxWidth: .infinity)
                     }
                     .disabled(vm.isGenerating)
+                    if vm.backend == .llama {
+                        Button {
+                            vm.browseForLlamaModel()
+                        } label: {
+                            Label("Browse…", systemImage: "folder")
+                        }
+                        .disabled(vm.isGenerating)
+                    }
                 }
             }
             .buttonStyle(.bordered)
+
+            if vm.backend == .llama {
+                ggufDirectoryRow
+            }
         }
+        .onAppear { vm.refreshAvailableModelsIfNeeded() }
     }
 
     @ViewBuilder
     private var modelPicker: some View {
-        let title = modelPickerTitle
+        let entries = vm.availableModels
         Menu {
-            switch vm.backend {
-            case .llama:
-                if vm.recentLlamaPaths.isEmpty {
-                    Text("No recent models").foregroundStyle(.secondary)
-                } else {
-                    ForEach(vm.recentLlamaPaths, id: \.self) { path in
-                        Button((path as NSString).lastPathComponent) {
-                            vm.loadLlamaPath(path)
-                        }
-                    }
-                }
-                Divider()
-                Button("Browse for .gguf…") { vm.browseForLlamaModel() }
-            case .mlx:
-                if vm.recentMLXIds.isEmpty {
-                    Text("No recent models").foregroundStyle(.secondary)
-                } else {
-                    ForEach(vm.recentMLXIds, id: \.self) { id in
-                        Button(id) { vm.loadMLXId(id) }
+            if entries.isEmpty {
+                Text("No downloaded models").foregroundStyle(.secondary)
+            } else {
+                ForEach(entries, id: \.self) { entry in
+                    Button {
+                        vm.selectAvailableModel(entry)
+                    } label: {
+                        Text(SidebarView.dropdownLabel(for: entry))
                     }
                 }
             }
         } label: {
             HStack {
-                Text(title)
+                Text(modelPickerTitle)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1750,6 +1938,42 @@ private struct SidebarView: View {
                 .stroke(Color.secondary.opacity(0.3))
         )
         .disabled(vm.isLoadingModel || vm.isGenerating)
+    }
+
+    private var ggufDirectoryRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("GGUF folder").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text(vm.resolvedGGUFDirectory.path)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button("Change…") { vm.pickGGUFDirectory() }
+                    .controlSize(.small)
+                if !vm.ggufDirectory.isEmpty {
+                    Button("Reset") { vm.resetGGUFDirectory() }
+                        .controlSize(.small)
+                }
+            }
+        }
+    }
+
+    static func dropdownLabel(for entry: VaultModelEntry) -> String {
+        let tag: String
+        switch entry.backend {
+        case Backend.llama.rawValue: tag = "GGUF"
+        case Backend.mlx.rawValue: tag = "MLX"
+        default: tag = entry.backend
+        }
+        let name: String
+        if entry.backend == Backend.llama.rawValue {
+            name = (entry.modelId as NSString).lastPathComponent
+        } else {
+            name = entry.modelId
+        }
+        return "[\(tag)] \(name)"
     }
 
     // MARK: Speech
@@ -2028,17 +2252,14 @@ private struct SidebarView: View {
     }
 
     private var modelPickerTitle: String {
-        switch vm.backend {
-        case .llama:
-            if let path = UserDefaults.standard.string(forKey: PersistKey.llamaPath), vm.modelLoaded {
-                return (path as NSString).lastPathComponent
+        if vm.modelLoaded, let cur = vm.currentModelId, !cur.isEmpty {
+            switch vm.backend {
+            case .llama: return (cur as NSString).lastPathComponent
+            case .mlx: return cur
             }
-            return "No Selection"
-        case .mlx:
-            if vm.modelLoaded, !vm.mlxModelId.isEmpty { return vm.mlxModelId }
-            if vm.modelLoaded { return "default" }
-            return "No Selection"
         }
+        if vm.availableModels.isEmpty { return "No downloaded models" }
+        return "Choose a model…"
     }
 }
 
