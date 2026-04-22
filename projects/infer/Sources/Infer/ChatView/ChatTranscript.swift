@@ -8,8 +8,12 @@ extension ChatView {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(vm.messages) { msg in
-                        MessageRow(message: msg).id(msg.id)
+                    ForEach(Array(vm.messages.enumerated()), id: \.element.id) { idx, msg in
+                        MessageRow(
+                            message: msg,
+                            onRegenerate: canRegenerate(at: idx) ? { vm.regenerateLast() } : nil
+                        )
+                        .id(msg.id)
                     }
                     // Bottom sentinel: when the LazyVStack has it in its
                     // render range (user is near the bottom), we're pinned
@@ -67,6 +71,16 @@ extension ChatView {
         }
     }
 
+    /// True when the message at `idx` is the last assistant turn, preceded
+    /// by a user turn, and the VM is idle — the conditions under which
+    /// regenerating is well-defined.
+    func canRegenerate(at idx: Int) -> Bool {
+        guard !vm.isGenerating, vm.modelLoaded else { return false }
+        guard idx == vm.messages.count - 1, idx > 0 else { return false }
+        return vm.messages[idx].role == .assistant
+            && vm.messages[idx - 1].role == .user
+    }
+
     @ViewBuilder
     var transcriptionBanner: some View {
         if let status = vm.transcriptionStatus {
@@ -98,6 +112,9 @@ extension ChatView {
 
 struct MessageRow: View {
     let message: ChatMessage
+    /// When non-nil, hover reveals a regenerate button that invokes this.
+    /// Wired only for the latest assistant turn when the VM is idle.
+    var onRegenerate: (() -> Void)? = nil
     @State private var isHovered = false
     @State private var justCopied = false
 
@@ -113,24 +130,37 @@ struct MessageRow: View {
         }
         .overlay(alignment: .topTrailing) {
             if isHovered, !message.text.isEmpty {
-                Button {
-                    let pb = NSPasteboard.general
-                    pb.clearContents()
-                    pb.setString(message.text, forType: .string)
-                    justCopied = true
-                    Task {
-                        try? await Task.sleep(nanoseconds: 900_000_000)
-                        await MainActor.run { justCopied = false }
+                HStack(spacing: 4) {
+                    if let onRegenerate {
+                        Button(action: onRegenerate) {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(SwiftUI.Color.secondary)
+                                .padding(4)
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 4))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Regenerate response")
                     }
-                } label: {
-                    Image(systemName: justCopied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(justCopied ? SwiftUI.Color.green : SwiftUI.Color.secondary)
-                        .padding(4)
-                        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 4))
+                    Button {
+                        let pb = NSPasteboard.general
+                        pb.clearContents()
+                        pb.setString(message.text, forType: .string)
+                        justCopied = true
+                        Task {
+                            try? await Task.sleep(nanoseconds: 900_000_000)
+                            await MainActor.run { justCopied = false }
+                        }
+                    } label: {
+                        Image(systemName: justCopied ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(justCopied ? SwiftUI.Color.green : SwiftUI.Color.secondary)
+                            .padding(4)
+                            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 4))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy message")
                 }
-                .buttonStyle(.plain)
-                .help("Copy message")
                 .transition(.opacity)
             }
         }

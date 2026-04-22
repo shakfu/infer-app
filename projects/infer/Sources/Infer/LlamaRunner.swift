@@ -198,6 +198,22 @@ actor LlamaRunner {
         resetConversation()
     }
 
+    /// Drop the most recent user+assistant turn pair and clear the KV cache.
+    /// The next `sendUserMessage` re-renders the full template from scratch
+    /// and pre-fills in one batch. Intended for regenerate / edit-and-resend.
+    /// No-op if the last two messages aren't a user→assistant pair.
+    func rewindLastTurn() {
+        guard messages.count >= 2,
+              messages[messages.count - 1].role == "assistant",
+              messages[messages.count - 2].role == "user"
+        else { return }
+        messages.removeLast(2)
+        if let ctx {
+            llama_memory_clear(llama_get_memory(ctx), true)
+        }
+        prevFormattedLen = 0
+    }
+
     func resetConversation() {
         if let ctx {
             let mem = llama_get_memory(ctx)

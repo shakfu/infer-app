@@ -191,6 +191,17 @@ actor MLXRunner {
         history = []
     }
 
+    /// Drop the most recent user+assistant pair from history. The next send
+    /// rebuilds the session with the truncated history. No-op if the tail
+    /// isn't a user→assistant pair.
+    func rewindLastTurn() {
+        guard history.count >= 2,
+              history[history.count - 1].role == .assistant,
+              history[history.count - 2].role == .user
+        else { return }
+        history.removeLast(2)
+    }
+
     func shutdown() {
         activeTask?.cancel()
         activeTask = nil

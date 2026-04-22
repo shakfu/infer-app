@@ -128,4 +128,34 @@ extension ChatViewModel {
         generationTask = nil
         speechSynthesizer.stop()
     }
+
+    /// Regenerate the most recent assistant response. Pops the last
+    /// user+assistant pair from the transcript, rewinds the backend so its
+    /// KV cache matches, then re-sends the original user turn (with any
+    /// attached image) via `send()`.
+    ///
+    /// No-op when a generation is in flight, when the last two messages
+    /// aren't a user→assistant pair, or when no model is loaded.
+    func regenerateLast() {
+        guard modelLoaded, !isGenerating else { return }
+        guard messages.count >= 2 else { return }
+        let last = messages.count - 1
+        guard messages[last].role == .assistant,
+              messages[last - 1].role == .user
+        else { return }
+
+        let userTurn = messages[last - 1]
+        messages.removeSubrange((last - 1)...last)
+        input = userTurn.text
+        pendingImageURL = userTurn.imageURL
+
+        let b = self.backend
+        Task {
+            switch b {
+            case .llama: await self.llama.rewindLastTurn()
+            case .mlx: await self.mlx.rewindLastTurn()
+            }
+            await MainActor.run { self.send() }
+        }
+    }
 }

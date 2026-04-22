@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Regenerate last response.** Hover over the most recent assistant message to reveal a circular-arrow button next to Copy; click to re-sample a new reply for the same user turn. Both backends rewind their KV cache and re-prefill from the truncated transcript: `LlamaRunner.rewindLastTurn()` drops the last user+assistant pair, clears the llama KV via `llama_memory_clear`, and resets `prevFormattedLen` so the next send re-tokenizes the full template in one batch; `MLXRunner.rewindLastTurn()` drops the last pair from the tracked `history: [Chat.Message]` so the next session rebuild inherits the truncated state. The transcript's original user text + image attachment are restored into the composer and then re-sent via the normal `send()` path. Button is hidden while generating, while no model is loaded, or when the last two messages aren't a user→assistant pair (so partial / cancelled replies can't be regenerated — runner history would be out of sync).
+
 ### Fixed
 
 - **MLX multi-turn context loss.** `MLXRunner.sendUserMessage` rebuilt the `ChatSession` on every send to apply per-turn `maxTokens`, but the new session initialized with an empty KV cache — so prior-turn context was silently discarded on every message. `MLXRunner` now tracks a `history: [Chat.Message]` array and rebuilds via `ChatSession(..., history:)`, preserving context across rebuilds. Completed turns are appended only on clean stream completion so a cancelled/errored send doesn't anchor the next turn to a partial reply. `updateSettings` no longer eagerly rebuilds (next send picks up the new params with history intact); `resetConversation` / `shutdown` clear history. New `setHistory(_:)` entry point unblocks upcoming regenerate / transcript-restore flows.
