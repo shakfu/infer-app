@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4]
+
+### Changed
+
+- **Centralized file-dialog helpers.** New `FileDialogs.swift` wraps `NSOpenPanel` / `NSSavePanel` behind three static methods (`openFile`, `openDirectory`, `saveFile`). Seven call sites across `Loading.swift`, `Attachments.swift`, and `Transcript.swift` collapsed from inline panel configuration (`allowsMultipleSelection = false`, `canChooseDirectories = …`, `allowedContentTypes = …`, `runModal()` → `.OK`) to single-line calls. `ChatViewModel.markdownContentTypes` extracted to avoid duplicating the `.md` UTType fallback between save and load paths. Cleanup pays off standalone; also shortens the future iOS port (the one file to replace with SwiftUI `.fileImporter` / `.fileExporter`).
+
 ### Added
 
 - **Stop Speech keyboard command.** New **Speech > Stop Speaking** menu item bound to ⌘⇧. — parallels ⌘. (Stop generation) and shuts up TTS mid-sentence at any time. Works regardless of continuous voice or barge-in state; disabled when nothing is speaking. Useful when running on laptop speakers where barge-in would self-trigger from the TTS audio picked up by the mic.

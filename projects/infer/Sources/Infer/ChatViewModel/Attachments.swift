@@ -14,17 +14,14 @@ extension ChatViewModel {
         "png", "jpg", "jpeg", "heic", "heif", "webp", "gif", "bmp", "tiff", "tif"
     ]
 
-    /// Open an NSOpenPanel for audio and image files. Audio routes to the
+    /// Open a file picker for audio and image files. Audio routes to the
     /// whisper transcription flow; image becomes a pending attachment for
     /// the next send.
     func pickAttachment() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowedContentTypes = [.audiovisualContent, .audio, .image]
-        panel.message = "Attach an audio or image file"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let url = FileDialogs.openFile(
+            message: "Attach an audio or image file",
+            contentTypes: [.audiovisualContent, .audio, .image]
+        ) else { return }
         attachURL(url)
     }
 

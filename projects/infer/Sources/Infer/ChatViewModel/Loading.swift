@@ -77,27 +77,14 @@ extension ChatViewModel {
     }
 
     func browseForLlamaModel() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        if let gguf = UTType(filenameExtension: "gguf") {
-            panel.allowedContentTypes = [gguf]
-        }
-        panel.message = "Select a .gguf model file"
-        if panel.runModal() == .OK, let url = panel.url {
+        let types = [UTType(filenameExtension: "gguf")].compactMap { $0 }
+        if let url = FileDialogs.openFile(message: "Select a .gguf model file", contentTypes: types) {
             modelInput = url.path
         }
     }
 
     func pickGGUFDirectory() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.message = "Select a folder to store .gguf downloads"
-        if panel.runModal() == .OK, let url = panel.url {
+        if let url = FileDialogs.openDirectory(message: "Select a folder to store .gguf downloads") {
             ggufDirectory = url.path
         }
     }
