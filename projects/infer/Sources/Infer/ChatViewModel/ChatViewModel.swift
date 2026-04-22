@@ -96,6 +96,26 @@ final class ChatViewModel {
     var continuousVoice: Bool = UserDefaults.standard.bool(forKey: PersistKey.continuousVoice) {
         didSet { UserDefaults.standard.set(continuousVoice, forKey: PersistKey.continuousVoice) }
     }
+    /// Alternative voice-send trigger: submit after this many seconds without
+    /// a new partial transcript. nil = disabled. Works alongside the trigger
+    /// phrase; whichever fires first wins. Stored as string since
+    /// `UserDefaults.double(forKey:)` can't distinguish 0 from absent.
+    var voiceSendSilenceSeconds: Double? = {
+        guard let s = UserDefaults.standard.string(forKey: PersistKey.voiceSendSilenceSeconds),
+              !s.isEmpty else { return nil }
+        return Double(s)
+    }() {
+        didSet {
+            if let v = voiceSendSilenceSeconds {
+                UserDefaults.standard.set(String(v), forKey: PersistKey.voiceSendSilenceSeconds)
+            } else {
+                UserDefaults.standard.removeObject(forKey: PersistKey.voiceSendSilenceSeconds)
+            }
+        }
+    }
+    /// Pending silence-timeout submit. Armed on each partial transcript;
+    /// fires `send()` if it survives `voiceSendSilenceSeconds` of no updates.
+    private var silenceTimer: Task<Void, Never>?
 
     var generationTask: Task<Void, Never>? = nil
     var loadTask: Task<Void, Never>? = nil
@@ -113,26 +133,57 @@ final class ChatViewModel {
 
     /// Begin (or resume) on-device dictation feeding the composer. Factored
     /// so the mic button and the voice-loop auto-arm share one path.
-    /// Trigger-phrase detection auto-submits; otherwise partial transcripts
+    /// Trigger-phrase detection auto-submits; so does a silence timeout if
+    /// `voiceSendSilenceSeconds` is set. Otherwise partial transcripts
     /// overwrite `input` each update.
     func startDictation() {
         guard !speechRecognizer.isRecording, !speechRecognizer.isStarting else { return }
+        cancelSilenceTimer()
         speechRecognizer.start(baseline: input) { [weak self] text in
             guard let self else { return }
             if let stripped = Self.stripTrailingTrigger(text, phrase: self.voiceSendPhrase) {
+                self.cancelSilenceTimer()
                 self.input = stripped
                 self.speechRecognizer.cancel()
                 if self.modelLoaded, !stripped.isEmpty { self.send() }
             } else {
                 self.input = text
+                self.armSilenceTimer()
             }
         }
+    }
+
+    /// Reset the silence-timeout countdown. Called on every partial update
+    /// during dictation: as long as new text keeps arriving, the timer
+    /// stays armed. When the recognizer goes quiet (user stopped speaking),
+    /// no new updates arrive, the timer fires, and the turn is submitted.
+    private func armSilenceTimer() {
+        silenceTimer?.cancel()
+        guard let seconds = voiceSendSilenceSeconds, seconds > 0 else { return }
+        silenceTimer = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self else { return }
+                self.silenceTimer = nil
+                let text = self.input.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty, self.modelLoaded, self.speechRecognizer.isRecording else { return }
+                self.speechRecognizer.cancel()
+                self.send()
+            }
+        }
+    }
+
+    private func cancelSilenceTimer() {
+        silenceTimer?.cancel()
+        silenceTimer = nil
     }
 
     /// Toggle dictation the way the mic button does — the existing inline
     /// logic in `ChatComposer`'s `micButton` is now in one place.
     func toggleDictation() {
         if speechRecognizer.isRecording {
+            cancelSilenceTimer()
             speechRecognizer.stop()
         } else {
             startDictation()

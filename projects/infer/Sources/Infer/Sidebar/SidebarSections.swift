@@ -359,6 +359,32 @@ extension SidebarView {
             }
             .padding(.top, 4)
 
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Or send after silence").font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    TextField("e.g. 2.5", text: Binding(
+                        get: { vm.voiceSendSilenceSeconds.map { String(format: "%.1f", $0) } ?? "" },
+                        set: { s in
+                            let trimmed = s.trimmingCharacters(in: .whitespaces)
+                            if trimmed.isEmpty {
+                                vm.voiceSendSilenceSeconds = nil
+                            } else if let v = Double(trimmed), v > 0 {
+                                vm.voiceSendSilenceSeconds = v
+                            }
+                        }
+                    ))
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    .font(.caption.monospacedDigit())
+                    Text("sec").font(.caption2).foregroundStyle(.tertiary)
+                }
+                Text("Auto-submit when no new speech arrives for this many seconds. Leave empty to disable.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 4)
+
             if !vm.speechRecognizer.supportsOnDevice {
                 Text("On-device dictation unavailable for this locale.")
                     .font(.caption2)
