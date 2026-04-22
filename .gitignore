@@ -76,5 +76,5 @@ fastlane/test_output
 
 .claude
 CLAUDE.md
-AGENTS.md
+# AGENTS.md
 GEMINI.md
