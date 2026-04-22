@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Voice-loop mode.** New "Continuous voice (auto-mic after reply)" toggle in the Voice sidebar. When on: TTS is force-enabled, the mic arms immediately, and after each assistant reply is spoken the mic auto-arms so the user can dictate the next turn — dictation + trigger phrase (`"send it"` default) + TTS + auto-arm becomes a hands-free loop. Built on an `onFinish` callback added to `SpeechSynthesizer` that fires only on natural `didFinish`, not on `didCancel`, so a user-initiated Stop (mid-TTS or mid-generation) pauses the loop cleanly — a subsequent successful turn resumes it. Disabling TTS while the loop is on clears the flag automatically (no `didFinish` would ever arrive). Factored the mic-button logic out of `ChatComposer` into `ChatViewModel.toggleDictation()` / `startDictation()` so manual and auto-arm share one path. Warns in the Speech sidebar if the loop is on but `voiceSendPhrase` is empty (nothing would submit the turn). TTS barge-in (talking over a long reply) is a separate follow-up; without it the loop is polite but you have to let each reply finish. Persisted under `PersistKey.continuousVoice`.
+
 ## [0.1.3]
 
 ### Added

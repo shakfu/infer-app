@@ -89,9 +89,78 @@ final class ChatViewModel {
     var voiceSendPhrase: String = UserDefaults.standard.string(forKey: PersistKey.voiceSendPhrase) ?? "send it" {
         didSet { UserDefaults.standard.set(voiceSendPhrase, forKey: PersistKey.voiceSendPhrase) }
     }
+    /// Continuous-voice ("voice loop") mode: after each assistant reply
+    /// finishes being spoken, the mic auto-arms so the user can dictate the
+    /// next turn. Requires TTS — toggling this on force-enables TTS;
+    /// toggling TTS off clears this flag.
+    var continuousVoice: Bool = UserDefaults.standard.bool(forKey: PersistKey.continuousVoice) {
+        didSet { UserDefaults.standard.set(continuousVoice, forKey: PersistKey.continuousVoice) }
+    }
 
     var generationTask: Task<Void, Never>? = nil
     var loadTask: Task<Void, Never>? = nil
+
+    init() {
+        // Wire TTS completion to auto-arm the mic when in voice-loop mode.
+        // onFinish fires only on natural completion — a user-initiated Stop
+        // (didCancel) skips the callback so the loop doesn't resume over an
+        // interrupt.
+        speechSynthesizer.onFinish = { [weak self] in
+            guard let self, self.continuousVoice else { return }
+            self.startDictation()
+        }
+    }
+
+    /// Begin (or resume) on-device dictation feeding the composer. Factored
+    /// so the mic button and the voice-loop auto-arm share one path.
+    /// Trigger-phrase detection auto-submits; otherwise partial transcripts
+    /// overwrite `input` each update.
+    func startDictation() {
+        guard !speechRecognizer.isRecording, !speechRecognizer.isStarting else { return }
+        speechRecognizer.start(baseline: input) { [weak self] text in
+            guard let self else { return }
+            if let stripped = Self.stripTrailingTrigger(text, phrase: self.voiceSendPhrase) {
+                self.input = stripped
+                self.speechRecognizer.cancel()
+                if self.modelLoaded, !stripped.isEmpty { self.send() }
+            } else {
+                self.input = text
+            }
+        }
+    }
+
+    /// Toggle dictation the way the mic button does — the existing inline
+    /// logic in `ChatComposer`'s `micButton` is now in one place.
+    func toggleDictation() {
+        if speechRecognizer.isRecording {
+            speechRecognizer.stop()
+        } else {
+            startDictation()
+        }
+    }
+
+    /// Enable or disable voice-loop mode, handling cross-coupling: turning
+    /// the loop on force-enables TTS and arms the mic immediately (the loop
+    /// needs a starting point). Turning it off is a soft disable — in-flight
+    /// dictation or TTS continue.
+    func setContinuousVoice(_ on: Bool) {
+        continuousVoice = on
+        if on {
+            ttsEnabled = true
+            startDictation()
+        }
+    }
+
+    /// Called from the TTS toggle in the sidebar. Disabling TTS while the
+    /// voice loop is on would break it (no `didFinish` callback to trigger
+    /// auto-arm) — clear the loop flag so the UI stays coherent.
+    func setTTSEnabled(_ on: Bool) {
+        ttsEnabled = on
+        if !on {
+            continuousVoice = false
+            speechSynthesizer.stop()
+        }
+    }
 
     /// Clear the transcript, cancel any in-flight generation, and reset both
     /// backends' conversation state. Model stays loaded; settings untouched.

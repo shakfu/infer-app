@@ -293,10 +293,25 @@ extension SidebarView {
         VStack(alignment: .leading, spacing: 10) {
             Toggle("Read responses aloud", isOn: Binding(
                 get: { vm.ttsEnabled },
-                set: { vm.ttsEnabled = $0; if !$0 { vm.speechSynthesizer.stop() } }
+                set: { vm.setTTSEnabled($0) }
             ))
             .toggleStyle(.switch)
             .controlSize(.small)
+
+            Toggle("Continuous voice (auto-mic after reply)", isOn: Binding(
+                get: { vm.continuousVoice },
+                set: { vm.setContinuousVoice($0) }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+
+            if vm.continuousVoice,
+               vm.voiceSendPhrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text("Set a voice-send phrase below — otherwise there's no way to submit each turn.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             HStack {
                 Text("Voice").font(.caption)

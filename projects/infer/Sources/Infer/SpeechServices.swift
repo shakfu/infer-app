@@ -181,6 +181,10 @@ final class SpeechRecognizer {
 final class SpeechSynthesizer {
     private let synth = AVSpeechSynthesizer()
     private(set) var isSpeaking: Bool = false
+    /// Invoked when an utterance completes naturally. NOT fired on
+    /// `didCancel` (i.e. when `stop()` interrupts playback) — the caller
+    /// can distinguish "finished speaking" from "user stopped it".
+    var onFinish: (() -> Void)?
 
     private let delegateBox: Delegate
 
@@ -218,17 +222,23 @@ final class SpeechSynthesizer {
         isSpeaking = false
     }
 
-    fileprivate func delegateSaidFinished() {
+    fileprivate func delegateSaidFinished(interrupted: Bool) {
         isSpeaking = synth.isSpeaking
+        // Only fire onFinish on natural completion. If the user pressed Stop,
+        // the synth delivers didCancel and we skip the callback so a
+        // continuous-voice loop won't auto-arm over a deliberate interrupt.
+        if !interrupted, !synth.isSpeaking {
+            onFinish?()
+        }
     }
 
     final class Delegate: NSObject, AVSpeechSynthesizerDelegate {
         nonisolated(unsafe) weak var owner: SpeechSynthesizer?
         func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-            Task { @MainActor in self.owner?.delegateSaidFinished() }
+            Task { @MainActor in self.owner?.delegateSaidFinished(interrupted: false) }
         }
         func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-            Task { @MainActor in self.owner?.delegateSaidFinished() }
+            Task { @MainActor in self.owner?.delegateSaidFinished(interrupted: true) }
         }
     }
 }

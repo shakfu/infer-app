@@ -133,15 +133,7 @@ extension ChatView {
         let starting = vm.speechRecognizer.isStarting
         let active = recording || starting
         return Button {
-            vm.speechRecognizer.toggle(baseline: vm.input) { text in
-                if let stripped = ChatViewModel.stripTrailingTrigger(text, phrase: vm.voiceSendPhrase) {
-                    vm.input = stripped
-                    vm.speechRecognizer.cancel()
-                    if vm.modelLoaded, !stripped.isEmpty { vm.send() }
-                } else {
-                    vm.input = text
-                }
-            }
+            vm.toggleDictation()
         } label: {
             Image(systemName: active ? "mic.fill" : "mic")
                 .font(.system(size: 13, weight: .semibold))

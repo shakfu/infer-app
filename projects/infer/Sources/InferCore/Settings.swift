@@ -14,6 +14,7 @@ public enum PersistKey {
     public static let ttsEnabled = "infer.ttsEnabled"
     public static let ttsVoiceId = "infer.ttsVoiceId"
     public static let voiceSendPhrase = "infer.voiceSendPhrase"
+    public static let continuousVoice = "infer.continuousVoice"
     public static let ggufDirectory = "infer.ggufDirectory"
 }
 
