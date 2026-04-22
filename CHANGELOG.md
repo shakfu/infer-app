@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2]
+
 ### Changed
 
 - **`ChatView.swift` split into 18 files across three subfolders.** The monolithic 2444-line file containing `ChatViewModel`, `ChatView`, `SidebarView`, and a dozen helper views was broken up into `ChatView/`, `ChatViewModel/`, and `Sidebar/` directories under `Sources/Infer/`. `ChatViewModel` is now one core file plus seven extension files, one per concern (Loading, Generation, Settings, Transcript, VaultHistory, Attachments, Speech). Previously-`private` stored properties accessed across concerns are now target-internal. No behavior change.
