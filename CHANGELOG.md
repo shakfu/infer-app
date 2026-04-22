@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`ChatView.swift` split into 18 files across three subfolders.** The monolithic 2444-line file containing `ChatViewModel`, `ChatView`, `SidebarView`, and a dozen helper views was broken up into `ChatView/`, `ChatViewModel/`, and `Sidebar/` directories under `Sources/Infer/`. `ChatViewModel` is now one core file plus seven extension files, one per concern (Loading, Generation, Settings, Transcript, VaultHistory, Attachments, Speech). Previously-`private` stored properties accessed across concerns are now target-internal. No behavior change.
+
 ### Added
 
 - **Unified model picker.** A single dropdown in the Model sidebar lists every downloaded model across both backends, tagged `[GGUF]` or `[MLX]`. Sources are unioned: (1) vault-tracked entries ordered by last-used, (2) a scan of `$HF_HOME/hub/models--*/snapshots/` for MLX weights, (3) a scan of the configured GGUF folder for `*.gguf` files. Selecting an entry switches the backend segment and fills the text field; Load performs the actual load so the choice is always explicit.

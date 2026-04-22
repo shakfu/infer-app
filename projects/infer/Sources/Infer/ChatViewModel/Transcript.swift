@@ -1,0 +1,134 @@
+import Foundation
+import AppKit
+import UniformTypeIdentifiers
+
+extension ChatViewModel {
+    /// Canonical markdown representation of the transcript. Used by Copy,
+    /// Save, and Load (which round-trips this exact format).
+    var transcriptMarkdown: String {
+        messages
+            .map { "## \($0.role.rawValue)\n\n\($0.text)" }
+            .joined(separator: "\n\n---\n\n")
+    }
+
+    func copyTranscriptAsMarkdown() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(transcriptMarkdown, forType: .string)
+    }
+
+    func printTranscript() {
+        PrintRenderer.printTranscript(messages)
+    }
+
+    func exportTranscriptHTML() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.html]
+        panel.nameFieldStringValue = "transcript.html"
+        panel.message = "Export transcript as HTML"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try PrintRenderer.exportHTML(messages, to: url)
+        } catch {
+            errorMessage = "Failed to export HTML: \(error.localizedDescription)"
+        }
+    }
+
+    func exportTranscriptPDF() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.nameFieldStringValue = "transcript.pdf"
+        panel.message = "Export transcript as PDF"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        PrintRenderer.exportPDF(messages, to: url) { [weak self] result in
+            if case .failure(let err) = result {
+                self?.errorMessage = "Failed to export PDF: \(err.localizedDescription)"
+            }
+        }
+    }
+
+    func saveTranscript() {
+        let panel = NSSavePanel()
+        if let md = UTType(filenameExtension: "md") {
+            panel.allowedContentTypes = [md, .plainText]
+        } else {
+            panel.allowedContentTypes = [.plainText]
+        }
+        panel.nameFieldStringValue = "transcript.md"
+        panel.message = "Save transcript as Markdown"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try transcriptMarkdown.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            errorMessage = "Failed to save transcript: \(error.localizedDescription)"
+        }
+    }
+
+    func loadTranscript() {
+        let panel = NSOpenPanel()
+        if let md = UTType(filenameExtension: "md") {
+            panel.allowedContentTypes = [md, .plainText]
+        } else {
+            panel.allowedContentTypes = [.plainText]
+        }
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.message = "Load transcript from Markdown"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let text = try String(contentsOf: url, encoding: .utf8)
+            let loaded = Self.parseTranscript(text)
+            guard !loaded.isEmpty else {
+                errorMessage = "Transcript file contains no recognizable messages."
+                return
+            }
+            stop()
+            messages = loaded
+            // Imported `.md` is file-only: not linked to any vault row.
+            // Next send() will start a fresh vault conversation.
+            currentConversationId = nil
+            // Reset backend conversation state. MLX's `ChatSession` has no
+            // public API to inject a prior transcript, so for consistency we
+            // wipe both backends — the loaded transcript is for review; a
+            // follow-up message starts a fresh backend conversation.
+            let b = self.backend
+            Task {
+                switch b {
+                case .llama: await self.llama.resetConversation()
+                case .mlx: await self.mlx.resetConversation()
+                }
+                await MainActor.run { self.refreshTokenUsage() }
+            }
+        } catch {
+            errorMessage = "Failed to load transcript: \(error.localizedDescription)"
+        }
+    }
+
+    /// Parse the canonical Save format back into messages. Strict enough to
+    /// round-trip `transcriptMarkdown`; lenient about extra whitespace and
+    /// unknown roles (skipped).
+    static func parseTranscript(_ markdown: String) -> [ChatMessage] {
+        var result: [ChatMessage] = []
+        let chunks = markdown.components(separatedBy: "\n\n---\n\n")
+        for raw in chunks {
+            let chunk = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard chunk.hasPrefix("## ") else { continue }
+            guard let bodyBreak = chunk.range(of: "\n\n") else { continue }
+            let headerStart = chunk.index(chunk.startIndex, offsetBy: 3)
+            let header = chunk[headerStart..<bodyBreak.lowerBound]
+                .trimmingCharacters(in: .whitespaces)
+                .lowercased()
+            let body = String(chunk[bodyBreak.upperBound...])
+            let role: ChatMessage.Role
+            switch header {
+            case "user": role = .user
+            case "assistant": role = .assistant
+            case "system": role = .system
+            default: continue
+            }
+            result.append(ChatMessage(role: role, text: body))
+        }
+        return result
+    }
+}
