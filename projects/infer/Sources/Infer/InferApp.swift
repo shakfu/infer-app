@@ -43,6 +43,14 @@ struct InferApp: App {
                     .keyboardShortcut("c", modifiers: [.command, .shift])
                     .disabled(chatVM.messages.isEmpty)
             }
+            CommandMenu("Speech") {
+                Button("Stop Speaking") { chatVM.speechSynthesizer.stop() }
+                    // Parallels ⌘. (Stop generation); ⌘⇧. targets speech.
+                    // Works whenever TTS is speaking, regardless of whether
+                    // barge-in or continuous-voice mode is on.
+                    .keyboardShortcut(".", modifiers: [.command, .shift])
+                    .disabled(!chatVM.speechSynthesizer.isSpeaking)
+            }
         }
     }
 }

@@ -185,6 +185,10 @@ final class SpeechSynthesizer {
     /// `didCancel` (i.e. when `stop()` interrupts playback) — the caller
     /// can distinguish "finished speaking" from "user stopped it".
     var onFinish: (() -> Void)?
+    /// Invoked when playback is interrupted via `stop()` / `didCancel`.
+    /// Complement of `onFinish` — lets observers clean up ancillary state
+    /// (e.g. a barge-in monitor) without auto-arming anything.
+    var onCancel: (() -> Void)?
 
     private let delegateBox: Delegate
 
@@ -224,10 +228,14 @@ final class SpeechSynthesizer {
 
     fileprivate func delegateSaidFinished(interrupted: Bool) {
         isSpeaking = synth.isSpeaking
-        // Only fire onFinish on natural completion. If the user pressed Stop,
-        // the synth delivers didCancel and we skip the callback so a
-        // continuous-voice loop won't auto-arm over a deliberate interrupt.
-        if !interrupted, !synth.isSpeaking {
+        // Only fire onFinish on natural completion. Stop()/didCancel fires
+        // onCancel instead so observers can distinguish the two paths — a
+        // voice-loop shouldn't auto-arm over a deliberate interrupt, but a
+        // barge-in monitor still needs to tear down.
+        guard !synth.isSpeaking else { return }
+        if interrupted {
+            onCancel?()
+        } else {
             onFinish?()
         }
     }
@@ -239,6 +247,141 @@ final class SpeechSynthesizer {
         }
         func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
             Task { @MainActor in self.owner?.delegateSaidFinished(interrupted: true) }
+        }
+    }
+}
+
+// MARK: - TTS barge-in (voice-loop interrupt)
+
+/// Watches the mic during TTS playback and fires once when sustained input
+/// level crosses a threshold — the "user is trying to interrupt" signal.
+///
+/// Not `@MainActor`: the AVAudioEngine tap closure runs off-main and needs
+/// to mutate timing state synchronously. Shared state is lock-protected;
+/// the single user-visible side effect (the callback) hops to main.
+final class TTSBargeInMonitor: @unchecked Sendable {
+    private let engine = AVAudioEngine()
+    private let lock = NSLock()
+
+    // Lock-protected state.
+    private var tapInstalled = false
+    private var running = false
+    private var aboveSince: Date?
+    private var fired = false
+    private var onBargeIn: (@MainActor @Sendable () -> Void)?
+
+    /// Tunables; kept as code constants for v1. Thresholds that need tuning
+    /// in the field can graduate to the Voice sidebar later.
+    private let thresholdDBFS: Float = -30.0
+    private let sustainSeconds: TimeInterval = 0.2
+
+    /// Start monitoring. `onBargeIn` is invoked on the main actor at most
+    /// once per `start` call; the monitor self-stops on fire. Silently
+    /// returns if already running, if no input device is available, or if
+    /// the audio engine fails to start — callers keep working without
+    /// barge-in in that session.
+    func start(onBargeIn: @escaping @MainActor @Sendable () -> Void) {
+        lock.lock()
+        guard !running else { lock.unlock(); return }
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.channelCount > 0, format.sampleRate > 0 else {
+            lock.unlock()
+            FileHandle.standardError.write(Data("barge-in: no input device\n".utf8))
+            return
+        }
+        self.onBargeIn = onBargeIn
+        self.aboveSince = nil
+        self.fired = false
+        lock.unlock()
+
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            self?.process(buffer: buffer)
+        }
+        lock.lock()
+        tapInstalled = true
+        lock.unlock()
+
+        do {
+            engine.prepare()
+            try engine.start()
+            lock.lock()
+            running = true
+            lock.unlock()
+        } catch {
+            FileHandle.standardError.write(
+                Data("barge-in: engine start failed: \(error)\n".utf8)
+            )
+            teardown()
+        }
+    }
+
+    func stop() {
+        teardown()
+    }
+
+    private func teardown() {
+        lock.lock()
+        let wasRunning = running
+        let hadTap = tapInstalled
+        running = false
+        tapInstalled = false
+        onBargeIn = nil
+        aboveSince = nil
+        fired = false
+        lock.unlock()
+
+        if wasRunning, engine.isRunning {
+            engine.stop()
+        }
+        if hadTap {
+            engine.inputNode.removeTap(onBus: 0)
+        }
+    }
+
+    private func process(buffer: AVAudioPCMBuffer) {
+        guard let channels = buffer.floatChannelData else { return }
+        let frames = Int(buffer.frameLength)
+        guard frames > 0 else { return }
+        let channel = channels[0]
+
+        var sumSquares: Float = 0
+        for i in 0..<frames {
+            let s = channel[i]
+            sumSquares += s * s
+        }
+        let rms = (sumSquares / Float(frames)).squareRoot()
+        let dBFS = 20 * log10(max(rms, 1e-6))
+        let now = Date()
+
+        lock.lock()
+        if fired || !running {
+            lock.unlock()
+            return
+        }
+        let shouldFire: Bool
+        if dBFS > thresholdDBFS {
+            if aboveSince == nil {
+                aboveSince = now
+                shouldFire = false
+            } else if let start = aboveSince,
+                      now.timeIntervalSince(start) >= sustainSeconds {
+                fired = true
+                shouldFire = true
+            } else {
+                shouldFire = false
+            }
+        } else {
+            aboveSince = nil
+            shouldFire = false
+        }
+        let callback = shouldFire ? onBargeIn : nil
+        lock.unlock()
+
+        if let callback {
+            Task { @MainActor in
+                callback()
+            }
         }
     }
 }

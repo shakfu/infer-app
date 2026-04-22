@@ -54,6 +54,7 @@ final class ChatViewModel {
     let ggufDownloader = GGUFDownloader()
     let speechRecognizer = SpeechRecognizer()
     let speechSynthesizer = SpeechSynthesizer()
+    let bargeInMonitor = TTSBargeInMonitor()
     let whisperModels = WhisperModelManager()
     let audioRecorder = AudioFileRecorder()
 
@@ -96,7 +97,17 @@ final class ChatViewModel {
     var continuousVoice: Bool = UserDefaults.standard.bool(forKey: PersistKey.continuousVoice) {
         didSet { UserDefaults.standard.set(continuousVoice, forKey: PersistKey.continuousVoice) }
     }
-    /// Alternative voice-send trigger: submit after this many seconds without
+    /// Sub-toggle of `continuousVoice`: while the loop is on, arm the
+    /// barge-in mic monitor during TTS so the user can interrupt by
+    /// speaking. Defaults on (headphones use case). Disable when working
+    /// on speakers so TTS doesn't self-trigger via mic pickup.
+    var bargeInEnabled: Bool = {
+        // Default true: no prior key means new install, treat as opted in.
+        UserDefaults.standard.object(forKey: PersistKey.bargeInEnabled) as? Bool ?? true
+    }() {
+        didSet { UserDefaults.standard.set(bargeInEnabled, forKey: PersistKey.bargeInEnabled) }
+    }
+/// Alternative voice-send trigger: submit after this many seconds without
     /// a new partial transcript. nil = disabled. Works alongside the trigger
     /// phrase; whichever fires first wins. Stored as string since
     /// `UserDefaults.double(forKey:)` can't distinguish 0 from absent.
@@ -126,8 +137,39 @@ final class ChatViewModel {
         // (didCancel) skips the callback so the loop doesn't resume over an
         // interrupt.
         speechSynthesizer.onFinish = { [weak self] in
-            guard let self, self.continuousVoice else { return }
-            self.startDictation()
+            guard let self else { return }
+            self.bargeInMonitor.stop()
+            if self.continuousVoice {
+                self.startDictation()
+            }
+        }
+        // Any termination path (user Stop, barge-in's own synth.stop, etc.)
+        // tears down the barge-in monitor without auto-arming dictation.
+        // Barge-in fires startDictation itself before calling synth.stop, so
+        // by the time this runs the recognizer is already being brought up.
+        speechSynthesizer.onCancel = { [weak self] in
+            self?.bargeInMonitor.stop()
+        }
+    }
+
+    /// Speak the assistant's completed reply and, in voice-loop mode, arm
+    /// the barge-in monitor so the user can interrupt by speaking over it.
+    /// Called from the Generation stream on successful completion.
+    func speakAssistantReply(_ text: String) {
+        speechSynthesizer.speak(
+            text,
+            voiceIdentifier: ttsVoiceId.isEmpty ? nil : ttsVoiceId
+        )
+        if continuousVoice, bargeInEnabled {
+            bargeInMonitor.start { [weak self] in
+                guard let self else { return }
+                // Order matters: arm the recognizer first so the user's
+                // interrupting audio continues into dictation without a gap.
+                // `synth.stop` then fires `onCancel` which tears down the
+                // monitor (already stopped from its single-shot fire).
+                self.startDictation()
+                self.speechSynthesizer.stop()
+            }
         }
     }
 

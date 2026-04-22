@@ -305,6 +305,23 @@ extension SidebarView {
             .toggleStyle(.switch)
             .controlSize(.small)
 
+            Toggle("Barge-in (interrupt TTS by speaking)", isOn: Binding(
+                get: { vm.bargeInEnabled },
+                set: { vm.bargeInEnabled = $0 }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .disabled(!vm.continuousVoice)
+            .padding(.leading, 16)
+
+            if vm.continuousVoice, vm.bargeInEnabled {
+                Text("Use headphones — laptop speakers will self-trigger.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 16)
+            }
+
             if vm.continuousVoice,
                vm.voiceSendPhrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("Set a voice-send phrase below — otherwise there's no way to submit each turn.")

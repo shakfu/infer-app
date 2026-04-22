@@ -96,10 +96,7 @@ extension ChatViewModel {
                 }
                 if self.ttsEnabled, assistantIndex < self.messages.count {
                     let finalText = self.messages[assistantIndex].text
-                    self.speechSynthesizer.speak(
-                        finalText,
-                        voiceIdentifier: self.ttsVoiceId.isEmpty ? nil : self.ttsVoiceId
-                    )
+                    self.speakAssistantReply(finalText)
                 }
                 self.refreshTokenUsage()
             } catch is CancellationError {

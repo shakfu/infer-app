@@ -32,10 +32,15 @@ At runtime the app offers two backends via a header picker:
 
 ## Speech
 
-The **Voice** sidebar tab exposes three features:
+The **Voice** sidebar tab exposes live dictation, TTS, a hands-free voice loop, and whisper file transcription.
 
-- **Live dictation** — mic button on the composer uses Apple's on-device `SFSpeechRecognizer`. Partial transcripts stream into the composer. Say the voice-send phrase (default `"send it"`) to auto-submit.
+- **Live dictation** — mic button on the composer uses Apple's on-device `SFSpeechRecognizer`. Partial transcripts stream into the composer. Two auto-submit triggers (independent, whichever fires first wins):
+  - **Voice-send phrase** — say the configured phrase (default `"send it"`) at the end of a dictation.
+  - **Silence timeout** — set "Or send after silence: N sec" and the in-flight turn submits after N seconds without new speech.
 - **Text-to-speech** — toggle "Read responses aloud" to have `AVSpeechSynthesizer` speak each completed assistant reply; voice pickable from all installed system voices.
+- **Continuous voice (voice loop)** — toggle on for a hands-free cycle: TTS reads the assistant reply, then the mic auto-arms so you can dictate the next turn. Submitting (via phrase or silence) kicks off the next generation, and the loop continues. Force-enables TTS; turning TTS off clears the loop.
+  - **Barge-in** sub-toggle (on by default when in loop mode): talk over the TTS to interrupt it — the mic swings straight into dictation without waiting for the reply to finish. Runs a dedicated `AVAudioEngine` tap that fires when input level stays above `-30 dBFS` for ≥ 200 ms. **Use headphones** — on laptop speakers the TTS audio leaks back into the built-in mic and self-triggers. Disable the sub-toggle for speaker use.
+  - **Stop Speech** (⌘⇧.) — menu shortcut under `Speech > Stop Speaking` shuts up TTS mid-sentence. Works regardless of loop/barge-in state; handy on speakers.
 - **File transcription (whisper.cpp)** — drag any audio or video file onto the window, or press **Record** to capture the mic to a `.wav`, and whisper transcribes the result into the composer. Model choice (`tiny` / `base` / `small`, all multilingual), translate-to-English toggle, and recordings actions (Reveal in Finder, Clear recordings…) live in the same tab. Whisper models download on first use to `~/Library/Application Support/Infer/whisper/`; recordings are saved to `~/Library/Application Support/Infer/recordings/`.
 
 ## Conversation vault
