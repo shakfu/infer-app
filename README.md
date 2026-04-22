@@ -42,6 +42,21 @@ The **Voice** sidebar tab exposes three features:
 
 Every new chat is saved to `~/Library/Application Support/Infer/vault.sqlite` (GRDB + FTS5). The **History** sidebar tab has search-as-you-type across all past messages and a recent-conversations list; clicking a result loads it into the UI. Markdown transcript save/load is still available via `File > Save/Open Transcript…` but is independent of the vault.
 
+Loading a conversation (from the History tab or `File > Open Transcript…`) restores the model's KV cache from the loaded messages, so follow-up turns have full prior context. Cost is one prompt-sized decode at load time on both backends.
+
+## Conversation actions
+
+Hover over the latest turn of either role to reveal inline actions:
+
+- **Regenerate** (assistant row, circular arrow) — resample a new reply for the same user turn.
+- **Edit + resend** (user row, pencil) — pop the last user/assistant pair back into the composer for editing before resending.
+
+Both rewind the backend's KV cache and re-prefill from the truncated transcript. Available only when the VM is idle and the last two messages are a user→assistant pair.
+
+## Reproducibility (seed)
+
+The Parameters sidebar section has a **Seed** row. Leave the field empty (or press Clear) for a fresh random seed per generation (default). Enter a number or press Random to pin a fixed `UInt64` seed: identical prompt + params + seed produces identical output on a given backend. Useful for A/B-ing sampler settings or debugging model behavior. Persisted across launches.
+
 ## Clean
 
 ```sh

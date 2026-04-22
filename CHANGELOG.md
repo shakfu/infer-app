@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3]
+
 ### Added
 
 - **Sampling seed (reproducibility).** New `seed: UInt64?` field on `InferSettings`; `nil` = random (non-deterministic, prior behavior). When set, identical prompt + params + seed produces identical output on a given backend. Sidebar's Parameters section grows a Seed row: text field (empty = random), a **Random** button that pins a fresh random seed, and a **Clear** button that reverts to random-per-generation. Wired through both runners: `LlamaRunner` narrows the `UInt64` to `UInt32` (what `llama_sampler_init_dist` takes) and installs it in the sampler chain at load / `updateSampling`; `MLXRunner` calls `MLX.seed(_:)` immediately before each generation (safe because generations are serialized via `isGenerating`). Persisted as a string under `PersistKey.seed` since `UserDefaults` has no `UInt64` path; two new `SettingsPersistenceTests` cover round-trip at `UInt64.max` and clearing-after-setting leaves no residue (14 → 16 tests). `Package.swift` now declares `mlx-swift` directly to expose the `MLX` product for `MLX.seed`.
