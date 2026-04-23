@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5]
+
 ### Added
 
 - **LaTeX math rendering in print / PDF / HTML export.** Transcripts containing `$$…$$`, `\[…\]`, or `\(…\)` now typeset via KaTeX in the `PrintRenderer` WebView before snapshotting, so math lands correctly in PDF export and printed output. Inline `$…$` intentionally excluded to avoid false positives on prose like "$5 and $10" — use `\(…\)` for inline math. KaTeX is loaded parser-blocking at end-of-body, so `WKWebView.didFinish` waits for rendering to complete before `createPDF` fires (no async plumbing). Code blocks are skipped by KaTeX's default `ignoredTags` so fenced code containing `$` isn't mis-rendered. Injection is gated on content detection (`containsMath(_:)`) so transcripts without math skip the ~280 KB of KaTeX JS entirely.
