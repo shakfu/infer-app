@@ -255,6 +255,64 @@ All plugins are in-tree (see `plugins.md`). A plugin is a packaging boundary —
 
 A plugin with only a persona and no tools is legal and useful: it's a persona pack. A plugin with only an MCP server and no agent is also legal: its tools become available to any existing agent whose allowlist references them.
 
+## User interface
+
+The UI separates **using** an agent (frequent, reversible, instant) from **managing** agents (rare, deliberate, exploratory). Conflating them is the root cause of "launch dialog" and "tab-as-picker" designs that feel wrong for this architecture — an agent is a configuration that shapes the next turn's decode, not a process, so there is no launch moment.
+
+### Selection-for-use: sidebar, next to Models
+
+The active agent for the current conversation lives in the sidebar next to the model picker. Clicking switches agents instantly: transcript inherits with a divider row (see Decisions), no modal dialog, no confirmation. Compatible agents appear as selectable rows; incompatible ones are grouped under a disabled "Requires other model" section with a reason row ("Requires Llama 3.1 template — current: Qwen 2.5"). Reason text is visible inline, not on hover, so it survives a11y and touch contexts.
+
+Agents are **per-conversation state**, not a global setting. Each conversation remembers its agent; switching the active conversation restores that conversation's agent. This matches how users actually work ("this chat is with code-reviewer; that one is with default") and makes the sidebar an *indicator* of the current conversation's binding, not a floating global.
+
+### Management: Agents tab, after Models
+
+A new "Agents" tab lands after the Models tab in the existing tab structure. It is a **library / inspector**, not a picker:
+
+- Sections for **User**, **Plugin-shipped**, **First-party** (matching the JSON precedence ordering described earlier, displayed for transparency even though the runtime distinction is cosmetic per `plugins.md`).
+
+- Each row shows name, description, template family, backend preference, and tool allowlist summary.
+
+- Selecting a row reveals the full config read-only, plus actions: **Open in Finder** (user agents only), **Duplicate as user agent** (any agent → seed a new JSON file in `~/Library/Application Support/Infer/agents/`), **Reveal in transcript** (jumps to most recent conversation using this agent, if any).
+
+- No "Launch" button. Using an agent happens in the sidebar; the Agents tab is for browse/inspect/author. This split mirrors VS Code's extensions tab vs the active-editor status bar, and keeps per-use friction at zero.
+
+Authoring agents is explicitly a file-editing workflow in v1: JSON in an external editor, reload picked up on next launch (or via a "Reload agents" button in the tab). An in-app form editor is deferred until non-developer authoring is a real use case — duplicating every schema field in a form is a large ongoing cost against a thin benefit.
+
+### Rejected: modal configuration dialog on selection
+
+A launch dialog was considered and rejected. Reasons: (1) it duplicates the JSON as a second source of truth and forces a decision on whether edits write back; (2) modal-per-selection is untenable friction for an action users take many times per session; (3) it implies a "launch" moment the architecture does not have. Per-session overrides, if ever needed, go behind a gear icon on the sidebar row clearly marked as session-only and non-persistent — not on the roadmap for v1.
+
+### Rejected: hierarchical menu by category as primary surface
+
+A category-indexed menu was considered and rejected as the *primary* selector. Reasons: (1) no `category` field in the `PromptAgent` schema, and adding one invites a taxonomy fight no one wins; (2) menu rows show name + icon only, which hides the metadata (description, requirements, tools) users actually need to choose; (3) menus are commands, not state — users lose track of what's currently selected. A command-palette launcher (`⌘⇧A`, fuzzy-searchable with inline metadata on focus) is a reasonable *additive* surface for power users with many agents; deferred until there are enough agents to justify it.
+
+### PR-1-scope UI surface
+
+Only these pieces land with PR 1 (no tool loop, no step trace to render):
+
+1. **Sidebar agent picker** above the model picker. Current-conversation binding. Compatible / incompatible grouping with reason rows. Divider row on switch.
+
+2. **Agents tab** after Models. Read-only inspector; sections by source; Open-in-Finder and Duplicate-as-user-agent actions. Reload button. No form editor.
+
+3. **Agent attribution on assistant messages.** Small chip showing the producing agent's name on each assistant message. Redundant within a run of same-agent replies but correct across switches, and cheaper than scrolling to find the nearest divider row.
+
+4. **Default handling.** The synthetic `DefaultAgent` appears in both the sidebar and the tab as "Default" in a separate top row / section, visually distinct from user-authored agents.
+
+Everything else — step progress, tool-call rows, consent modal, disclosure groups for traces, budget banner, cancel-state variants — is undesigned on purpose and belongs to PR 2 when the loop actually runs. Designing loop UI against an imagined loop shape before the loop exists is how mockups diverge from implementation.
+
+### Open UI questions (PR 2+)
+
+- **Step progress indicator.** Counter badge (`3/10`), inline strip, or collapsible drawer? A progress bar overclaims — the budget is a ceiling, not a prediction. Lean counter.
+
+- **Raw tool-call token leakage.** Parser runs every N=8 tokens, so partial `<tool_call>` syntax may render briefly before being swallowed. Hide-then-replace (feels glitchy) vs suppress-tail-speculatively (adds latency). Neither is clean; both are honest options.
+
+- **Tool-row in-flight states.** Parsed-awaiting-consent, consented-running (needs spinner + elapsed time for long MCP calls), returned. Three distinct visual treatments required.
+
+- **Copy / share granularity.** "Copy answer" and "Copy with trace" as two menu items rather than one ambiguous default.
+
+- **Consent modal batching.** Even with per-turn allow, a planner-style agent that queues N reads up front could show one batch-approval modal. Requires loop lookahead that streaming autoregressive decode doesn't have today; file under "possible once planner agents exist."
+
 ## Concrete first PR (scope)
 
 Agents ship **before** tool-calling. The personas path is useful on its own, sidesteps the template-family problem entirely, and makes the transcript-schema change small and reviewable.
@@ -267,9 +325,9 @@ Agents ship **before** tool-calling. The personas path is useful on its own, sid
 
 4. `AgentRegistry` actor: first-party conformances registered at launch, JSON personas discovered from disk, precedence rules enforced.
 
-5. Sidebar: agent picker above the model picker. Selecting an agent routes through `Agent.decodingParams` and `Agent.systemPrompt` for the session.
+5. UI surface per the "PR-1-scope UI surface" subsection above: sidebar picker with per-conversation binding, Agents library tab after Models, agent-name chip on assistant messages, synthetic Default treatment. Selecting an agent routes through `Agent.decodingParams` and `Agent.systemPrompt` for the conversation.
 
-6. `ChatMessage.steps: [StepTrace]?` added as nil-default optional.
+6. `ChatMessage.steps: [StepTrace]?` added as nil-default optional. Also: `Conversation.agentId: AgentID?` so per-conversation agent binding persists.
 
 7. Tests in `InferAgentsTests`:
 
