@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6]
+
 ### Added
 
 - **Agent picker in the chat header.** The active agent is now a first-class header element alongside the model status and token indicator. Click the person-badge label to open a menu grouping compatible agents (activatable) vs. incompatible ones (shown as disabled rows with the reason inline, e.g. "Requires MLX backend"). A "Manage agents…" entry at the bottom routes to the sidebar's Agents tab. Label includes a `tools: N` chip when the active agent exposes tools, so the user can tell at a glance whether the next turn can call tools. `Cmd+Shift+A` opens the Agents sidebar tab (SwiftUI has no API to programmatically open a `Menu`, so the shortcut targets the tab rather than the popover); `Cmd+Shift+I` opens a read-only inspector for the active agent regardless of which tab is active (the sheet is hosted on `ChatView` with `inspectorListing` on the VM, so it doesn't depend on the Agents tab being in the view hierarchy). Sidebar tab selection hoisted from `@State` to `@AppStorage(PersistKey.sidebarTab)` so the "Manage agents…" and inspector commands can route into the right tab.
