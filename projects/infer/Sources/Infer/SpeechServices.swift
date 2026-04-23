@@ -71,7 +71,11 @@ final class SpeechRecognizer {
             return
         }
 
-        SFSpeechRecognizer.requestAuthorization { [weak self] status in
+        // @Sendable: TCC invokes this completion on a background QoS queue,
+        // and without it the closure inherits SpeechRecognizer's @MainActor
+        // isolation, which traps in swift_task_isCurrentExecutor before the
+        // Task{} hop can run.
+        SFSpeechRecognizer.requestAuthorization { @Sendable [weak self] status in
             Task { @MainActor in
                 guard let self else { return }
                 defer { self.isStarting = false }
@@ -103,7 +107,11 @@ final class SpeechRecognizer {
             state = .error("No audio input device is available.")
             return
         }
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+        // @Sendable detaches the closure from SpeechRecognizer's @MainActor
+        // isolation — AVAudioEngine invokes the tap on a realtime audio thread,
+        // and an isolated closure would trip swift_task_isCurrent's queue
+        // assertion and crash with EXC_BREAKPOINT.
+        input.installTap(onBus: 0, bufferSize: 1024, format: format) { @Sendable buffer, _ in
             req.append(buffer)
         }
 
