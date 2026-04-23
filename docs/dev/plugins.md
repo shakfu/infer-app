@@ -1,12 +1,14 @@
 # Plugin system
 
-Status: proposal. Nothing in this document is implemented. The sketch is deliberately scoped small — the first milestone is a single working tool call, not an extension marketplace.
+Status: proposal, unimplemented as of 2026-04-23. The sketch is deliberately scoped small — the first milestone is a single working tool call, not an extension marketplace. PR numbering here is internal to the plugins track; the agents track has its own numbering in `agents.md`.
 
 ## What a "plugin" means here
 
 A plugin is a **unit of extensibility**: a packaging boundary that can bundle agents, tools, MCP servers, and (eventually) UI extensions. See `agents.md` for the agent side of this.
 
 **All plugins are implemented internally — compiled into Infer from the source tree.** There is no dynamic loading, no third-party distribution, and no third-party trust tier. The plugin boundary exists for modularity (cohesive units of extension, separable for review and opt-out) and optionality (users enable only what they want), not for sandboxing untrusted code.
+
+One honest consequence of "all in-tree": the `agents.md` precedence rule (user-JSON > plugin-shipped > first-party compiled) collapses in practice to **user-JSON > everything-compiled-in**. Plugin-shipped agents and first-party agents are indistinguishable at registration time — they're all Swift code and resource bundles linked into the same executable. The three-tier wording is descriptive (it tells you where a given agent came from in the source tree) but not a runtime trust boundary. Treat plugins as a source-code organisation tool and a user-facing enable/disable toggle, nothing more.
 
 A plugin may ship any combination of:
 
@@ -21,7 +23,9 @@ A plugin may ship any combination of:
 MCP subprocess servers are retained as a plugin shape **not because the code is untrusted** — it isn't; it's in-tree like everything else — but because:
 
 1. It gives us access to the MCP ecosystem (filesystem, git, browser, many SaaS servers) without reimplementing each one in Swift.
+
 2. Process isolation means a crashing tool doesn't take down Infer.
+
 3. The stdio transport is a clean boundary for testing and observability.
 
 The rest of this document focuses on the MCP-server path, since built-in Swift tools are comparatively trivial (a protocol conformance, registered with `ToolRegistry`).
@@ -29,7 +33,9 @@ The rest of this document focuses on the MCP-server path, since built-in Swift t
 ## Why MCP rather than a bespoke protocol
 
 - **Ecosystem.** Filesystem, git, shell, browser, and many SaaS servers already exist. Re-inventing the protocol means re-inventing those too.
+
 - **Transport is solved.** MCP over stdio is a well-specified JSON-RPC variant. No TCP ports, no auth bootstrap, no sandbox transport to design.
+
 - **Consent model is explicit.** MCP's per-tool invocation boundary maps cleanly onto a user-confirmation UI. Even though the server code is first-party, individual tool calls still have real-world effects (filesystem writes, network fetches) that the user should authorise per call.
 
 The cost: Infer must implement a tool-calling loop in both runners, and the two runners have very different ergonomics for this (see constraints below).
@@ -37,11 +43,20 @@ The cost: Infer must implement a tool-calling loop in both runners, and the two 
 ## Constraints shaping the design
 
 1. **Two runners, different tool-call surfaces.** `MLXRunner` delegates to `MLXLMCommon.ChatSession`, which does not currently expose a tool-call callback — hijacking the token stream to detect a tool-call tag is the practical path. `LlamaRunner` already hand-renders the chat template and consumes deltas; injecting a tool-call parse step into the existing loop is straightforward. Expect feature parity to lag: **`LlamaRunner` gets tool calls first.**
+
 2. **Chat templates vary by model.** Tool-calling formats (OpenAI-style `<tool_call>` JSON, Llama 3.1 `<|python_tag|>`, Qwen `<tool_call>`, Hermes XML) are model-specific. The chat template embedded in the GGUF dictates the wire format. The plugin layer must be template-aware or restrict itself to models whose template Infer recognises.
-3. **Subprocess lifecycle mirrors the runner lifecycle.** MCP servers are long-lived stdio subprocesses. They must be shut down in the same `applicationWillTerminate` path that already drains the runners (see `CLAUDE.md` "Critical lifecycle detail"). A leaked server process after app quit is a bug.
+
+3. **Subprocess lifecycle mirrors the runner lifecycle.** MCP servers are long-lived stdio subprocesses. They must be shut down in the same `applicationWillTerminate` path that already drains the runners (see `CLAUDE.md` "Critical lifecycle detail"). A leaked server process after app quit is a bug. The shutdown sequence is a three-step escalation per client, not a single timeout:
+
+   1. Send MCP `shutdown` request over stdio, wait up to **200 ms** for a clean ack and EOF.
+   2. On timeout, `Process.interrupt()` (SIGINT), wait up to **200 ms** more.
+   3. On further timeout, `Process.terminate()` (SIGTERM) and drop the handle.
+
+   Total per-client budget: 400 ms. With clients drained in parallel, the `applicationWillTerminate` addition is ~500 ms worst-case on top of the existing 2 s runner drain. A client that ignores all three signals leaks — log and move on; the OS reaps on app exit.
+
 4. **Single-user desktop, not multi-tenant.** Every tool runs as the current user with the current user's permissions. The consent layer is about *user intent* (did you mean to write this file?) rather than *code trust* (is this plugin safe?) — since all plugin code is first-party, the latter is a code-review question, not a runtime one.
+
 5. **Swift 6 concurrency.** New code lands Swift-6-clean so the existing `.swiftLanguageMode(.v5)` opt-out on `Infer` can still eventually be dropped (TODO.md P2).
-6. **No commits from the assistant.** Per project rules, scaffolding is authored here but committed by the user.
 
 ## Architecture sketch
 
@@ -62,18 +77,27 @@ ChatViewModel
 New types (all in a new `InferPlugins` SwiftPM target — pure Swift, no MLX/llama deps, testable under Tier 1):
 
 - `PluginManifest` — decoded from `~/Library/Application Support/Infer/plugins.json`. Each entry: `name`, `command`, `args`, `env`, `enabled`, `autoApprove: [toolName]`.
+
 - `MCPClient` — owns a `Process`, two `Pipe`s, and a JSON-RPC framing layer. Exposes `listTools() -> [ToolSpec]`, `call(tool:args:) -> ToolResult`, `shutdown()`.
+
 - `PluginHost` — actor; aggregates `MCPClient`s, deduplicates tool names across servers (`server/tool` naming on collision), gates each call through a `ConsentPolicy`.
+
 - `ConsentPolicy` — pure struct: given `(serverName, toolName, argsHash)` returns `.allow`, `.prompt`, or `.deny`. Backed by the manifest's `autoApprove` plus a per-session remember-my-choice map.
+
 - `ToolCallParser` — pure parser: given a runner's streamed text and a template family (`llama3`, `qwen`, `hermes`, `openai`), emits `ToolCall` structs or passes text through. One parser per family; Infer's default is "none" (tool calls disabled) when the template is unrecognised.
+
 - `ToolCallInjector` — formats a `ToolResult` back into the template's expected format and hands it to the runner as the next user-visible-but-role-tagged turn.
 
 ### Wire flow (happy path, LlamaRunner)
 
 1. User sends a message. `LlamaRunner` renders the template, appends active tool specs from `PluginHost` into the system prompt (template-specific section), decodes.
+
 2. As tokens stream, `ToolCallParser` watches the tail. On a complete tool-call tag, it pauses the stream (the existing `CancelFlag` mechanism; we add a non-error "paused" state) and emits the parsed call upward.
+
 3. `PluginHost` checks consent. If `.prompt`, the UI shows a modal with `(server, tool, args)` and an "allow once / allow always / deny" triad. If `.deny`, a synthetic error result is injected.
+
 4. `MCPClient.call(...)` runs the tool. Result is normalised to text.
+
 5. `ToolCallInjector` appends the tool turn to the runner's message buffer and resumes decoding. The model sees its own tool call followed by the tool result and continues generating.
 
 MLXRunner support is deferred until the above shape is validated; when it lands it will likely require either forking `ChatSession` or reaching under it to drive `generate(...)` directly.
@@ -83,8 +107,11 @@ MLXRunner support is deferred until the above shape is validated; when it lands 
 Plugin code is first-party. The consent layer is about *user intent*, not code trust: the model is an unreliable agent inside a trusted app, and real-world side effects need human authorisation.
 
 - **Default-disabled.** Plugins start disabled. The user opts in per plugin in Settings → Plugins.
+
 - **Per-tool consent.** Every call prompts unless the user has ticked "always allow this tool for this plugin". Consent is scoped to `(plugin, tool)`.
+
 - **Argument preview.** The consent prompt shows the full JSON arguments. No truncation — if they don't fit, the user scrolls. Hiding args to fit a dialog is how you trick users into approving `rm -rf $HOME`.
+
 - **Tool output is model-visible input.** Tool results are rendered in the transcript with the same escaping the assistant channel already uses. Do not interpret tool output as Markdown until we are sure the renderer cannot execute arbitrary links/iframes. (`swift-markdown-ui` is generally fine, but re-check when wiring this.) Remember: the point of escaping is not to defend against the tool, it's to defend against a malicious *document the tool fetched* trying to inject instructions into the model.
 
 ## Concrete first PR (scope)
@@ -92,46 +119,72 @@ Plugin code is first-party. The consent layer is about *user intent*, not code t
 Keep the first plugin PR small enough to review in one sitting. It lands a working end-to-end path for **one** server, **one** template family, **one** runner.
 
 1. Add `InferPlugins` SwiftPM library target. No MLX/llama dependencies.
+
 2. Implement `MCPClient` over stdio (`Process` + `Pipe` + `JSONDecoder`). Support `initialize`, `tools/list`, `tools/call`, `shutdown`. Skip resources, prompts, sampling for now.
+
 3. Implement `ToolCallParser.llama3` only. Gate the feature to models whose template string matches a known Llama 3.1 signature; otherwise tools are silently unavailable (logged, not errored).
+
 4. Wire `PluginHost` into `ChatViewModel` and extend `LlamaRunner` with a tool-call hook. MLXRunner gains a stub that says "tools not yet supported on MLX" in logs.
-5. Ship a hard-coded single-plugin demo: the reference MCP filesystem server pointed at `~/Desktop` only. No UI for adding plugins yet.
-6. Consent UI: a single `Alert` with `(server, tool, args)` and allow/deny. No "always allow" persistence yet.
+
+5. Ship a minimal read-only `plugins.json` at `~/Library/Application Support/Infer/plugins.json`, seeded on first launch with the reference MCP filesystem server pointed at `~/Desktop`. No editing UI yet, but the manifest loader is the same one PR 2's UI will edit — that avoids PR 2 having to simultaneously invent the format, migrate a hard-coded fixture, and add UI.
+
+6. Consent UI: a single `Alert` with `(server, tool, args)` and three buttons — **Allow once**, **Allow for this turn**, **Deny**. Per-turn allow is a `Set<(server,tool)>` held by the active `AgentSession` and cleared at turn end; it does not persist across turns. Persistent "always allow" still lands in PR 4. Rationale: skipping per-turn allow in v1 means the moment anyone enables the filesystem server, a three-file read triggers three modals; the feature ships visibly broken without it.
+
 7. Tests in `InferPluginsTests`:
+
    - `MCPClientTests` — spawn a trivial Swift fixture process that speaks MCP; assert list/call/shutdown round-trips.
+
    - `ToolCallParserTests` — golden-file test: streamed Llama 3.1 output with and without a tool call.
+
    - `ConsentPolicyTests` — decision table.
+
 8. Lifecycle: extend `AppDelegate.applicationWillTerminate` to drain `PluginHost.shutdown()` before the existing runner shutdown. Budget: 500 ms on top of the existing 2 s.
 
-Out of PR 1: plugin discovery UI, manifest editing, MLX support, additional template families, persistent consent, resources/prompts/sampling support, tool-result Markdown rendering.
+Out of PR 1: plugin discovery UI, manifest editing, MLX support, additional template families, persistent consent, resources/prompts/sampling support, tool-result Markdown rendering (deferred as a UI/renderer question; the model-visible escaping in step 4 of the wire flow is *not* deferred — those are two separate concerns and should not be collapsed).
 
 ## Subsequent PRs (roughly in order)
 
-- **PR 2:** Settings → Plugins pane. Add / remove / enable / disable servers. Manifest persistence. `autoApprove` list editable per server.
-- **PR 3:** `ToolCallParser.qwen` and `.hermes`. Template detection matrix.
-- **PR 4:** Persistent consent (`allow always` for `(server, tool)` → manifest).
-- **PR 5:** MLX tool-call support. Either upstream a `ChatSession` hook or drop to `generate(...)` inside `MLXRunner`.
+- **PR 2:** Settings → Plugins pane. Add / remove / enable / disable servers. Manifest editing UI on top of PR 1's loader. `autoApprove` list editable per server.
+
+- **PR 3:** `ToolCallParser.qwen` and `.hermes`. Template detection matrix (fingerprint table; see `agents.md` constraint 3 for the fail-loud activation rule).
+
+- **PR 4:** Persistent consent (`allow always` for `(server, tool)` → manifest). Complements PR 1's per-turn allow.
+
+- **PR 5 (speculative):** MLX tool-call support. Requires either upstreaming a `ChatSession` hook or dropping to `generate(...)` inside `MLXRunner`. This is research-shaped work, not a reviewable PR, and may never land. The product commitment is that MLX is a tools-off backend as a supported steady state — agents requiring tools are hidden from the picker when MLX is active, with a reason row. `agents.md` PR 6 tracks the agent-side UI for the same gap.
+
 - **PR 6:** MCP `resources/` support — let servers expose documents the user can `@mention` into a turn. This is where the transcript UI starts to change shape.
+
 - **PR 7:** MCP `sampling/` support — servers can call back into the model. Requires a recursion budget and a separate consent lane ("server wants to ask the model N tokens about X"). Defer until a concrete use case appears.
 
 ## Anti-goals
 
 - **No dynamic plugin loading (for now).** Swift *can* do this — `Bundle.load()`, ABI stability since 5.0, module stability via `.swiftinterface`. The blocker isn't technical feasibility; it's the cost/benefit. Dynamic loading requires:
+
   - Compiling `InferAgents` / `InferPlugins` with `-enable-library-evolution` (resilient ABI, small runtime cost, stricter rules on what changes are breaking).
+
   - Freezing the `Agent` / `Tool` / `ToolSpec` surface as a public API contract — every future tweak becomes a compatibility event.
+
   - A signing/notarisation story for third-party plugin authors, or weakening the hardened runtime via `com.apple.security.cs.disable-library-validation`.
+
   - Accepting that a loaded dylib shares Infer's crash domain and full entitlements, with no OS-enforced sandbox — the consent layer is the only boundary.
 
   None of this is hard. All of it is premature: there are no third-party plugins, the `Agent` protocol is weeks old, and the subprocess/MCP path already covers ecosystem-sourced tools with OS process isolation for free. Revisit when a concrete third-party plugin exists and its author is asking for this.
 - **No third-party plugin distribution.** Not a marketplace, not a `plugins.json` pointing at random binaries. Contributions happen via the repo.
+
 - **No cross-platform plugin API.** Infer is macOS-only; the plugin API can assume POSIX pipes and `Process`.
+
 - **No abstraction over MCP.** If MCP changes, we change with it. Wrapping it in an Infer-flavoured protocol just to "keep options open" adds maintenance without buying anything.
+
 - **Do not make tool calls the default.** A user with no plugins enabled must see zero behavioural change — no extra system-prompt text, no latency, no UI affordance.
 
 ## Open questions
 
 - **Template detection reliability.** GGUF chat templates are free-form Jinja. Matching "this is Llama 3.1" robustly probably needs a small fingerprint table rather than a regex. How many false positives can we tolerate before tool calls go to a model that will happily hallucinate the syntax?
+
 - **Streaming UX during a tool call.** The assistant pauses mid-stream while the tool runs. Show a spinner? Show the parsed call? Collapse the raw `<tool_call>` tokens retroactively once the call completes? First PR will do the simplest thing (show a placeholder row) and iterate.
+
 - **Cancellation during a tool call.** The user hits stop while an MCP call is in flight. Do we kill the subprocess (`Process.terminate()`), or wait for the current call to return and drop the result? Leaning terminate, but only after the call has been running longer than some threshold.
-- **Consent fatigue.** If a model calls `read_file` twenty times in a turn, twenty prompts is unusable. A per-turn "allow for this turn" option is probably needed by PR 4.
+
+- **Consent fatigue beyond the per-turn allow.** PR 1 ships "allow for this turn"; PR 4 adds persisted "always allow." Open: do we need a middle tier, e.g. "allow for this session" (until app restart) or "allow for N minutes"? Unclear without usage data — revisit after PR 4 when the two-tier system has been used in anger.
+
 - **Who owns the MCP client code long-term?** If an official `swift-mcp` library appears, delete ours and depend on it. Until then, the in-tree implementation is the minimum viable subset, not a general-purpose SDK.

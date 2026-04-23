@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **LaTeX math rendering in print / PDF / HTML export.** Transcripts containing `$$…$$`, `\[…\]`, or `\(…\)` now typeset via KaTeX in the `PrintRenderer` WebView before snapshotting, so math lands correctly in PDF export and printed output. Inline `$…$` intentionally excluded to avoid false positives on prose like "$5 and $10" — use `\(…\)` for inline math. KaTeX is loaded parser-blocking at end-of-body, so `WKWebView.didFinish` waits for rendering to complete before `createPDF` fires (no async plumbing). Code blocks are skipped by KaTeX's default `ignoredTags` so fenced code containing `$` isn't mis-rendered. Injection is gated on content detection (`containsMath(_:)`) so transcripts without math skip the ~280 KB of KaTeX JS entirely.
+- **LaTeX math rendering in print / PDF / HTML export.** Transcripts containing `$$…$$`, `\[…\]`, or `\(…\)` now typeset via KaTeX in the `PrintRenderer` WebView before snapshotting, so math lands correctly in PDF export and printed output. Inline `$…$` intentionally excluded to avoid false positives for inline math. KaTeX is loaded parser-blocking at end-of-body, so `WKWebView.didFinish` waits for rendering to complete before `createPDF` fires (no async plumbing). Code blocks are skipped by KaTeX's default `ignoredTags` so fenced code containing `$` isn't mis-rendered. Injection is gated on content detection (`containsMath(_:)`) so transcripts without math skip the ~280 KB of KaTeX JS entirely.
 
 - **Offline web assets (no CDNs).** Both highlight.js and KaTeX now ship inside `Infer.app/Contents/Resources/WebAssets/` instead of loading from cdnjs at runtime. Fetched once per checkout by `scripts/fetch_webassets.sh` (pinned KaTeX 0.16.22 + highlight.js 11.11.1; override via `KATEX_VERSION` / `HLJS_VERSION`) into `thirdparty/webassets/` (gitignored, same pattern as the llama / whisper xcframeworks). New `make fetch-webassets` target + `WEBASSETS_MARKER` rule; `bundle-infer` now depends on it and copies the directory into the app. `PrintRenderer` switched from absolute cdnjs URLs to relative `WebAssets/…` paths with `Bundle.main.resourceURL` passed as `baseURL` on `loadHTMLString`. Motivation: no network at print time, no CDN outage risk, no inadvertent transcript-URL exfiltration, reproducible rendering. Trade-off: `Export as HTML` (standalone .html file) no longer renders code colors or math when opened on another machine — it degrades to plain `<pre>` + raw `$…$`; use `Export as PDF` for a fully self-contained rich artifact.
 
@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Makefile hygiene targets.**
+
   - `make clean-infer` — removes only `build/infer-xcode` (xcodebuild derived data). Useful when you want a fresh xcodebuild without blowing away the bundled `.app`.
+
   - `make clean-mlx-cache` — reports `du -sh` of `$HF_HOME/hub` (defaults to `~/.cache/huggingface`) and prompts for confirmation before `rm -rf`. MLX model downloads grow unbounded; this is the safe way to reclaim the disk.
 
 ## [0.1.4]

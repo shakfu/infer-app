@@ -5,7 +5,7 @@ import re
 import sys
 from pathlib import Path
 
-BULLET_RE = re.compile(r"^(\s*)[-*+]\s")
+BULLET_RE = re.compile(r"^(\s*)(?:[-*+]|\d+[.)])\s")
 
 
 def is_bullet(line: str) -> bool:
@@ -46,9 +46,9 @@ def process_file(path: Path, in_place: bool) -> bool:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Insert a blank line between adjacent markdown bullets "
-                    "(`-`, `*`, `+`). Idempotent: already-separated bullets "
-                    "are left alone.",
+        description="Insert a blank line between adjacent markdown list items "
+                    "(unordered `-`, `*`, `+` and ordered `1.`, `1)`). "
+                    "Idempotent: already-separated items are left alone.",
         epilog="Reads from stdin when no path is given.",
     )
     parser.add_argument(
