@@ -57,6 +57,18 @@ final class ChatViewModel {
     /// mutations (see `Agents.swift`). Extracted to `InferAgents` so the
     /// selection logic is unit-testable without the runner stack.
     let agentController = AgentController()
+    /// Non-modal notification surface for background confirmations
+    /// (duplicate success, non-fatal warnings). Overlaid on `ChatView`;
+    /// any `@MainActor` code can call `toasts.show(_:)` to surface a
+    /// short message without an alert dialog.
+    let toasts = ToastCenter()
+    /// Listing currently displayed in the agent inspector sheet.
+    /// Single source of truth so the sheet can be triggered from
+    /// anywhere — library row click, app-level command (`Cmd+Shift+I`),
+    /// or future plugin-driven openers — and always present on `ChatView`,
+    /// which stays in the view hierarchy regardless of which sidebar
+    /// tab is active. Setting to nil dismisses.
+    var inspectorListing: AgentListing? = nil
 
     /// Registry of locally-implemented Swift tools. Populated at init
     /// with the PR 2 built-ins (`clock.now`, `text.wordcount`). Grows

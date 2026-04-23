@@ -29,7 +29,14 @@ struct SidebarView: View {
     @State var draft: InferSettings = .defaults
     @State var showSystemPrompt = false
     @State var didSeed = false
-    @State var tab: SidebarTab = .model
+    @AppStorage(PersistKey.sidebarTab) var tabRaw: String = SidebarTab.model.rawValue
+
+    var tab: Binding<SidebarTab> {
+        Binding(
+            get: { SidebarTab(rawValue: tabRaw) ?? .model },
+            set: { tabRaw = $0.rawValue }
+        )
+    }
     @AppStorage(PersistKey.appearance) var appearanceRaw: String = AppearanceMode.light.rawValue
 
     var body: some View {
@@ -38,7 +45,7 @@ struct SidebarView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    switch tab {
+                    switch tab.wrappedValue {
                     case .model:
                         modelSection
                         parametersSection
@@ -64,7 +71,7 @@ struct SidebarView: View {
     }
 
     var tabBar: some View {
-        Picker("", selection: $tab) {
+        Picker("", selection: tab) {
             ForEach(SidebarTab.allCases) { t in
                 Image(systemName: t.icon)
                     .help(t.label)

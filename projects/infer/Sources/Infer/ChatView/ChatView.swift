@@ -31,6 +31,16 @@ struct ChatView: View {
         }
         .frame(minWidth: sidebarOpen ? 800 : 520, minHeight: 500)
         .animation(.easeInOut(duration: 0.18), value: sidebarOpen)
+        .overlay(alignment: .bottom) {
+            ToastOverlay(center: vm.toasts)
+                .animation(.easeInOut(duration: 0.2), value: vm.toasts.current)
+                .allowsHitTesting(vm.toasts.current != nil)
+        }
+        .sheet(item: $vm.inspectorListing) { listing in
+            AgentInspectorView(vm: vm, listing: listing) {
+                vm.inspectorListing = nil
+            }
+        }
         .onDrop(of: [.audiovisualContent, .audio, .fileURL], isTargeted: nil) { providers in
             handleAudioDrop(providers: providers)
         }

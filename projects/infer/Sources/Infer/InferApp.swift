@@ -1,12 +1,15 @@
 import SwiftUI
 import AppKit
 import llama
+import InferCore
 
 @main
 struct InferApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @State private var chatVM = ChatViewModel()
     @AppStorage("infer.appearance") private var appearanceRaw: String = AppearanceMode.light.rawValue
+    @AppStorage(PersistKey.sidebarOpen) private var sidebarOpen: Bool = true
+    @AppStorage(PersistKey.sidebarTab) private var sidebarTabRaw: String = SidebarTab.model.rawValue
 
     var body: some Scene {
         WindowGroup("Infer") {
@@ -42,6 +45,23 @@ struct InferApp: App {
                 Button("Copy Transcript as Markdown") { chatVM.copyTranscriptAsMarkdown() }
                     .keyboardShortcut("c", modifiers: [.command, .shift])
                     .disabled(chatVM.messages.isEmpty)
+            }
+            CommandMenu("Agent") {
+                Button("Focus Agent Picker") {
+                    sidebarTabRaw = SidebarTab.agents.rawValue
+                    sidebarOpen = true
+                }
+                .keyboardShortcut("a", modifiers: [.command, .shift])
+                .help("Open the Agents tab in the sidebar to switch or inspect the active agent.")
+
+                Button("Inspect Active Agent") {
+                    // Direct presentation — the sheet lives on `ChatView`,
+                    // which is always in the view hierarchy, so this works
+                    // regardless of which sidebar tab is active.
+                    chatVM.inspectorListing = chatVM.activeAgentListing
+                }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+                .help("Open a read-only view of the active agent's configuration.")
             }
             CommandMenu("Speech") {
                 Button("Stop Speaking") { chatVM.speechSynthesizer.stop() }

@@ -82,6 +82,62 @@ final class AgentControllerTests: XCTestCase {
         XCTAssertEqual(entry?.source, .firstParty)
     }
 
+    func testBootstrapPublishesLibraryDiagnostics() async throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("diag-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        // One well-formed file; one malformed (missing systemPrompt).
+        let good = tmp.appendingPathComponent("good.json")
+        try """
+        {
+          "schemaVersion": 1,
+          "id": "u.good",
+          "metadata": {"name": "U Good"},
+          "systemPrompt": "ok"
+        }
+        """.data(using: .utf8)!.write(to: good)
+        let bad = tmp.appendingPathComponent("bad.json")
+        try """
+        {"schemaVersion": 1, "id": "u.bad", "metadata": {"name": "U Bad"}}
+        """.data(using: .utf8)!.write(to: bad)
+
+        let c = makeController()
+        await c.bootstrap(
+            settings: .defaults,
+            firstPartyPersonas: [],
+            personasDirectory: tmp
+        )
+
+        // The good file loaded; the bad file surfaces in diagnostics.
+        XCTAssertTrue(c.availableAgents.contains { $0.id == "u.good" })
+        XCTAssertFalse(c.availableAgents.contains { $0.id == "u.bad" })
+        XCTAssertEqual(c.libraryDiagnostics.count, 1)
+        XCTAssertEqual(c.libraryDiagnostics.first?.url.lastPathComponent, "bad.json")
+    }
+
+    func testBootstrapResetsDiagnosticsOnReload() async throws {
+        let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("diag2-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tmp) }
+
+        let bad = tmp.appendingPathComponent("bad.json")
+        try "{ not json }".data(using: .utf8)!.write(to: bad)
+
+        let c = makeController()
+        await c.bootstrap(settings: .defaults, personasDirectory: tmp)
+        XCTAssertEqual(c.libraryDiagnostics.count, 1)
+
+        // User fixes the file; next bootstrap should clear diagnostics.
+        try """
+        {"schemaVersion": 1, "id": "u.fixed", "metadata": {"name": "Fixed"}, "systemPrompt": "hi"}
+        """.data(using: .utf8)!.write(to: bad)
+        await c.bootstrap(settings: .defaults, personasDirectory: tmp)
+        XCTAssertTrue(c.libraryDiagnostics.isEmpty)
+    }
+
     func testFirstPartyDoesNotOverrideUserOnCollision() async throws {
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("col-\(UUID().uuidString)", isDirectory: true)

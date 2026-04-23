@@ -112,7 +112,6 @@ extension SidebarView {
                 Spacer()
                 Button("Apply") { vm.applySettings(draft) }
                     .controlSize(.small)
-                    .buttonStyle(.borderedProminent)
                     .disabled(draftMatchesCurrent)
             }
             .padding(.top, 4)

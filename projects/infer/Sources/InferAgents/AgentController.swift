@@ -16,6 +16,13 @@ public struct AgentListing: Identifiable, Equatable, Sendable {
     /// entry, derived live from `InferSettings`).
     public let isDefault: Bool
 
+    /// Unicode-safe, single-token label for the role column in the
+    /// transcript ("code-helper", not "Code Helper"). Computed once from
+    /// `name` at listing construction; transcript renderers should
+    /// prefer `ChatMessage.agentLabel` (snapshotted at send time) so
+    /// deleted/renamed personas still render correctly in history.
+    public let displayLabel: String
+
     public init(
         id: AgentID,
         name: String,
@@ -32,6 +39,31 @@ public struct AgentListing: Identifiable, Equatable, Sendable {
         self.backend = backend
         self.templateFamily = templateFamily
         self.isDefault = isDefault
+        self.displayLabel = Self.makeDisplayLabel(from: name, fallbackId: id)
+    }
+
+    /// Flatten a human-readable name into a transcript role-column label.
+    /// Strategy: lowercase, split on anything that isn't a Unicode
+    /// alphanumeric, join tokens with `-`. Preserves CJK runs as single
+    /// tokens (they're already alphanumeric). Falls back to `fallbackId`
+    /// if the name contains no alphanumerics (e.g. emoji-only).
+    public static func makeDisplayLabel(
+        from name: String,
+        fallbackId: AgentID
+    ) -> String {
+        var tokens: [String] = []
+        var current = ""
+        for scalar in name.lowercased().unicodeScalars {
+            if CharacterSet.alphanumerics.contains(scalar) {
+                current.unicodeScalars.append(scalar)
+            } else if !current.isEmpty {
+                tokens.append(current)
+                current = ""
+            }
+        }
+        if !current.isEmpty { tokens.append(current) }
+        guard !tokens.isEmpty else { return fallbackId }
+        return tokens.joined(separator: "-")
     }
 }
 
@@ -91,6 +123,13 @@ public final class AgentController {
     /// read `maxSteps > 0` decisions synchronously.
     public private(set) var activeToolSpecs: [ToolSpec] = []
 
+    /// Per-file parse failures from the most recent `bootstrap`. Reset
+    /// each bootstrap so the UI shows only currently-broken files
+    /// (not a historical accretion). Published so the Agents tab can
+    /// render a dismissible diagnostics banner instead of silently
+    /// swallowing malformed JSON.
+    public private(set) var libraryDiagnostics: [AgentRegistry.PersonaLoadError] = []
+
     public let registry: AgentRegistry
 
     public init(registry: AgentRegistry = AgentRegistry()) {
@@ -109,10 +148,12 @@ public final class AgentController {
     ) async {
         self.activeDecodingParams = DecodingParams(from: settings)
         self.toolCatalog = toolCatalog
-        _ = await loadFirstPartyPersonas(from: firstPartyPersonas)
+        var diagnostics: [AgentRegistry.PersonaLoadError] = []
+        diagnostics.append(contentsOf: await loadFirstPartyPersonas(from: firstPartyPersonas))
         if let dir = personasDirectory {
-            _ = await registry.loadUserPersonas(from: dir)
+            diagnostics.append(contentsOf: await registry.loadUserPersonas(from: dir))
         }
+        self.libraryDiagnostics = diagnostics
         await refreshListings()
     }
 

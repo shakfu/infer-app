@@ -33,6 +33,10 @@ struct ChatMessage: Identifiable, Equatable {
     /// here rather than resolved on render so the transcript stays
     /// readable if the user later edits or deletes the persona.
     var agentName: String? = nil
+    /// Unicode-safe flattened label for the role column ("code-helper").
+    /// Snapshotted alongside `agentName` so renaming or deleting the
+    /// persona does not retroactively change historical rows.
+    var agentLabel: String? = nil
 }
 
 enum Backend: String, CaseIterable, Identifiable {

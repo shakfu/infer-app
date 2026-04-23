@@ -9,11 +9,16 @@ extension ChatViewModel {
         let attachedImage = self.pendingImageURL
         messages.append(ChatMessage(role: .user, text: text, imageURL: attachedImage))
         let nameSnapshot = activeAgentId == DefaultAgent.id ? nil : activeAgentName()
+        let labelSnapshot: String? = nameSnapshot.map { name in
+            availableAgents.first { $0.id == activeAgentId }?.displayLabel
+                ?? AgentListing.makeDisplayLabel(from: name, fallbackId: activeAgentId)
+        }
         messages.append(ChatMessage(
             role: .assistant,
             text: "",
             agentId: activeAgentId,
-            agentName: nameSnapshot
+            agentName: nameSnapshot,
+            agentLabel: labelSnapshot
         ))
         let assistantIndex = messages.count - 1
         input = ""
@@ -133,12 +138,19 @@ extension ChatViewModel {
                 self.refreshTokenUsage()
             } catch is CancellationError {
                 // user-initiated stop
+                self.finalizeIncompleteTrace(at: assistantIndex, with: .cancelled)
             } catch LlamaError.cancelled {
                 // user-initiated stop
+                self.finalizeIncompleteTrace(at: assistantIndex, with: .cancelled)
             } catch MLXRunnerError.cancelled {
                 // user-initiated stop
+                self.finalizeIncompleteTrace(at: assistantIndex, with: .cancelled)
             } catch {
                 self.errorMessage = "Generation error: \(error)"
+                self.finalizeIncompleteTrace(
+                    at: assistantIndex,
+                    with: .error(String(describing: error))
+                )
             }
             if self.generationEnd == nil { self.generationEnd = Date() }
             self.isGenerating = false
@@ -193,11 +205,20 @@ extension ChatViewModel {
     }
 
     /// After the first decode completes, look for a Llama 3.1 tool call
-    /// in the assistant text. If found: invoke the tool, replace the
-    /// visible assistant text with the pre-call prefix, stamp a
-    /// `StepTrace` onto the message, and run a second decode via the
-    /// runner's `ipython`-role continuation path for the final answer.
-    /// No-op when the assistant text contains no parseable tool call.
+    /// in the assistant text. If found: strip the raw tool tokens from
+    /// the visible body, stamp the trace with the request (so the UI
+    /// shows a spinner while the tool runs), invoke the tool, stamp the
+    /// result, then run a second decode for the final answer.
+    ///
+    /// The trace is stamped in three stages so `StepTraceDisclosure` can
+    /// render intermediate states:
+    ///   1. `.assistantText(prefix)` + `.toolCall` — spinner: "running X…"
+    ///   2. `.toolResult` appended — spinner: "awaiting final answer…"
+    ///   3. `.finalAnswer` appended — terminator; disclosure settles.
+    ///
+    /// If the turn is cancelled or errors out before reaching stage 3,
+    /// the caller (`send`) finalises the trace with the appropriate
+    /// terminator so historical rows never show a perpetual spinner.
     ///
     /// One step per turn (`maxSteps = 1`). Multi-step is deferred to a
     /// later PR — this fires at most once.
@@ -211,8 +232,20 @@ extension ChatViewModel {
         guard let match = parser.findFirstCall(in: firstDecodeText) else { return }
         guard assistantIndex < self.messages.count else { return }
 
-        // Invoke the tool. Registry errors surface into `ToolResult`
-        // with an `error` field; the model sees them as ipython content.
+        // Stage 1: strip raw tool tokens from the visible text and stamp
+        // the in-flight trace. The disclosure UI now shows a spinner
+        // with "running <tool>…".
+        self.messages[assistantIndex].text = match.prefix
+        var trace = StepTrace()
+        if !match.prefix.isEmpty {
+            trace.steps.append(.assistantText(match.prefix))
+        }
+        trace.steps.append(.toolCall(match.call))
+        self.messages[assistantIndex].steps = trace
+
+        // Stage 2: invoke the tool. Registry errors surface into
+        // `ToolResult` with an `error` field; the model sees them as
+        // ipython content and can recover.
         let toolResult: ToolResult
         do {
             toolResult = try await self.toolRegistry.invoke(
@@ -225,25 +258,13 @@ extension ChatViewModel {
                 error: "tool invocation failed: \(error)"
             )
         }
-
-        // Rebuild the visible assistant text to the pre-call prefix
-        // only. The raw `<|python_tag|>` tokens do not belong in the
-        // user-facing body; the StepTrace records the structured call.
-        self.messages[assistantIndex].text = match.prefix
-
-        // Stamp the step trace so the disclosure UI (PR D3) can render
-        // the tool round-trip.
-        var trace = StepTrace()
-        if !match.prefix.isEmpty {
-            trace.steps.append(.assistantText(match.prefix))
+        if assistantIndex < self.messages.count {
+            self.messages[assistantIndex].steps?.steps.append(.toolResult(toolResult))
         }
-        trace.steps.append(.toolCall(match.call))
-        trace.steps.append(.toolResult(toolResult))
-        self.messages[assistantIndex].steps = trace
 
-        // Feed the tool output back as an ipython-role message and
-        // decode the final answer. Prefer `error` when set (the model
-        // needs to see what failed to recover).
+        // Stage 3: feed the tool output back as an ipython-role message
+        // and decode the final answer. Prefer `error` when set so the
+        // model sees what failed.
         let feedback = toolResult.error ?? toolResult.output
         let secondStream = await self.llama.appendToolResultAndContinue(
             toolResult: feedback,
@@ -257,7 +278,23 @@ extension ChatViewModel {
             finalAnswer += piece
             self.generationTokenCount += 1
         }
-        self.messages[assistantIndex].steps?.steps.append(.finalAnswer(finalAnswer))
+        if assistantIndex < self.messages.count {
+            self.messages[assistantIndex].steps?.steps.append(.finalAnswer(finalAnswer))
+        }
+    }
+
+    /// Append a terminator step to an in-flight trace. Called from the
+    /// cancel/error paths in `send` so the disclosure UI doesn't render
+    /// a perpetual spinner on turns that ended abnormally.
+    @MainActor
+    func finalizeIncompleteTrace(
+        at index: Int,
+        with terminator: StepTrace.Step
+    ) {
+        guard index < messages.count else { return }
+        guard var trace = messages[index].steps, trace.terminator == nil else { return }
+        trace.steps.append(terminator)
+        messages[index].steps = trace
     }
 
     /// Shared precondition + transcript mutation for regenerate and

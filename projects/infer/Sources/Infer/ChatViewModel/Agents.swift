@@ -21,6 +21,19 @@ extension ChatViewModel {
     var availableAgents: [AgentListing] { agentController.availableAgents }
     var activeAgentId: AgentID { agentController.activeAgentId }
     var activeDecodingParams: DecodingParams { agentController.activeDecodingParams }
+    var libraryDiagnostics: [AgentRegistry.PersonaLoadError] {
+        agentController.libraryDiagnostics
+    }
+    /// Number of tools exposed to the active agent for the current turn.
+    /// Read by the header picker's `tools: N` chip so the user knows
+    /// whether the agent can call tools without opening its JSON.
+    var activeToolCount: Int { agentController.activeToolSpecs.count }
+
+    /// Active agent's listing, if any (never nil in practice: the Default
+    /// synthetic row is always present once bootstrap completes).
+    var activeAgentListing: AgentListing? {
+        availableAgents.first { $0.id == activeAgentId }
+    }
 
     func isCompatible(_ listing: AgentListing) -> Bool {
         agentController.isCompatible(listing, backend: currentBackendPreference)
@@ -159,6 +172,126 @@ extension ChatViewModel {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    /// Read-only snapshot of an agent's configuration, resolved on
+    /// demand for the inspector UI. Populated either from the synthetic
+    /// Default row (driven by `InferSettings`) or from the registered
+    /// `PromptAgent` JSON payload. Compiled `Agent` conformances with
+    /// no JSON representation return a sparse snapshot (prompt missing)
+    /// so the UI can still render backend/tool/decoding info.
+    struct AgentSnapshot {
+        let listing: AgentListing
+        let systemPrompt: String?
+        let decoding: DecodingParams
+        let toolsAllow: [ToolName]
+        let toolsDeny: [ToolName]
+        /// Tools from the live catalog that would be exposed to this
+        /// agent if it became active under the current backend. Computed
+        /// by applying `toolsAllow` / `toolsDeny` to the catalog.
+        let exposedTools: [ToolSpec]
+    }
+
+    /// Compute a snapshot of `listing` for display in the inspector.
+    /// Returns nil only for compiled agents with no JSON backing that
+    /// are also not the Default (none today — reserved for the future).
+    func inspectorSnapshot(for listing: AgentListing) async -> AgentSnapshot? {
+        let catalog = agentController.toolCatalog
+        if listing.isDefault {
+            return AgentSnapshot(
+                listing: listing,
+                systemPrompt: settings.systemPrompt.isEmpty ? nil : settings.systemPrompt,
+                decoding: DecodingParams(from: settings),
+                toolsAllow: [],
+                toolsDeny: [],
+                exposedTools: []  // Default has no tools in PR 2
+            )
+        }
+        guard let agent = await agentController.registry.agent(id: listing.id) else {
+            return nil
+        }
+        let prompt: String?
+        let decoding: DecodingParams
+        let allow: [ToolName]
+        let deny: [ToolName]
+        if let p = agent as? PromptAgent {
+            prompt = p.promptText
+            decoding = p.defaultDecodingParams
+            allow = p.requirements.toolsAllow
+            deny = p.requirements.toolsDeny
+        } else {
+            prompt = nil
+            decoding = agent.decodingParams(for: AgentContext(
+                runner: RunnerHandle(
+                    backend: currentBackendPreference,
+                    templateFamily: nil,
+                    maxContext: 0,
+                    currentTokenCount: 0
+                ),
+                tools: catalog
+            ))
+            allow = []
+            deny = []
+        }
+        let exposed = catalog.tools.filter { spec in
+            if deny.contains(spec.name) { return false }
+            if allow.isEmpty { return true }
+            return allow.contains(spec.name)
+        }
+        return AgentSnapshot(
+            listing: listing,
+            systemPrompt: prompt,
+            decoding: decoding,
+            toolsAllow: allow,
+            toolsDeny: deny,
+            exposedTools: exposed
+        )
+    }
+
+    /// Locate the on-disk JSON backing a user persona by scanning the
+    /// user agents directory and decoding each file's id. Returns nil
+    /// when the id is not a user persona, when no file matches, or when
+    /// the directory cannot be read. Used by Reveal/Delete actions.
+    func userPersonaURL(for id: AgentID) -> URL? {
+        let dir = Self.userAgentsDirectory()
+        let fm = FileManager.default
+        guard let urls = try? fm.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        let decoder = JSONDecoder()
+        for url in urls where url.pathExtension.lowercased() == "json" {
+            guard let data = try? Data(contentsOf: url),
+                  let agent = try? decoder.decode(PromptAgent.self, from: data)
+            else { continue }
+            if agent.id == id { return url }
+        }
+        return nil
+    }
+
+    /// Move a user persona to the Trash and refresh listings. No-op for
+    /// non-user personas (only user-authored files are user-owned). The
+    /// caller (sidebar row) is responsible for confirmation. Safe under
+    /// concurrent reads — `NSWorkspace.recycle` is async but we only
+    /// refresh listings after it completes.
+    func deleteUserPersona(_ listing: AgentListing) {
+        guard listing.source == .user, !listing.isDefault else { return }
+        guard let url = userPersonaURL(for: listing.id) else {
+            errorMessage = "Could not locate the JSON file for \(listing.name)."
+            return
+        }
+        NSWorkspace.shared.recycle([url]) { [weak self] _, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    self.errorMessage = "Failed to delete: \(error.localizedDescription)"
+                    return
+                }
+                self.bootstrapAgents()
+                self.toasts.show("Moved \"\(listing.name)\" to Trash.")
+            }
+        }
+    }
+
     /// Re-run the controller bootstrap so any edits the user made to
     /// JSON files in the user agents folder become visible without
     /// relaunching the app. Re-registers built-in tools (harmless
@@ -233,6 +366,12 @@ extension ChatViewModel {
         }
 
         bootstrapAgents()
-        NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+        toasts.show(
+            "Duplicated \"\(listing.name)\" → \(fileURL.lastPathComponent)",
+            actionTitle: "Reveal",
+            action: {
+                NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+            }
+        )
     }
 }

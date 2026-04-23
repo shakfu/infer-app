@@ -240,56 +240,68 @@ struct MessageRow: View {
     }
 
     /// Role column text. For assistant messages produced by a
-    /// non-Default agent, this is the agent's display name flattened to
-    /// a single lowercase hyphenated token so it reads as one word
-    /// alongside the other role labels ("user", "system"). Default
-    /// assistant replies and historical (pre-agent) ones stay
-    /// "assistant" — attribution is unambiguous.
+    /// non-Default agent, this is the agent's pre-snapshotted
+    /// `displayLabel` (a Unicode-safe, single-token flattening of the
+    /// agent name). Default assistant replies and historical (pre-agent)
+    /// ones stay "assistant".
     private var roleLabel: String {
         switch message.role {
         case .user: return "user"
         case .system: return "system"
         case .assistant:
+            if let label = message.agentLabel, !label.isEmpty { return label }
             if let name = message.agentName, !name.isEmpty {
-                return Self.labelize(name)
+                // Legacy rows from before agentLabel was snapshotted —
+                // flatten on the fly using the same rules so the row
+                // still renders as a single token.
+                return AgentListing.makeDisplayLabel(
+                    from: name,
+                    fallbackId: message.agentId ?? "agent"
+                )
             }
             return "assistant"
         }
     }
-
-    private static func labelize(_ name: String) -> String {
-        name.lowercased()
-            .components(separatedBy: .whitespacesAndNewlines)
-            .filter { !$0.isEmpty }
-            .joined(separator: "-")
-    }
 }
 
 /// Disclosure group rendered above an assistant message when the turn
-/// went through the tool loop. Collapsed by default with a step-count
-/// badge so a transcript full of tool-using replies stays readable; one
-/// click expands to show the tool calls and results inline.
+/// went through the tool loop. Auto-expands while the trace is in-flight
+/// (no terminator) so the user sees tool progress live; collapses to a
+/// step-count badge once the turn settles. A user toggle overrides the
+/// auto-behaviour for the remainder of the row's lifetime.
 struct StepTraceDisclosure: View {
     let trace: StepTrace
-    @State private var expanded = false
+    @State private var userOverride: Bool?
+
+    private var isStreaming: Bool { trace.terminator == nil }
 
     var body: some View {
         let callCount = trace.steps.reduce(into: 0) { acc, step in
             if case .toolCall = step { acc += 1 }
         }
         if callCount == 0 { EmptyView() } else {
-            DisclosureGroup(isExpanded: $expanded) {
+            let expanded = Binding<Bool>(
+                get: { userOverride ?? isStreaming },
+                set: { userOverride = $0 }
+            )
+            DisclosureGroup(isExpanded: expanded) {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(Array(trace.steps.enumerated()), id: \.offset) { _, step in
                         StepRow(step: step)
                     }
+                    pendingRow
                 }
                 .padding(.top, 4)
             } label: {
                 HStack(spacing: 6) {
-                    Image(systemName: "hammer")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    if isStreaming {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else {
+                        Image(systemName: "hammer")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                     Text("\(callCount) tool call\(callCount == 1 ? "" : "s")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -305,6 +317,33 @@ struct StepTraceDisclosure: View {
                 RoundedRectangle(cornerRadius: 6)
                     .stroke(Color.secondary.opacity(0.2))
             )
+        }
+    }
+
+    /// Trailing row shown while the trace is in-flight. Signals to the
+    /// user *what* is happening — tool running vs waiting on the
+    /// follow-up decode — so a 2-5 s pause doesn't feel like a hang.
+    @ViewBuilder
+    private var pendingRow: some View {
+        if isStreaming, let last = trace.steps.last {
+            switch last {
+            case .toolCall(let call):
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("running \(call.name)…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            case .toolResult:
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("awaiting final answer…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            default:
+                EmptyView()
+            }
         }
     }
 }
@@ -370,6 +409,8 @@ private struct StepRow: View {
 
 /// Divider row rendered when the active agent switches mid-conversation.
 /// UI-only — never sent to a runner, never persisted to the vault.
+/// Hover-tooltip carries the timestamp so a scroll-back through a
+/// multi-switch conversation is auditable without touching the code.
 struct AgentDividerRow: View {
     let agentName: String
 
@@ -387,6 +428,7 @@ struct AgentDividerRow: View {
                     Capsule().fill(Color.secondary.opacity(0.1))
                 )
                 .overlay(Capsule().stroke(Color.secondary.opacity(0.3)))
+                .help("Active agent switched to \"\(agentName)\" at this point in the conversation.")
             Rectangle()
                 .fill(Color.secondary.opacity(0.25))
                 .frame(height: 1)
