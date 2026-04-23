@@ -363,6 +363,77 @@ actor LlamaRunner {
         }
     }
 
+    /// Append a Llama 3.1 `ipython`-role tool result to the transcript
+    /// and decode another assistant turn. Intended for one-step tool
+    /// loops: the caller feeds a tool output back to the model and
+    /// receives the final-answer stream.
+    ///
+    /// Expects the previous `sendUserMessage` to have completed (the
+    /// assistant turn containing the model's tool call must already be
+    /// committed in `messages`). Cancellation during the previous
+    /// decode still counts — `finishGeneration` commits partial output.
+    func appendToolResultAndContinue(
+        toolResult: String,
+        maxTokens: Int = 512
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            guard !isGenerating else {
+                continuation.finish(throwing: LlamaError.busy)
+                return
+            }
+            guard let ctx = self.ctx,
+                  let sampler = self.sampler,
+                  let vocab = self.vocab
+            else {
+                continuation.finish(throwing: LlamaError.backendNotReady)
+                return
+            }
+
+            messages.append((role: "ipython", content: toolResult))
+            let fullWithAss: String
+            do {
+                fullWithAss = try renderTemplate(addAssistant: true)
+            } catch {
+                messages.removeLast()
+                continuation.finish(throwing: error)
+                return
+            }
+
+            let promptDelta = ChatPromptDelta.delta(
+                fullRendered: fullWithAss,
+                previousByteLength: prevFormattedLen
+            )
+
+            cancelFlag.reset()
+            isGenerating = true
+            let flag = cancelFlag
+            let handles = LlamaHandles(ctx: ctx, sampler: sampler, vocab: vocab)
+
+            Task.detached {
+                var assistant = ""
+                var thrown: Error? = nil
+                do {
+                    try Self.runDecodeLoop(
+                        ctx: handles.ctx, sampler: handles.sampler, vocab: handles.vocab,
+                        prompt: promptDelta, maxTokens: maxTokens,
+                        cancel: flag
+                    ) { piece in
+                        continuation.yield(piece)
+                        assistant += piece
+                    }
+                } catch {
+                    thrown = error
+                }
+                await self.finishGeneration(assistantText: assistant, error: thrown)
+                if let e = thrown {
+                    continuation.finish(throwing: e)
+                } else {
+                    continuation.finish()
+                }
+            }
+        }
+    }
+
     /// Actor-isolated finalization: commit assistant turn and refresh
     /// prev-formatted-length using a render without the assistant tag.
     private func finishGeneration(assistantText: String, error: Error?) {

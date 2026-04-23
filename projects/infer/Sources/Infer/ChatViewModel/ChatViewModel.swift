@@ -1,4 +1,5 @@
 import Foundation
+import InferAgents
 import InferCore
 
 @MainActor
@@ -49,6 +50,21 @@ final class ChatViewModel {
         guard elapsed > 0 else { return nil }
         return (generationTokenCount, Double(generationTokenCount) / elapsed)
     }
+    /// State machine for agent selection. Owns the registry, the
+    /// `activeAgentId`, the sorted `availableAgents` snapshot, and the
+    /// cached `activeDecodingParams`. The VM is a thin adapter that
+    /// translates the effects it returns into runner and transcript
+    /// mutations (see `Agents.swift`). Extracted to `InferAgents` so the
+    /// selection logic is unit-testable without the runner stack.
+    let agentController = AgentController()
+
+    /// Registry of locally-implemented Swift tools. Populated at init
+    /// with the PR 2 built-ins (`clock.now`, `text.wordcount`). Grows
+    /// as more tools ship; MCP-backed tools arrive here via a future
+    /// `PluginHost` (see `docs/dev/plugins.md`). The agent loop's
+    /// `invoke(name:arguments:)` path consumes it.
+    let toolRegistry = ToolRegistry()
+
     let llama = LlamaRunner()
     let mlx = MLXRunner()
     let ggufDownloader = GGUFDownloader()
@@ -150,6 +166,7 @@ final class ChatViewModel {
         speechSynthesizer.onCancel = { [weak self] in
             self?.bargeInMonitor.stop()
         }
+        bootstrapAgents()
     }
 
     /// Speak the assistant's completed reply and, in voice-loop mode, arm

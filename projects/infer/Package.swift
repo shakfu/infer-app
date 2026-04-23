@@ -27,6 +27,19 @@ let package = Package(
             dependencies: ["InferCore"],
             path: "Tests/InferCoreTests"
         ),
+        // Agent substrate. Pure Swift, depends only on InferCore (for
+        // InferSettings reuse in DefaultAgent). No MLX/llama/UI deps so
+        // the full surface is unit-testable under `swift test`.
+        .target(
+            name: "InferAgents",
+            dependencies: ["InferCore"],
+            path: "Sources/InferAgents"
+        ),
+        .testTarget(
+            name: "InferAgentsTests",
+            dependencies: ["InferAgents", "InferCore"],
+            path: "Tests/InferAgentsTests"
+        ),
         .binaryTarget(
             name: "llama",
             path: "../../thirdparty/llama.xcframework"
@@ -49,6 +62,7 @@ let package = Package(
             name: "Infer",
             dependencies: [
                 "InferCore",
+                "InferAgents",
                 "llama",
                 "CWhisperBridge",
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
@@ -65,6 +79,11 @@ let package = Package(
             ],
             path: "Sources/Infer",
             exclude: ["Info.plist"],
+            resources: [
+                // First-party personas (`.firstParty` source). Loaded at
+                // AgentController bootstrap via Bundle.module.
+                .copy("Resources/agents"),
+            ],
             linkerSettings: [
                 .unsafeFlags([
                     "-Xlinker", "-rpath",

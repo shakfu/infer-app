@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "infer.clock-assistant",
+  "metadata": {
+    "name": "Clock assistant",
+    "description": "Demo of the one-step tool loop. When the user asks about time, calls clock.now and answers from the result. Llama.cpp + Llama 3.1 template only.",
+    "author": "Infer"
+  },
+  "requirements": {
+    "backend": "llama",
+    "templateFamily": "llama3",
+    "toolsAllow": ["builtin.clock.now", "builtin.text.wordcount"]
+  },
+  "decodingParams": { "temperature": 0.3, "topP": 0.9, "maxTokens": 1024 },
+  "systemPrompt": "You are a helpful assistant with access to two tools: a clock (to get the current time) and a word counter (to count words in a string).\n\nWhen the user asks for the current date, time, or anything requiring the present moment, call `builtin.clock.now` with empty parameters. When the user asks for a word count, call `builtin.text.wordcount` with the text to count.\n\nAfter the tool returns, give a brief, direct final answer using the tool's result. Do not restate the tool call or apologise. If no tool is needed, answer directly without calling one."
+}

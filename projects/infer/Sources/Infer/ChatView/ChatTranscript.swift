@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import MarkdownUI
 import Splash
+import InferAgents
 
 extension ChatView {
     var transcript: some View {
@@ -9,12 +10,16 @@ extension ChatView {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(Array(vm.messages.enumerated()), id: \.element.id) { idx, msg in
-                        MessageRow(
-                            message: msg,
-                            onRegenerate: canRegenerate(at: idx) ? { vm.regenerateLast() } : nil,
-                            onEdit: canEdit(at: idx) ? { vm.editLastUserMessage() } : nil
-                        )
-                        .id(msg.id)
+                        if case .agentDivider(let agentName) = msg.kind {
+                            AgentDividerRow(agentName: agentName).id(msg.id)
+                        } else {
+                            MessageRow(
+                                message: msg,
+                                onRegenerate: canRegenerate(at: idx) ? { vm.regenerateLast() } : nil,
+                                onEdit: canEdit(at: idx) ? { vm.editLastUserMessage() } : nil
+                            )
+                            .id(msg.id)
+                        }
                     }
                     // Bottom sentinel: when the LazyVStack has it in its
                     // render range (user is near the bottom), we're pinned
@@ -139,6 +144,9 @@ struct MessageRow: View {
             Text(roleLabel)
                 .font(.caption.monospaced())
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .help(roleLabel)
                 .frame(width: 70, alignment: .trailing)
             content
                 .textSelection(.enabled)
@@ -199,6 +207,9 @@ struct MessageRow: View {
     @ViewBuilder
     private var content: some View {
         VStack(alignment: .leading, spacing: 6) {
+            if let trace = message.steps, !trace.steps.isEmpty {
+                StepTraceDisclosure(trace: trace)
+            }
             if let url = message.imageURL, let img = NSImage(contentsOf: url) {
                 Image(nsImage: img)
                     .resizable()
@@ -228,11 +239,158 @@ struct MessageRow: View {
         }
     }
 
+    /// Role column text. For assistant messages produced by a
+    /// non-Default agent, this is the agent's display name flattened to
+    /// a single lowercase hyphenated token so it reads as one word
+    /// alongside the other role labels ("user", "system"). Default
+    /// assistant replies and historical (pre-agent) ones stay
+    /// "assistant" — attribution is unambiguous.
     private var roleLabel: String {
         switch message.role {
         case .user: return "user"
-        case .assistant: return "assistant"
         case .system: return "system"
+        case .assistant:
+            if let name = message.agentName, !name.isEmpty {
+                return Self.labelize(name)
+            }
+            return "assistant"
         }
+    }
+
+    private static func labelize(_ name: String) -> String {
+        name.lowercased()
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: "-")
+    }
+}
+
+/// Disclosure group rendered above an assistant message when the turn
+/// went through the tool loop. Collapsed by default with a step-count
+/// badge so a transcript full of tool-using replies stays readable; one
+/// click expands to show the tool calls and results inline.
+struct StepTraceDisclosure: View {
+    let trace: StepTrace
+    @State private var expanded = false
+
+    var body: some View {
+        let callCount = trace.steps.reduce(into: 0) { acc, step in
+            if case .toolCall = step { acc += 1 }
+        }
+        if callCount == 0 { EmptyView() } else {
+            DisclosureGroup(isExpanded: $expanded) {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(trace.steps.enumerated()), id: \.offset) { _, step in
+                        StepRow(step: step)
+                    }
+                }
+                .padding(.top, 4)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "hammer")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text("\(callCount) tool call\(callCount == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.secondary.opacity(0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.secondary.opacity(0.2))
+            )
+        }
+    }
+}
+
+private struct StepRow: View {
+    let step: StepTrace.Step
+
+    var body: some View {
+        switch step {
+        case .assistantText(let text) where !text.isEmpty:
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .assistantText:
+            EmptyView()
+        case .toolCall(let call):
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.up.right.circle")
+                        .font(.caption2)
+                        .foregroundStyle(.blue)
+                    Text(call.name)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.primary)
+                }
+                if call.arguments != "{}" && !call.arguments.isEmpty {
+                    Text(call.arguments)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .padding(.leading, 16)
+                }
+            }
+        case .toolResult(let result):
+            HStack(alignment: .top, spacing: 4) {
+                Image(systemName: "arrow.down.left.circle")
+                    .font(.caption2)
+                    .foregroundStyle(result.error == nil ? Color.green : Color.red)
+                Text(result.error ?? result.output)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(result.error == nil ? Color.primary : Color.red)
+                    .textSelection(.enabled)
+            }
+        case .finalAnswer:
+            // Final answer is rendered as the main message body; no need
+            // to repeat inside the disclosure.
+            EmptyView()
+        case .cancelled:
+            Text("cancelled")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+        case .budgetExceeded:
+            Text("step budget exhausted")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+        case .error(let message):
+            Text("error: \(message)")
+                .font(.caption2)
+                .foregroundStyle(.red)
+        }
+    }
+}
+
+/// Divider row rendered when the active agent switches mid-conversation.
+/// UI-only — never sent to a runner, never persisted to the vault.
+struct AgentDividerRow: View {
+    let agentName: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Rectangle()
+                .fill(Color.secondary.opacity(0.25))
+                .frame(height: 1)
+            Text("Agent: \(agentName)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .background(
+                    Capsule().fill(Color.secondary.opacity(0.1))
+                )
+                .overlay(Capsule().stroke(Color.secondary.opacity(0.3)))
+            Rectangle()
+                .fill(Color.secondary.opacity(0.25))
+                .frame(height: 1)
+        }
+        .padding(.vertical, 4)
     }
 }

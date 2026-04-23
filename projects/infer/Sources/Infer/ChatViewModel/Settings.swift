@@ -1,37 +1,26 @@
 import Foundation
+import InferAgents
 import InferCore
 
 extension ChatViewModel {
     /// Persist settings and apply them to whichever backend is currently loaded.
     /// Sampling params apply without a re-load; changing the system prompt
     /// resets the conversation (history is lost).
+    ///
+    /// When a non-Default agent is active, the agent — not
+    /// `InferSettings` — is authoritative over the system prompt, so
+    /// runner state is not re-pushed from here: this write only updates
+    /// the Default-agent backing. The parameters panel is still live
+    /// (the user can edit Default's parameters while a persona is
+    /// active), but those edits don't take effect on the runner until
+    /// the user switches back to Default.
     func applySettings(_ new: InferSettings) {
-        let prevSystemPrompt = settings.systemPrompt
+        let previous = settings
         settings = new
         new.save()
 
-        let temp = Float(new.temperature)
-        let top = Float(new.topP)
-        let sp = new.systemPrompt
-        let seed = new.seed
-
-        Task {
-            await self.llama.updateSampling(temperature: temp, topP: top, topK: 40, seed: seed)
-            await self.mlx.updateSettings(
-                systemPrompt: sp,
-                temperature: temp,
-                topP: top,
-                seed: seed
-            )
-            if prevSystemPrompt != sp {
-                await self.llama.setSystemPrompt(sp.isEmpty ? nil : sp)
-                await MainActor.run {
-                    self.messages.removeAll()
-                    // New system prompt => new vault conversation on next send.
-                    self.currentConversationId = nil
-                }
-            }
-        }
+        let effects = agentController.applySettings(new, previous: previous)
+        apply(effects)
     }
 
     /// Recompute context-window usage for the active backend. llama reports

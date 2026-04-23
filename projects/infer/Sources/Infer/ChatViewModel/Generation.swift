@@ -1,4 +1,5 @@
 import Foundation
+import InferAgents
 
 extension ChatViewModel {
     func send() {
@@ -7,7 +8,13 @@ extension ChatViewModel {
 
         let attachedImage = self.pendingImageURL
         messages.append(ChatMessage(role: .user, text: text, imageURL: attachedImage))
-        messages.append(ChatMessage(role: .assistant, text: ""))
+        let nameSnapshot = activeAgentId == DefaultAgent.id ? nil : activeAgentName()
+        messages.append(ChatMessage(
+            role: .assistant,
+            text: "",
+            agentId: activeAgentId,
+            agentName: nameSnapshot
+        ))
         let assistantIndex = messages.count - 1
         input = ""
         pendingImageURL = nil
@@ -17,10 +24,18 @@ extension ChatViewModel {
         generationEnd = nil
 
         let backend = self.backend
-        let maxTokens = self.settings.maxTokens
+        // Active agent's decoding params drive the runner-side caps for
+        // this turn. `activeDecodingParams` is kept in sync by
+        // `switchAgent` (non-Default) and `applySettings` (Default).
+        let maxTokens = self.activeDecodingParams.maxTokens
 
         // Record the turn in the vault (best-effort; never blocks generation).
-        let systemPrompt = self.settings.systemPrompt
+        // Under a non-Default agent the raw system prompt is owned by the
+        // agent definition, not by `InferSettings`; persist the agent-id
+        // tag so vault rows remain interpretable after schema expands.
+        let systemPrompt = activeAgentId == DefaultAgent.id
+            ? self.settings.systemPrompt
+            : "(agent: \(activeAgentName()))"
         let modelIdForVault = self.vaultModelId()
         let backendName = backend.rawValue
         Task { [weak self] in
@@ -50,6 +65,12 @@ extension ChatViewModel {
             }
         }
 
+        // Tool loop is llama-only and only engages when the active agent
+        // exposes at least one tool. MLX gets the existing single-stream
+        // path; so does llama-with-Default.
+        let toolSpecs = self.agentController.activeToolSpecs
+        let engageToolLoop = backend == .llama && !toolSpecs.isEmpty
+
         generationTask = Task {
             do {
                 let stream: AsyncThrowingStream<String, Error>
@@ -65,12 +86,23 @@ extension ChatViewModel {
                         text, imageURLs: imgs, maxTokens: maxTokens
                     )
                 }
+                var firstDecodeText = ""
                 for try await piece in stream {
                     if assistantIndex < self.messages.count {
                         self.messages[assistantIndex].text += piece
                     }
+                    firstDecodeText += piece
                     self.generationTokenCount += 1
                 }
+
+                if engageToolLoop {
+                    try await self.maybeRunToolLoop(
+                        firstDecodeText: firstDecodeText,
+                        assistantIndex: assistantIndex,
+                        maxTokens: maxTokens
+                    )
+                }
+
                 self.generationEnd = Date()
                 // Persist the assistant reply to the vault. Only on success —
                 // cancellations and errors are caught below and skip this.
@@ -158,6 +190,74 @@ extension ChatViewModel {
             case .mlx: await self.mlx.rewindLastTurn()
             }
         }
+    }
+
+    /// After the first decode completes, look for a Llama 3.1 tool call
+    /// in the assistant text. If found: invoke the tool, replace the
+    /// visible assistant text with the pre-call prefix, stamp a
+    /// `StepTrace` onto the message, and run a second decode via the
+    /// runner's `ipython`-role continuation path for the final answer.
+    /// No-op when the assistant text contains no parseable tool call.
+    ///
+    /// One step per turn (`maxSteps = 1`). Multi-step is deferred to a
+    /// later PR — this fires at most once.
+    @MainActor
+    func maybeRunToolLoop(
+        firstDecodeText: String,
+        assistantIndex: Int,
+        maxTokens: Int
+    ) async throws {
+        let parser = ToolCallParser(family: .llama3)
+        guard let match = parser.findFirstCall(in: firstDecodeText) else { return }
+        guard assistantIndex < self.messages.count else { return }
+
+        // Invoke the tool. Registry errors surface into `ToolResult`
+        // with an `error` field; the model sees them as ipython content.
+        let toolResult: ToolResult
+        do {
+            toolResult = try await self.toolRegistry.invoke(
+                name: match.call.name,
+                arguments: match.call.arguments
+            )
+        } catch {
+            toolResult = ToolResult(
+                output: "",
+                error: "tool invocation failed: \(error)"
+            )
+        }
+
+        // Rebuild the visible assistant text to the pre-call prefix
+        // only. The raw `<|python_tag|>` tokens do not belong in the
+        // user-facing body; the StepTrace records the structured call.
+        self.messages[assistantIndex].text = match.prefix
+
+        // Stamp the step trace so the disclosure UI (PR D3) can render
+        // the tool round-trip.
+        var trace = StepTrace()
+        if !match.prefix.isEmpty {
+            trace.steps.append(.assistantText(match.prefix))
+        }
+        trace.steps.append(.toolCall(match.call))
+        trace.steps.append(.toolResult(toolResult))
+        self.messages[assistantIndex].steps = trace
+
+        // Feed the tool output back as an ipython-role message and
+        // decode the final answer. Prefer `error` when set (the model
+        // needs to see what failed to recover).
+        let feedback = toolResult.error ?? toolResult.output
+        let secondStream = await self.llama.appendToolResultAndContinue(
+            toolResult: feedback,
+            maxTokens: maxTokens
+        )
+        var finalAnswer = ""
+        for try await piece in secondStream {
+            if assistantIndex < self.messages.count {
+                self.messages[assistantIndex].text += piece
+            }
+            finalAnswer += piece
+            self.generationTokenCount += 1
+        }
+        self.messages[assistantIndex].steps?.steps.append(.finalAnswer(finalAnswer))
     }
 
     /// Shared precondition + transcript mutation for regenerate and
