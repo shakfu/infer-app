@@ -62,10 +62,14 @@ extension ChatViewModel {
                 )
                 await MainActor.run { self.refreshVaultRecents() }
             } catch {
-                // Vault errors are non-fatal. Surface once per session by
-                // printing to stderr; do not disturb the chat UI.
-                FileHandle.standardError.write(
-                    Data("vault write failed: \(error)\n".utf8)
+                // Vault errors are non-fatal. Routed through LogCenter
+                // (visible in the Console tab) and mirrored to stderr;
+                // we never surface them in the chat UI.
+                self.logs.logFromBackground(
+                    .error,
+                    source: "vault",
+                    message: "write failed (user turn)",
+                    payload: String(describing: error)
                 )
             }
         }
@@ -125,8 +129,11 @@ extension ChatViewModel {
                                 tokPerSec: stats?.tps
                             )
                         } catch {
-                            FileHandle.standardError.write(
-                                Data("vault write failed: \(error)\n".utf8)
+                            self.logs.logFromBackground(
+                                .error,
+                                source: "vault",
+                                message: "write failed (assistant turn)",
+                                payload: String(describing: error)
                             )
                         }
                     }

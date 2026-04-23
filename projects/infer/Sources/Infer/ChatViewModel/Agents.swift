@@ -63,7 +63,7 @@ extension ChatViewModel {
     /// registration, and catalog publication to the controller.
     func bootstrapAgents() {
         let firstParty = Self.firstPartyPersonaURLs()
-        Task { [controller = self.agentController, registry = self.toolRegistry, settings = self.settings] in
+        Task { [controller = self.agentController, registry = self.toolRegistry, settings = self.settings, logs = self.logs] in
             // Register the PR 2 built-ins. Tool registrations and the
             // controller bootstrap happen in the same task so the
             // first switchAgent after launch sees a populated catalog.
@@ -78,6 +78,26 @@ extension ChatViewModel {
                 firstPartyPersonas: firstParty,
                 personasDirectory: Self.userAgentsDirectory(),
                 toolCatalog: catalog
+            )
+            // Surface per-file parse failures into the Console so they
+            // show up in the live observability view, not just the
+            // one-time Agents-tab banner. The banner stays as the
+            // persistent surface; the Console adds a time-ordered
+            // record across all bootstraps.
+            let diagnostics = controller.libraryDiagnostics
+            for diag in diagnostics {
+                logs.log(
+                    .warning,
+                    source: "agents",
+                    message: "skipped \(diag.url.lastPathComponent)",
+                    payload: diag.message
+                )
+            }
+            let count = controller.availableAgents.count
+            logs.log(
+                .info,
+                source: "agents",
+                message: "loaded \(count) agent\(count == 1 ? "" : "s")"
             )
         }
     }
@@ -96,7 +116,16 @@ extension ChatViewModel {
                 currentBackend: currentBackend,
                 settings: settings
             )
-            await MainActor.run { self.apply(effects) }
+            await MainActor.run {
+                self.apply(effects)
+                if !effects.isEmpty {
+                    self.logs.log(
+                        .info,
+                        source: "agents",
+                        message: "switched to \(listing.name)"
+                    )
+                }
+            }
         }
     }
 

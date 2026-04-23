@@ -62,6 +62,11 @@ final class ChatViewModel {
     /// any `@MainActor` code can call `toasts.show(_:)` to surface a
     /// short message without an alert dialog.
     let toasts = ToastCenter()
+    /// Structured log sink. All code paths that previously wrote to
+    /// stderr now also call `logs.log(...)`; stderr remains the
+    /// fallback so developers running from a shell still see output.
+    /// Surfaced in the Console sidebar tab.
+    let logs = LogCenter()
     /// Listing currently displayed in the agent inspector sheet.
     /// Single source of truth so the sheet can be triggered from
     /// anywhere — library row click, app-level command (`Cmd+Shift+I`),
@@ -106,6 +111,13 @@ final class ChatViewModel {
     var vaultResults: [VaultSearchHit] = []
     var vaultRecents: [VaultConversationSummary] = []
     var vaultSearchTask: Task<Void, Never>? = nil
+    /// Active tag filter for the History list. AND-match — a
+    /// conversation has to carry every tag in the set to be shown.
+    /// Empty set = no filter.
+    var vaultTagFilter: Set<String> = []
+    /// Distinct tag names currently in the vault (refreshed alongside
+    /// recents). Drives the tag facet filter in the History section.
+    var allVaultTags: [String] = []
 
     var ttsEnabled: Bool = UserDefaults.standard.bool(forKey: PersistKey.ttsEnabled) {
         didSet { UserDefaults.standard.set(ttsEnabled, forKey: PersistKey.ttsEnabled) }

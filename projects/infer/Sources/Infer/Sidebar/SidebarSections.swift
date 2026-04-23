@@ -13,6 +13,8 @@ extension SidebarView {
             .textFieldStyle(.roundedBorder)
             .controlSize(.small)
 
+            tagFacet
+
             let isSearching = !vm.vaultQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
             if isSearching {
@@ -36,7 +38,10 @@ extension SidebarView {
                             VaultConversationRow(
                                 conv: conv,
                                 onOpen: { vm.loadVaultConversation(id: conv.id) },
-                                onDelete: { vm.deleteVaultConversation(id: conv.id) }
+                                onDelete: { vm.deleteVaultConversation(id: conv.id) },
+                                onAddTag: { vm.addTag($0, to: conv.id) },
+                                onRemoveTag: { vm.removeTag($0, from: conv.id) },
+                                onToggleTagFilter: { vm.toggleTagFilter($0) }
                             )
                         }
                     }
@@ -57,6 +62,55 @@ extension SidebarView {
                     }
                 }
                 .controlSize(.small)
+            }
+        }
+    }
+
+    /// Tag facet filter for History. Renders horizontally-scrolling
+    /// chips for every tag in the vault; clicking toggles the chip's
+    /// membership in `vm.vaultTagFilter`. AND-match, so multiple
+    /// selected chips narrow the list. Hidden when no tags exist yet.
+    @ViewBuilder
+    var tagFacet: some View {
+        if !vm.allVaultTags.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(vm.allVaultTags, id: \.self) { tag in
+                        let selected = vm.vaultTagFilter.contains(
+                            VaultStore.normalizeTag(tag)
+                        )
+                        Button {
+                            vm.toggleTagFilter(tag)
+                        } label: {
+                            Text("#\(tag)")
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule().fill(
+                                        selected
+                                            ? Color.accentColor.opacity(0.2)
+                                            : Color.secondary.opacity(0.1)
+                                    )
+                                )
+                                .overlay(
+                                    Capsule().stroke(
+                                        selected
+                                            ? Color.accentColor.opacity(0.5)
+                                            : Color.secondary.opacity(0.25)
+                                    )
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if !vm.vaultTagFilter.isEmpty {
+                        Button("clear") { vm.clearTagFilter() }
+                            .font(.caption2)
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 2)
             }
         }
     }

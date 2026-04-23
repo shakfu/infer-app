@@ -35,8 +35,11 @@ extension ChatViewModel {
                     }
                 }
             } catch {
-                FileHandle.standardError.write(
-                    Data("vault listModels failed: \(error)\n".utf8)
+                self.logs.logFromBackground(
+                    .error,
+                    source: "vault",
+                    message: "listModels failed (autoload path)",
+                    payload: String(describing: error)
                 )
             }
         }
@@ -122,8 +125,11 @@ extension ChatViewModel {
             do {
                 vaultEntries = try await self.vault.listModels()
             } catch {
-                FileHandle.standardError.write(
-                    Data("vault listModels failed: \(error)\n".utf8)
+                self.logs.logFromBackground(
+                    .error,
+                    source: "vault",
+                    message: "listModels failed (refresh)",
+                    payload: String(describing: error)
                 )
                 vaultEntries = []
             }

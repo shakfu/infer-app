@@ -2,14 +2,85 @@ import Foundation
 
 extension ChatViewModel {
     func refreshVaultRecents() {
+        let tagFilter = Array(vaultTagFilter)
         Task { [weak self] in
             guard let self else { return }
             do {
-                let recents = try await self.vault.recentConversations()
-                await MainActor.run { self.vaultRecents = recents }
+                async let recents = self.vault.recentConversations(tags: tagFilter)
+                async let tags = self.vault.allTags()
+                let (r, t) = try await (recents, tags)
+                await MainActor.run {
+                    self.vaultRecents = r
+                    self.allVaultTags = t
+                    // Clear any tag filter entries that no longer exist
+                    // (last conversation carrying them was deleted).
+                    let valid = Set(t.map { VaultStore.normalizeTag($0) })
+                    self.vaultTagFilter = self.vaultTagFilter.filter {
+                        valid.contains(VaultStore.normalizeTag($0))
+                    }
+                }
             } catch {
-                FileHandle.standardError.write(
-                    Data("vault read failed: \(error)\n".utf8)
+                self.logs.logFromBackground(
+                    .error,
+                    source: "vault",
+                    message: "read failed (recent conversations)",
+                    payload: String(describing: error)
+                )
+            }
+        }
+    }
+
+    /// Toggle a tag's presence in the History filter. AND-match, so
+    /// adding narrows the list. Refreshes recents on change.
+    func toggleTagFilter(_ tag: String) {
+        let n = VaultStore.normalizeTag(tag)
+        guard !n.isEmpty else { return }
+        if vaultTagFilter.contains(n) {
+            vaultTagFilter.remove(n)
+        } else {
+            vaultTagFilter.insert(n)
+        }
+        refreshVaultRecents()
+    }
+
+    func clearTagFilter() {
+        guard !vaultTagFilter.isEmpty else { return }
+        vaultTagFilter.removeAll()
+        refreshVaultRecents()
+    }
+
+    /// Attach a tag to a vault conversation. Refreshes recents on
+    /// completion so the chip appears without manual reload.
+    func addTag(_ tag: String, to conversationId: Int64) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.vault.addTag(tag, to: conversationId)
+                await MainActor.run { self.refreshVaultRecents() }
+            } catch {
+                self.logs.logFromBackground(
+                    .error,
+                    source: "vault",
+                    message: "addTag failed",
+                    payload: String(describing: error)
+                )
+            }
+        }
+    }
+
+    /// Detach a tag from a vault conversation.
+    func removeTag(_ tag: String, from conversationId: Int64) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.vault.removeTag(tag, from: conversationId)
+                await MainActor.run { self.refreshVaultRecents() }
+            } catch {
+                self.logs.logFromBackground(
+                    .error,
+                    source: "vault",
+                    message: "removeTag failed",
+                    payload: String(describing: error)
                 )
             }
         }
@@ -35,8 +106,11 @@ extension ChatViewModel {
                     if self.vaultQuery == q { self.vaultResults = hits }
                 }
             } catch {
-                FileHandle.standardError.write(
-                    Data("vault search failed: \(error)\n".utf8)
+                self.logs.logFromBackground(
+                    .error,
+                    source: "vault",
+                    message: "search failed",
+                    payload: String(describing: error)
                 )
             }
         }
