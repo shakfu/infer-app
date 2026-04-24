@@ -24,11 +24,17 @@ Built with Swift Package Manager and `xcodebuild`.
 # First run downloads llama.xcframework, whisper.xcframework, and
 # KaTeX + highlight.js (for offline math/syntax rendering in PDF/print)
 # into thirdparty/.
-make bundle-infer         # -> build/Infer.app
-make run-infer            # Open Infer.app
+make bundle               # -> build/Debug/Infer.app
+make run                  # Open Infer.app (Debug)
+
+# Optimized build for perf testing / distribution dry-runs:
+make bundle-release       # -> build/Release/Infer.app
+make run-release
 ```
 
-`make build-infer` uses `xcodebuild` (not `swift build`) because mlx-swift's Metal kernels can only be compiled by Xcode's Metal toolchain. The `llama.xcframework` is fetched by `scripts/fetch_llama_framework.sh` from the [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases); override the tag with `make build-infer LLAMA_TAG=bXXXX`. The `whisper.xcframework` is fetched by `scripts/fetch_whisper_framework.sh` from the [whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases); override with `WHISPER_TAG=vX.Y.Z`. `KaTeX` + `highlight.js` are fetched by `scripts/fetch_webassets.sh` (override versions via `KATEX_VERSION` / `HLJS_VERSION`) into `thirdparty/webassets/` and bundled into `Infer.app/Contents/Resources/WebAssets/` — no CDNs at runtime.
+Debug is the default because it's what active development wants (fast incremental rebuilds, full debug symbols). Release turns on `-O` and strips symbols; the two bundles coexist under `build/Debug/` and `build/Release/` so switching configs doesn't force a rebuild of the other side.
+
+`make build` uses `xcodebuild` (not `swift build`) because mlx-swift's Metal kernels can only be compiled by Xcode's Metal toolchain. The `llama.xcframework` is fetched by `scripts/fetch_llama_framework.sh` from the [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases); override the tag with `make build LLAMA_TAG=bXXXX`. The `whisper.xcframework` is fetched by `scripts/fetch_whisper_framework.sh` from the [whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases); override with `WHISPER_TAG=vX.Y.Z`. `KaTeX` + `highlight.js` are fetched by `scripts/fetch_webassets.sh` (override versions via `KATEX_VERSION` / `HLJS_VERSION`) into `thirdparty/webassets/` and bundled into `Infer.app/Contents/Resources/WebAssets/` — no CDNs at runtime.
 
 At runtime the app offers two backends via a header picker:
 
@@ -86,14 +92,15 @@ make clean              # Remove build/
 
 | Target | Description |
 |---|---|
-| `build` | Alias for `build-infer` |
+| `build` | Build the Infer chat app via `xcodebuild` (Debug by default; override with `INFER_CONFIG=Release`) |
+| `bundle` | Bundle as `build/$(INFER_CONFIG)/Infer.app` (embeds `llama.framework`, `whisper.framework`, MLX resource bundles including `default.metallib`, `AppIcon.icns`, and `WebAssets/` with KaTeX + highlight.js) |
+| `run` | Bundle and open |
+| `build-release` / `bundle-release` / `run-release` | Same as above but with `INFER_CONFIG=Release` — optimized bundle at `build/Release/Infer.app` |
+| `test` | Run the `InferCore` + `InferRAG` unit suites via `swift test` |
 | `clean` | Remove `build/` |
+| `clean-infer` | Remove only `build/infer-xcode` (xcodebuild derived data) |
+| `clean-mlx-cache` | Remove `$HF_HOME/hub` (MLX model cache) after confirmation |
 | `fetch-llama` | Download `thirdparty/llama.xcframework` (tag via `LLAMA_TAG=...`) |
 | `fetch-whisper` | Download `thirdparty/whisper.xcframework` (tag via `WHISPER_TAG=...`) |
 | `fetch-webassets` | Download KaTeX + highlight.js to `thirdparty/webassets/` (versions via `KATEX_VERSION=...` / `HLJS_VERSION=...`) |
-| `clean-infer` | Remove only `build/infer-xcode` (xcodebuild derived data) |
-| `clean-mlx-cache` | Remove `$HF_HOME/hub` (MLX model cache) after confirmation |
 | `generate-icon` | Regenerate `projects/infer/Resources/AppIcon.icns` from `scripts/generate_app_icon.swift` |
-| `build-infer` | Build the Infer chat app via `xcodebuild` |
-| `bundle-infer` | Bundle as `build/Infer.app` (embeds `llama.framework`, `whisper.framework`, MLX resource bundles including `default.metallib`, `AppIcon.icns`, and `WebAssets/` with KaTeX + highlight.js) |
-| `run-infer` | Bundle and open |

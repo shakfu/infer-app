@@ -27,10 +27,24 @@ extension ChatView {
     @ViewBuilder
     var generationRateView: some View {
         if let stats = vm.generationStats {
-            Text("\(stats.tokens) tok · \(String(format: "%.1f", stats.tps)) tok/s")
+            // Reasoning models inflate `tokens` (total decoded) above
+            // `net` (what landed in the rendered reply). When they
+            // differ — which happens whenever a model emitted
+            // <think>…</think> blocks — the header shows both so the
+            // discrepancy between "felt like a short reply" and
+            // "took 30 seconds" is legible. Otherwise the compact
+            // single-count format stays.
+            let showSplit = stats.net > 0 && stats.net < stats.tokens
+            let body: String = showSplit
+                ? "\(stats.net) net · \(stats.tokens) gen · \(String(format: "%.1f", stats.tps)) tok/s"
+                : "\(stats.tokens) tok · \(String(format: "%.1f", stats.tps)) tok/s"
+            let tip: String = showSplit
+                ? "\(stats.net) net tokens (rendered reply) · \(stats.tokens) total tokens decoded · \(String(format: "%.1f", stats.tps)) tok/s. Reasoning models emit `<think>…</think>` blocks that count against decode time and the context window but are hidden from the reply."
+                : (vm.isGenerating ? "Generation in progress" : "Last generation stats")
+            Text(body)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(vm.isGenerating ? SwiftUI.Color.accentColor : SwiftUI.Color.secondary)
-                .help(vm.isGenerating ? "Generation in progress" : "Last generation stats")
+                .help(tip)
         }
     }
 

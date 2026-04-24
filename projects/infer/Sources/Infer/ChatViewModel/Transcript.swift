@@ -93,6 +93,62 @@ extension ChatViewModel {
         }
     }
 
+    /// Replay the current `messages[]` (which holds the *visible*,
+    /// `<think>…</think>`-stripped text) into the active backend's
+    /// KV cache. Called automatically at end-of-turn for assistant
+    /// messages that captured reasoning content, so the cache stays
+    /// in sync with what the user sees.
+    ///
+    /// Uses the same `setHistory` plumbing that transcript-load and
+    /// regenerate use — the runner clears its cache, re-renders the
+    /// chat template from the supplied (stripped) history, tokenizes,
+    /// and decodes one prefill batch. Cost: ~few hundred ms for a
+    /// typical conversation length, paid once per reasoning turn.
+    /// Token usage is refreshed afterwards so the header percentage
+    /// reflects the post-compaction state.
+    ///
+    /// On failure: logs at `warning` level and falls through. The
+    /// runner is left in its prior state (cache still has the raw
+    /// sequence); the user's next turn still works, just at the old
+    /// cost.
+    func compactKVForVisibleHistory() {
+        let snapshot = self.messages
+        let b = self.backend
+        Task { [weak self] in
+            guard let self else { return }
+            let started = Date()
+            let turns = snapshot.filter { $0.role != .system }
+            do {
+                switch b {
+                case .llama:
+                    let history = turns.map { (role: $0.role.rawValue, content: $0.text) }
+                    try await self.llama.setHistory(history)
+                case .mlx:
+                    let history = turns.map { msg in
+                        (role: msg.role.rawValue,
+                         content: msg.text,
+                         imageURLs: msg.imageURL.map { [$0] } ?? [])
+                    }
+                    await self.mlx.setHistory(history)
+                }
+                let elapsed = Date().timeIntervalSince(started)
+                self.logs.logFromBackground(
+                    .debug,
+                    source: "runner",
+                    message: "compacted KV cache (stripped think blocks) in \(String(format: "%.0f", elapsed * 1000))ms"
+                )
+                await MainActor.run { self.refreshTokenUsage() }
+            } catch {
+                self.logs.logFromBackground(
+                    .warning,
+                    source: "runner",
+                    message: "KV cache compaction failed; cache still holds raw decoded sequence",
+                    payload: String(describing: error)
+                )
+            }
+        }
+    }
+
     /// Push `restored` into the active backend's KV cache so continued turns
     /// have context. System turns are filtered out — the current
     /// `settings.systemPrompt` is what each runner prepends automatically.

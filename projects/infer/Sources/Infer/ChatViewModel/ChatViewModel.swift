@@ -39,17 +39,33 @@ final class ChatViewModel {
     /// sampled tokens in the common case (they may merge for multi-byte UTF-8
     /// fragments — close enough for a user-facing tok/s readout).
     var generationTokenCount: Int = 0
+    /// Subset of `generationTokenCount` representing "net" output —
+    /// pieces that arrived as the rendered reply body rather than
+    /// inside a `<think>…</think>` reasoning block. The user's
+    /// `maxTokens` setting is interpreted as a cap on this net
+    /// count; thinking gets its own budget on top. Lets the header
+    /// expose "X net · Y generated" when reasoning models inflate
+    /// the total beyond the actual reply length. Approximated by
+    /// counting non-empty returns from `ThinkBlockStreamFilter.feed()`
+    /// — undercounts slightly when a held-back partial tag gets
+    /// released later in the stream, but the slip is at most a few
+    /// characters per turn (tag-length bounded). For non-reasoning
+    /// models this equals `generationTokenCount` exactly.
+    var netTokenCount: Int = 0
     var generationStart: Date? = nil
     var generationEnd: Date? = nil
 
     /// Tokens + tok/s for the current (if generating) or most-recent
-    /// generation. Nil when no generation has happened in this session.
-    var generationStats: (tokens: Int, tps: Double)? {
+    /// generation. `net` is the subset that landed in the rendered
+    /// reply body (i.e. not inside a `<think>` block); `tokens` is
+    /// the raw decode count. Nil when no generation has happened in
+    /// this session.
+    var generationStats: (tokens: Int, net: Int, tps: Double)? {
         guard let start = generationStart, generationTokenCount > 0 else { return nil }
         let end = generationEnd ?? Date()
         let elapsed = end.timeIntervalSince(start)
         guard elapsed > 0 else { return nil }
-        return (generationTokenCount, Double(generationTokenCount) / elapsed)
+        return (generationTokenCount, netTokenCount, Double(generationTokenCount) / elapsed)
     }
     /// State machine for agent selection. Owns the registry, the
     /// `activeAgentId`, the sorted `availableAgents` snapshot, and the

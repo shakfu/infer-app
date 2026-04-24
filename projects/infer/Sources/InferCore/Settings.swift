@@ -8,6 +8,7 @@ public enum PersistKey {
     public static let temperature = "infer.temperature"
     public static let topP = "infer.topP"
     public static let maxTokens = "infer.maxTokens"
+    public static let thinkingBudget = "infer.thinkingBudget"
     public static let seed = "infer.seed"
     public static let sidebarOpen = "infer.sidebarOpen"
     public static let sidebarTab = "infer.sidebarTab"
@@ -45,6 +46,15 @@ public struct InferSettings: Equatable, Sendable {
     public var temperature: Double
     public var topP: Double
     public var maxTokens: Int
+    /// Extra tokens allowed for `<think>…</think>` content on top of
+    /// `maxTokens`. Reasoning models (Qwen-3, DeepSeek-R1, etc.) emit
+    /// thinking that counts against the runner's decode cap but is
+    /// stripped from the rendered reply; `maxTokens` caps the net
+    /// output, `thinkingBudget` is the invisible allowance. For
+    /// non-reasoning models this just widens the hard cap harmlessly.
+    /// Bump if reasoning gets truncated mid-thinking on hard
+    /// questions; lower to save decode time on simple ones.
+    public var thinkingBudget: Int
     /// Optional sampling seed. `nil` means use a random seed (non-deterministic
     /// output). When set, identical prompt + params + seed produces identical
     /// output on a given backend. Stored as a string in UserDefaults since
@@ -56,12 +66,14 @@ public struct InferSettings: Equatable, Sendable {
         temperature: Double,
         topP: Double,
         maxTokens: Int,
+        thinkingBudget: Int = 4096,
         seed: UInt64? = nil
     ) {
         self.systemPrompt = systemPrompt
         self.temperature = temperature
         self.topP = topP
         self.maxTokens = maxTokens
+        self.thinkingBudget = thinkingBudget
         self.seed = seed
     }
 
@@ -70,6 +82,7 @@ public struct InferSettings: Equatable, Sendable {
         temperature: 0.8,
         topP: 0.95,
         maxTokens: 512,
+        thinkingBudget: 4096,
         seed: nil
     )
 
@@ -81,6 +94,7 @@ public struct InferSettings: Equatable, Sendable {
             temperature: defaults.object(forKey: PersistKey.temperature) as? Double ?? Self.defaults.temperature,
             topP: defaults.object(forKey: PersistKey.topP) as? Double ?? Self.defaults.topP,
             maxTokens: defaults.object(forKey: PersistKey.maxTokens) as? Int ?? Self.defaults.maxTokens,
+            thinkingBudget: defaults.object(forKey: PersistKey.thinkingBudget) as? Int ?? Self.defaults.thinkingBudget,
             seed: seed
         )
     }
@@ -90,6 +104,7 @@ public struct InferSettings: Equatable, Sendable {
         defaults.set(temperature, forKey: PersistKey.temperature)
         defaults.set(topP, forKey: PersistKey.topP)
         defaults.set(maxTokens, forKey: PersistKey.maxTokens)
+        defaults.set(thinkingBudget, forKey: PersistKey.thinkingBudget)
         if let seed {
             defaults.set(String(seed), forKey: PersistKey.seed)
         } else {

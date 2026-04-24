@@ -197,7 +197,11 @@ actor LlamaRunner {
 
         var cparams = llama_context_default_params()
         cparams.n_ctx = nCtx
-        cparams.n_batch = 512
+        // Raised from 512 so prefill batches for longer histories (esp.
+        // after KV compaction, which re-submits the whole visible
+        // transcript) fit without needing many chunks. `setHistory`
+        // still chunks defensively in case a single turn exceeds this.
+        cparams.n_batch = 2048
 
         guard let c = llama_init_from_model(m, cparams) else {
             llama_model_free(m); self.model = nil; self.vocab = nil
@@ -293,9 +297,25 @@ actor LlamaRunner {
         }
         guard !tokens.isEmpty else { return }
 
-        let rc = tokens.withUnsafeMutableBufferPointer { buf -> Int32 in
-            let batch = llama_batch_get_one(buf.baseAddress, Int32(buf.count))
-            return llama_decode(ctx, batch)
+        // Chunk the prefill into `n_batch`-sized pieces. llama.cpp aborts
+        // (ggml_abort) inside `llama_decode` if a single `llama_batch_get_one`
+        // exceeds the context's configured batch size. Long histories —
+        // especially after KV compaction re-submits the whole visible
+        // transcript — blow past that cap in one shot, so we feed the
+        // tokens in sequentially and let llama advance its own position.
+        let nBatch = Swift.max(1, Int(llama_n_batch(ctx)))
+        let total = tokens.count
+        let rc: Int32 = tokens.withUnsafeMutableBufferPointer { buf -> Int32 in
+            guard let base = buf.baseAddress else { return 0 }
+            var offset = 0
+            while offset < total {
+                let chunk = Swift.min(nBatch, total - offset)
+                let batch = llama_batch_get_one(base.advanced(by: offset), Int32(chunk))
+                let r = llama_decode(ctx, batch)
+                if r != 0 { return r }
+                offset += chunk
+            }
+            return 0
         }
         if rc != 0 {
             resetConversation()

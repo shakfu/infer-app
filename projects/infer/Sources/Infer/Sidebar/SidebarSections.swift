@@ -143,6 +143,19 @@ extension SidebarView {
                 )
             }
 
+            ParamRow(label: "Thinking budget",
+                     value: "\(draft.thinkingBudget)") {
+                Slider(
+                    value: Binding(
+                        get: { Double(draft.thinkingBudget) },
+                        set: { draft.thinkingBudget = Int($0) }
+                    ),
+                    in: 0...16384,
+                    step: 256
+                )
+            }
+            .help("Extra tokens allowed for `<think>…</think>` reasoning on top of Max tokens. Reasoning models (Qwen-3, DeepSeek-R1) need headroom here; non-reasoning models ignore it. 0 disables the allowance — thinking then counts against Max tokens.")
+
             seedRow
 
             DisclosureGroup(isExpanded: $showSystemPrompt) {
@@ -178,6 +191,7 @@ extension SidebarView {
             && s.temperature == draft.temperature
             && s.topP == draft.topP
             && s.maxTokens == draft.maxTokens
+            && s.thinkingBudget == draft.thinkingBudget
             && s.seed == draft.seed
     }
 

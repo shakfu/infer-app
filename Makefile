@@ -1,5 +1,4 @@
 BUILD_DIR := build
-INFER_APP_BUNDLE := $(BUILD_DIR)/Infer.app
 LLAMA_XCFRAMEWORK := thirdparty/llama.xcframework
 LLAMA_FRAMEWORK := $(LLAMA_XCFRAMEWORK)/macos-arm64_x86_64/llama.framework
 LLAMA_TAG := b8848
@@ -10,7 +9,19 @@ WEBASSETS_DIR := thirdparty/webassets
 WEBASSETS_MARKER := $(WEBASSETS_DIR)/katex/katex.min.js
 INFER_DIR := projects/infer
 INFER_BUILD_DIR := $(BUILD_DIR)/infer-xcode
+
+# Xcode build configuration. Override via `make build INFER_CONFIG=Release`
+# or use the dedicated *-release convenience targets below. Debug is the
+# default because it's what active development wants; Release is for
+# distribution-shaped local builds (optimized, stripped).
 INFER_CONFIG := Debug
+
+# Bundles are grouped by config: `build/Debug/Infer.app` vs
+# `build/Release/Infer.app`. Same .app filename in both so Finder /
+# Spotlight / Dock behave identically for either; switching configs
+# doesn't force the other's bundle to be rebuilt.
+INFER_APP_BUNDLE := $(BUILD_DIR)/$(INFER_CONFIG)/Infer.app
+
 INFER_XCODE_FLAGS := -workspace $(INFER_DIR) -scheme Infer \
 	-destination 'platform=macOS,arch=arm64' \
 	-configuration $(INFER_CONFIG) \
@@ -19,12 +30,11 @@ INFER_XCODE_FLAGS := -workspace $(INFER_DIR) -scheme Infer \
 INFER_PRODUCT_DIR := $(INFER_BUILD_DIR)/Build/Products/$(INFER_CONFIG)
 INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 
-.PHONY: all build clean clean-infer clean-mlx-cache test
-.PHONY: build-infer bundle-infer run-infer fetch-llama fetch-whisper fetch-webassets generate-icon
+.PHONY: all build bundle run clean clean-infer clean-mlx-cache test
+.PHONY: fetch-llama fetch-whisper fetch-webassets generate-icon
+.PHONY: build-release bundle-release run-release
 
 all: build
-
-build: build-infer
 
 clean:
 	rm -rf $(BUILD_DIR)
@@ -75,10 +85,10 @@ $(WEBASSETS_MARKER):
 
 fetch-webassets: $(WEBASSETS_MARKER)
 
-build-infer: $(LLAMA_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK)
+build: $(LLAMA_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK)
 	xcodebuild $(INFER_XCODE_FLAGS) build
 
-bundle-infer: build-infer $(INFER_DIR)/Resources/AppIcon.icns $(WEBASSETS_MARKER)
+bundle: build $(INFER_DIR)/Resources/AppIcon.icns $(WEBASSETS_MARKER)
 	rm -rf $(INFER_APP_BUNDLE)
 	mkdir -p $(INFER_APP_BUNDLE)/Contents/MacOS
 	mkdir -p $(INFER_APP_BUNDLE)/Contents/Resources
@@ -95,8 +105,31 @@ bundle-infer: build-infer $(INFER_DIR)/Resources/AppIcon.icns $(WEBASSETS_MARKER
 	done
 	@echo "Built $(INFER_APP_BUNDLE)"
 
-run-infer: bundle-infer
+run: bundle
 	open $(INFER_APP_BUNDLE)
+
+# --- Release-configuration shortcuts ---
+#
+# These recursively invoke the corresponding Debug target with
+# `INFER_CONFIG=Release` so the same build logic drives both configs —
+# one set of rules, two configurations. The Release bundle lives at
+# `build/Release/Infer.app` (distinct from the Debug `build/Debug/Infer.app`)
+# so both coexist; switching configs doesn't force a full rebuild of
+# the other side.
+#
+# Use these when you want an optimized local build for perf testing,
+# distribution dry-runs, or "feels slower in Debug than it should"
+# diagnosis. The xcodebuild Release config enables -O optimizations
+# and strips debug symbols by default; no extra flags here are needed.
+
+build-release:
+	$(MAKE) build INFER_CONFIG=Release
+
+bundle-release:
+	$(MAKE) bundle INFER_CONFIG=Release
+
+run-release:
+	$(MAKE) run INFER_CONFIG=Release
 
 # Regenerate the placeholder app icon. The .icns is committed, so this only
 # needs to run when the design changes. Requires /usr/bin/iconutil (ships

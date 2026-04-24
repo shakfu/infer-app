@@ -26,6 +26,7 @@ extension ChatViewModel {
         pendingImageURL = nil
         isGenerating = true
         generationTokenCount = 0
+        netTokenCount = 0
         generationStart = Date()
         generationEnd = nil
 
@@ -34,6 +35,16 @@ extension ChatViewModel {
         // this turn. `activeDecodingParams` is kept in sync by
         // `switchAgent` (non-Default) and `applySettings` (Default).
         let maxTokens = self.activeDecodingParams.maxTokens
+        // Reasoning models (Qwen-3, DeepSeek-R1, etc.) emit
+        // `<think>…</think>` content that counts against the runner's
+        // decode cap but is stripped from the rendered reply. Treat
+        // the user's `maxTokens` as a cap on *net* output (the reply
+        // the user actually sees): give the runner
+        // `maxTokens + thinkingBudget` of headroom, and stop the
+        // stream ourselves once net output hits the user's setting.
+        // For non-reasoning models no thinking fires and the two
+        // caps are effectively simultaneous.
+        let runnerMaxTokens = maxTokens + self.settings.thinkingBudget
 
         // Record the turn in the vault (best-effort; never blocks generation).
         // Under a non-Default agent the raw system prompt is owned by the
@@ -107,11 +118,11 @@ extension ChatViewModel {
                     // llama backend has no multimodal path here; the send
                     // button is disabled when an image is attached, so this
                     // branch will not carry one in practice.
-                    stream = await self.llama.sendUserMessage(promptText, maxTokens: maxTokens)
+                    stream = await self.llama.sendUserMessage(promptText, maxTokens: runnerMaxTokens)
                 case .mlx:
                     let imgs: [URL] = attachedImage.map { [$0] } ?? []
                     stream = await self.mlx.sendUserMessage(
-                        promptText, imageURLs: imgs, maxTokens: maxTokens
+                        promptText, imageURLs: imgs, maxTokens: runnerMaxTokens
                     )
                 }
                 var firstDecodeText = ""
@@ -138,6 +149,9 @@ extension ChatViewModel {
                     }
                     firstDecodeText += piece
                     self.generationTokenCount += 1
+                    if !display.isEmpty {
+                        self.netTokenCount += 1
+                    }
                     // Refresh the header's context-percentage every
                     // 16 tokens so it climbs visibly during streaming
                     // rather than jumping at completion. The llama
@@ -146,6 +160,17 @@ extension ChatViewModel {
                     // which is similarly cheap.
                     if self.generationTokenCount % 16 == 0 {
                         self.refreshTokenUsage()
+                    }
+                    // Net-token cap. Once the rendered reply has
+                    // reached `maxTokens` AND we're not still inside
+                    // a <think> block, stop the runner. The check
+                    // being out-of-think matters for reasoning
+                    // models that emit closing `</think>` right
+                    // before the answer — we need the filter to see
+                    // it so the first net token counts correctly.
+                    if self.netTokenCount >= maxTokens, !thinkFilter.inThink {
+                        await self.requestStopCurrentRunner()
+                        break
                     }
                 }
                 // Flush any pending tail (e.g. unterminated <think>
@@ -165,11 +190,27 @@ extension ChatViewModel {
                     try await self.maybeRunToolLoop(
                         firstDecodeText: firstDecodeText,
                         assistantIndex: assistantIndex,
-                        maxTokens: maxTokens
+                        maxTokens: runnerMaxTokens,
+                        netCap: maxTokens
                     )
                 }
 
                 self.generationEnd = Date()
+                // If the model emitted <think>…</think>, the runner's
+                // KV cache holds the raw decoded sequence (including
+                // reasoning) but the visible reply doesn't. Without
+                // compaction, every subsequent turn carries that
+                // hidden reasoning forward — multi-turn conversations
+                // burn through the context window 2–4× faster than
+                // the visible text suggests. Replay the cleaned
+                // (visible-only) history into the runner so the cache
+                // matches what the user sees. Cost: one prefill at
+                // turn end. Only triggered when there's actually
+                // thinking to compact.
+                if assistantIndex < self.messages.count,
+                   self.messages[assistantIndex].thinkingText?.isEmpty == false {
+                    self.compactKVForVisibleHistory()
+                }
                 // Persist the assistant reply to the vault. Only on success —
                 // cancellations and errors are caught below and skip this.
                 if assistantIndex < self.messages.count,
@@ -218,6 +259,20 @@ extension ChatViewModel {
             }
             if self.generationEnd == nil { self.generationEnd = Date() }
             self.isGenerating = false
+        }
+    }
+
+    /// Signal whichever backend is currently running to stop at the
+    /// next cancellation check. Used by both the user-initiated Stop
+    /// button and the internal net-token-cap breaker (when reasoning
+    /// models finish their reply inside a larger decode budget).
+    /// Unlike `stop()`, doesn't cancel the VM-level `generationTask`
+    /// — the stream loop is breaking out on its own and needs to
+    /// finish committing state (vault write, TTS, KV compaction).
+    func requestStopCurrentRunner() async {
+        switch self.backend {
+        case .llama: await self.llama.requestStop()
+        case .mlx: await self.mlx.requestStop()
         }
     }
 
@@ -290,7 +345,8 @@ extension ChatViewModel {
     func maybeRunToolLoop(
         firstDecodeText: String,
         assistantIndex: Int,
-        maxTokens: Int
+        maxTokens: Int,
+        netCap: Int
     ) async throws {
         let parser = ToolCallParser(family: .llama3)
         guard let match = parser.findFirstCall(in: firstDecodeText) else { return }
@@ -351,11 +407,21 @@ extension ChatViewModel {
             }
             finalAnswer += piece
             self.generationTokenCount += 1
+            if !display.isEmpty {
+                self.netTokenCount += 1
+            }
             // Match the periodic refresh in the first-decode loop
             // so the header keeps climbing during the tool-loop's
             // second decode too.
             if self.generationTokenCount % 16 == 0 {
                 self.refreshTokenUsage()
+            }
+            // Net-token cap for the tool loop's second decode.
+            // Same rule as the first decode — ignore thinking
+            // content, enforce the user's cap on rendered output.
+            if self.netTokenCount >= netCap, !thinkFilter2.inThink {
+                await self.requestStopCurrentRunner()
+                break
             }
         }
         let tail2 = thinkFilter2.flush()

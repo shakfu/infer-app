@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6]
+
 ### Added
+
+- **Reasoning-model think-block handling.** Qwen3 / DeepSeek-R1 style `<think>…</think>` blocks are now rendered as a collapsed-by-default "Thoughts" disclosure above the assistant reply instead of leaking into the visible body as raw tag soup. `InferCore/ThinkBlockStreamFilter.swift` is a stateful stream filter that splits streaming pieces into `think` vs `reply` fragments and tolerates tags straddling piece boundaries (tag-start can arrive in one piece, tag-end in a later one). The transcript stores the two fragments side by side on `ChatMessage` and `ThinkingDisclosure` renders them with the same styling idiom as `StepTraceDisclosure`. Collapsed by default on every load — reasoning verbosity is interesting once, noise afterwards.
+
+- **Thinking budget setting (`InferSettings.thinkingBudget`, default 4096).** Reasoning models decode both the `<think>…</think>` pass and the final answer; capping at `maxTokens` often exhausts the cap inside the think block and leaves nothing for the reply. The runner cap is now `maxTokens + thinkingBudget` — `maxTokens` stays the hard cap on *net* rendered tokens, `thinkingBudget` is the invisible decode allowance. Surfaced as a slider in the Parameters sidebar with guidance; persisted under `PersistKey.thinkingBudget`. For non-reasoning models the extra budget is harmless — they never emit think blocks so the net cap fires first.
+
+- **Net-token accounting + KV compaction.** The generation loop now tracks net (rendered) tokens separately from total decoded tokens, and `requestStopCurrentRunner` fires when net reaches `maxTokens` even if the model is still inside a think block. After a turn that emitted thinking, `compactKVForVisibleHistory` clears the llama KV cache and re-submits the visible-only transcript, so think tokens don't eat context on subsequent turns. Header stats split when they diverge: `123 net · 456 gen · 45.2 tok/s`; identical counts collapse back to the compact single form.
+
+- **Release-configuration Makefile targets.** `make build-release`, `make bundle-release`, `make run-release` recursively invoke the corresponding target with `INFER_CONFIG=Release`. Debug stays the default for active development (fast incremental builds, full debug symbols); Release is for perf testing, distribution dry-runs, or diagnosing "feels slower than it should" regressions against the optimized build. One set of rules, two configurations — no logic duplication.
 
 - **Hybrid retrieval (vector + FTS5).** Dense embedding alone misses chunks whose answer vocabulary doesn't overlap with the query (e.g. a query for "vector database" against a corpus that uses the proper noun "SQLiteVec"). The vector store now keeps an FTS5 index over `chunks.content` (`content='chunks', content_rowid='id'` — same external-content pattern the vault uses on messages, with `unicode61 remove_diacritics 2` tokenizer). Triggers keep the index in sync on insert/update/delete; a one-shot backfill at bootstrap covers chunks ingested before hybrid existed. `VectorStore.search` runs both retrievers in parallel and fuses via Reciprocal Rank Fusion (k=60, equal weights) — chunks appearing in both retrievers' top lists rise above chunks appearing in only one. FTS-only hits get a real cosine distance via a `vec_distance_cosine(stored_embedding, query_embedding)` subquery so the UI similarity display stays consistent across retrievers. Per-search diagnostics on `VectorStore.lastSearchDiagnostics` (`vectorHits`, `ftsHits`, `ftsQuery`, `ftsError`, `usedFusion`); the Console tag `[hybrid: 30v+30f]` / `[vector-only: fts returned 0 for '...']` / `[fts error: ...]` makes it obvious which retriever contributed on each turn. Sanitizer is OR-joined and tokenizer-mirrored — splits the query on anything non-alphanumeric (matching `unicode61`'s tokenization of stored content), drops single-character tokens, phrase-quotes each term against FTS5 reserved-word collisions, joins with `OR` so BM25 can rank by partial matches rather than requiring every term in every chunk. 11 new unit tests cover the RRF fusion logic + sanitizer behaviour.
 
@@ -24,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`docs/patches/sqlitevec.md`** documenting the four local patches against the vendored SQLiteVec (sqlite3ext.h move, macOS platform bump, Database.execute error-handle plumbing, Int64 binding case + Int narrowing fix). Each patch entry has root cause, one-line diff, and a re-apply snippet for when the vendored copy is bumped.
 
 ### Changed
+
+- **Bundle output grouped by config.** `make bundle` writes to `build/Debug/Infer.app`; `make bundle-release` writes to `build/Release/Infer.app`. Both bundles share the same `.app` filename so Finder / Spotlight / Dock behave identically for either; switching configs doesn't force a rebuild of the other side. `INFER_APP_BUNDLE := $(BUILD_DIR)/$(INFER_CONFIG)/Infer.app` threads the config through bundle / run. Replaces the single `build/Infer.app` path.
+
+- **Makefile target names dropped the `-infer` suffix.** `build-infer` → `build`, `bundle-infer` → `bundle`, `run-infer` → `run`. The suffix was a holdover from when this repo hosted multiple demo projects; with Infer the only app, the shorter names are unambiguous. Old names no longer resolve — update any aliases or scripts.
+
+- **Header token-rate readout renames `visible` to `net`.** Matches the `InferSettings` field naming (net tokens = rendered reply; gen tokens = total decoded including stripped think content). Tooltip updated to call out that reasoning models emit `<think>…</think>` blocks that count against decode time and the context window but are hidden from the reply.
+
+- **`LlamaRunner` main context `n_batch` raised 512 → 2048.** Longer prefills — especially after KV compaction re-submits the whole visible transcript — now fit in far fewer batch calls. `setHistory` still chunks defensively (see Fixed).
 
 - **`maybeRunToolLoop`'s tool-call diagnostic message** now includes per-file ingest debug lines and a final success/warnings assertion. Earlier the only feedback was a count summary that could blend in with other events; the explicit `scan successful: N file(s) ingested in Ts` (or `scan completed with warnings`) line is unambiguous as a terminal state.
 
@@ -57,6 +75,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`VaultConversationSummary.tags`** (from the tags feature in 0.1.6) coexists with the new `workspace_id` — workspaces are orthogonal to tags. A conversation can be in the "Acme" workspace and tagged `quarterly-review`; both facets filter independently in the History tab.
 
 - **Deleting a workspace cascades to its vector data.** `deleteWorkspace` now also invokes `vectorStore.deleteWorkspaceData(workspaceId:)` so orphaned sources/chunks/embeddings don't linger in `vectors.sqlite`. Failures in the cascade are non-fatal (derived data — re-ingestable) and logged at warning level.
+
+### Fixed
+
+- **`ggml_abort` crash in `LlamaRunner.setHistory` on longer histories.** `setHistory` submitted the full rendered transcript through a single `llama_batch_get_one` + `llama_decode`. When the token count exceeded `n_batch` (default 512), llama.cpp aborted at `llama-context.cpp:1599` with "n_tokens_all > n_batch". The path wasn't triggered before reasoning-model compaction landed because normal `sendUserMessage` sends turn-sized deltas that stay under the cap. Fix: `setHistory` now chunks the prefill into `llama_n_batch(ctx)`-sized pieces via `advanced(by:)` on the buffer pointer, decoding sequentially and letting llama advance its own position; `n_batch` also raised at load time so chunking fires less often. Reproduced by a long reasoning-model conversation with compaction triggered after each thinking turn.
 
 ## [0.1.6]
 
