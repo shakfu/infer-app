@@ -26,6 +26,28 @@ Roughly prioritized by user-facing impact / effort ratio. Items within a tier ar
 
 - [ ] **Whisper.cpp as live-mic ASR backend.** Extends the file-transcription work above to the live mic path. Today the mic button is wired exclusively to `SFSpeechRecognizer`; swap it behind a segmented control (SFSpeechRecognizer vs Whisper) in the Speech sidebar section so the existing mic button can drive either backend. Needs a streaming/chunked capture path feeding `WhisperRunner` (SFSpeechRecognizer is continuous; whisper.cpp is batch — likely capture to a rolling buffer and transcribe on stop, or run fixed-window chunks for partial results).
 
+## P1 — RAG quality
+
+Surfaced by the first end-to-end tests of Phase 5 RAG on real corpora. The pipeline is correct; these items all target retrieval / presentation quality, which dense-embedding-only search leaves on the table. Ordered roughly by payoff.
+
+- [ ] **Hybrid retrieval (vector + FTS5).** Dense retrieval misses passages where the query uses generic terms (e.g. "vector database") but the answer uses proper nouns ("SQLiteVec", "vec0") or vice versa. Add an FTS5 virtual table over `chunks.content` (same `content='chunks', content_rowid='id'` pattern the vault already uses on messages), run keyword search in parallel with vector search, fuse via Reciprocal Rank Fusion (k=60, equal weights). Deduplicate by chunk id, return top-K by fused score. Requires a one-shot backfill for existing stores. ~2 days. **Highest leverage on the first-test failures.**
+
+- [ ] **Larger chunks for prose.** 512 chars ≈ one paragraph; a scene or section spans 3–5. For narrative or argumentative documents, 1024/100 often retrieves better context. Changes existing indexes, forces re-ingest. Could be a per-workspace setting later; for MVP, bump the default and leave the workspace metadata's `chunk_size` column as the source of truth.
+
+- [ ] **Structural / section metadata.** Detect markdown `## Heading` boundaries during ingestion and store heading paths alongside chunks (e.g. `rag.plan.md > 3.1 Schema`). Inject the path as a prefix in the prompt's context block so the model sees "chunk from section X of file Y" — dramatically improves orientation on "summarize" / "where in X" queries. For plain `.txt` novels, detect `Chapter N` or `PART N` markers with a fallback regex. Medium effort; changes the chunk schema.
+
+- [ ] **Query reformulation (HyDE-style).** "Summarize the book" embeds poorly against any single chunk because the query has no specific vocabulary overlap with the body. Rewrite the query through the chat model before embedding: generate a hypothetical ideal answer, embed *that*, use it for retrieval. Big quality bump on broad questions; adds one LLM call per query. Gate behind a per-workspace setting so users can opt out for latency-sensitive flows.
+
+- [ ] **Reranking.** Pull top-30 by fused hybrid retrieval, rerank with a cross-encoder (`bge-reranker-base`, ~280 MB, downloadable through the same HF flow as the embedder). Cross-encoders read both query and chunk *together* and score true relevance, catching the "topical-but-not-answerful" chunks the similarity-based path keeps surfacing. ~3 days including UI for model download; highest ceiling but most cost (~200 ms per query).
+
+## P1 — Reasoning model handling
+
+Reasoning models (Qwen-3, DeepSeek-R1, etc.) emit `<think>…</think>` blocks that count as real tokens against `maxTokens`, the KV cache, and `generationTokenCount`. The visible reply is stripped via `ThinkBlockStreamFilter` (already shipped) and rendered behind a collapsible disclosure, but the underlying token accounting still includes the thinking content. These items address that asymmetry.
+
+- [ ] **Strip thinking from KV cache between turns.** Currently `messages[]` (used for chat-template rendering) holds the stripped assistant text, but the runner's KV cache holds the full decoded sequence including `<think>…</think>`. Each turn's reasoning lingers in the cache for every subsequent turn, so multi-turn conversations with reasoning models fill the context window 2–4× faster than the visible reply text suggests. Fix: at end of an assistant turn, replay the cleaned `messages[]` against the runner — `llama_memory_clear`, re-tokenize from the stripped template, decode the prefill (one batch, ~few hundred ms). Trade: a one-time re-prefill cost at end-of-turn for accurate multi-turn context accounting. Worth doing once reasoning models are common enough in usage to make the cache bloat noticeable.
+
+- [ ] **Distinguish "decoded" from "visible" tokens in stats.** Today `generationTokenCount` (powering the tok/s readout) increments on every stream piece including thinking. After a 1000-token reasoning episode that produces a 50-token visible reply, the user sees "12 tok · 8 tok/s" but actually decoded 1050 tokens. Fix: track `visibleTokenCount` separately by counting tokens emitted by the `ThinkBlockStreamFilter`'s `feed()` return, alongside the existing total. Surface as "12 visible · 1050 generated · 8 tok/s" in the header (or behind a tooltip — UI-design decision). Honest about why a reply that looked instant took 30 seconds.
+
 ## P2 — hygiene & infra
 
 - [ ] **Drop `.swiftLanguageMode(.v5)` on the Infer target.** The only blocker is `LlamaRunner.backendInitialized: static var` tripping Swift 6 strict-concurrency. Replace with an `actor` or an `@MainActor`-isolated initializer, then remove the opt-out.

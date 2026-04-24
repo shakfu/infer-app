@@ -22,7 +22,17 @@ let package = Package(
         // SQLite is independent of GRDB's (which keeps using Apple's
         // for the main vault). RAG data lives in a separate .sqlite
         // file opened via SQLiteVec's Database type.
-        .package(url: "https://github.com/jkrukowski/SQLiteVec", from: "0.0.9"),
+        //
+        // Vendored locally at `thirdparty/SQLiteVec/` because the
+        // upstream public headers include `sqlite3ext.h`, which
+        // xcodebuild's module-map generator then merges into the
+        // workspace's Clang search path — colliding with GRDB's
+        // shim (which expects Apple's system SQLite without the
+        // extension macro block). In the vendored copy, `sqlite3ext.h`
+        // is moved out of `include/` so it's no longer a public header
+        // while still available to `sqlite-vec.c` via the local
+        // quoted include.
+        .package(path: "../../thirdparty/SQLiteVec"),
     ],
     targets: [
         // Pure-Swift library for logic that does not depend on binary
@@ -50,6 +60,24 @@ let package = Package(
             dependencies: ["InferAgents", "InferCore"],
             path: "Tests/InferAgentsTests"
         ),
+        // RAG vector store. Lives in its own target so SQLiteVec's
+        // bundled SQLite C headers stay module-private — if they were
+        // in the same compile unit as GRDB's GRDBSQLite shim (which
+        // assumes Apple's system SQLite), `sqlite3ext.h`'s macro
+        // aliases collide with GRDB's direct function references.
+        // Separate target = separate module map = no header leakage.
+        .target(
+            name: "InferRAG",
+            dependencies: [
+                .product(name: "SQLiteVec", package: "SQLiteVec"),
+            ],
+            path: "Sources/InferRAG"
+        ),
+        .testTarget(
+            name: "InferRAGTests",
+            dependencies: ["InferRAG"],
+            path: "Tests/InferRAGTests"
+        ),
         .binaryTarget(
             name: "llama",
             path: "../../thirdparty/llama.xcframework"
@@ -67,23 +95,6 @@ let package = Package(
             dependencies: ["whisper"],
             path: "Sources/CWhisperBridge",
             publicHeadersPath: "include"
-        ),
-        // Spike: smoke-test that sqlite-vector loads into GRDB and the
-        // `vector_*` SQL functions round-trip. Run with `swift run
-        // SqliteVectorSmoke`. Kept as a separate executable so it
-        // doesn't pull the xcframework into the library test bundles
-        // and so the spike can be deleted cleanly after RAG lands
-        // without touching the main app target.
-        // Spike: smoke-test that SQLiteVec's bundled SQLite + sqlite-vec
-        // round-trip end-to-end. Run with `swift run SqliteVecSmoke`.
-        // Throwaway — delete after RAG Phase 1 confirms the approach.
-        .executableTarget(
-            name: "SqliteVecSmoke",
-            dependencies: [
-                .product(name: "SQLiteVec", package: "SQLiteVec"),
-                .product(name: "GRDB", package: "GRDB.swift"),
-            ],
-            path: "Sources/SqliteVecSmoke"
         ),
         .executableTarget(
             name: "Infer",
@@ -103,6 +114,7 @@ let package = Package(
                 .product(name: "Splash", package: "Splash"),
                 .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "GRDB", package: "GRDB.swift"),
+                "InferRAG",
             ],
             path: "Sources/Infer",
             exclude: ["Info.plist"],

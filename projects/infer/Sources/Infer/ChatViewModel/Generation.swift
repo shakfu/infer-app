@@ -1,5 +1,6 @@
 import Foundation
 import InferAgents
+import InferCore
 
 extension ChatViewModel {
     func send() {
@@ -84,26 +85,80 @@ extension ChatViewModel {
 
         generationTask = Task {
             do {
+                // Retrieval-augmented generation: if the active
+                // workspace has an indexed corpus, embed the user
+                // query, fetch top-K chunks, and build a context-
+                // prefixed prompt. Failures downgrade cleanly to a
+                // plain reply (no error surfaced to the user); the
+                // vault still stores the *original* user text, not
+                // the augmented prompt, so history stays clean.
+                let augmentation = await self.runRAGIfAvailable(userText: text)
+                if augmentation.didAugment,
+                   assistantIndex < self.messages.count {
+                    self.messages[assistantIndex].retrievedChunks = augmentation.chunks
+                }
+                let promptText = augmentation.didAugment
+                    ? augmentation.augmentedText
+                    : text
+
                 let stream: AsyncThrowingStream<String, Error>
                 switch backend {
                 case .llama:
                     // llama backend has no multimodal path here; the send
                     // button is disabled when an image is attached, so this
                     // branch will not carry one in practice.
-                    stream = await self.llama.sendUserMessage(text, maxTokens: maxTokens)
+                    stream = await self.llama.sendUserMessage(promptText, maxTokens: maxTokens)
                 case .mlx:
                     let imgs: [URL] = attachedImage.map { [$0] } ?? []
                     stream = await self.mlx.sendUserMessage(
-                        text, imageURLs: imgs, maxTokens: maxTokens
+                        promptText, imageURLs: imgs, maxTokens: maxTokens
                     )
                 }
                 var firstDecodeText = ""
+                // Strip <think>…</think> reasoning blocks from the
+                // visible body and capture them into the message's
+                // `thinkingText` for the collapsible disclosure.
+                // The filter is stateful across pieces because tags
+                // can split mid-chunk.
+                var thinkFilter = ThinkBlockStreamFilter()
                 for try await piece in stream {
+                    let display = thinkFilter.feed(piece)
                     if assistantIndex < self.messages.count {
-                        self.messages[assistantIndex].text += piece
+                        if !display.isEmpty {
+                            self.messages[assistantIndex].text += display
+                        }
+                        // Update thinking state on the message in
+                        // real time so the disclosure header shows
+                        // live "thinking…" while the model is in a
+                        // <think> block.
+                        self.messages[assistantIndex].isThinking = thinkFilter.inThink
+                        if !thinkFilter.thinking.isEmpty {
+                            self.messages[assistantIndex].thinkingText = thinkFilter.thinking
+                        }
                     }
                     firstDecodeText += piece
                     self.generationTokenCount += 1
+                    // Refresh the header's context-percentage every
+                    // 16 tokens so it climbs visibly during streaming
+                    // rather than jumping at completion. The llama
+                    // path reads `seq_pos_max` (O(1)) so this is
+                    // cheap; the MLX path estimates from char count
+                    // which is similarly cheap.
+                    if self.generationTokenCount % 16 == 0 {
+                        self.refreshTokenUsage()
+                    }
+                }
+                // Flush any pending tail (e.g. unterminated <think>
+                // or partial-tag holdback that turned out literal).
+                let tail = thinkFilter.flush()
+                if assistantIndex < self.messages.count {
+                    if !tail.isEmpty {
+                        self.messages[assistantIndex].text += tail
+                    }
+                    self.messages[assistantIndex].isThinking = false
+                    if !thinkFilter.thinking.isEmpty {
+                        self.messages[assistantIndex].thinkingText = thinkFilter.thinking
+                    }
                 }
 
                 if engageToolLoop {
@@ -280,12 +335,38 @@ extension ChatViewModel {
             maxTokens: maxTokens
         )
         var finalAnswer = ""
+        // Same think-block filter as the first decode — reasoning
+        // models can emit <think> in either decode pass.
+        var thinkFilter2 = ThinkBlockStreamFilter()
         for try await piece in secondStream {
+            let display = thinkFilter2.feed(piece)
             if assistantIndex < self.messages.count {
-                self.messages[assistantIndex].text += piece
+                if !display.isEmpty {
+                    self.messages[assistantIndex].text += display
+                }
+                self.messages[assistantIndex].isThinking = thinkFilter2.inThink
+                if !thinkFilter2.thinking.isEmpty {
+                    self.messages[assistantIndex].thinkingText = thinkFilter2.thinking
+                }
             }
             finalAnswer += piece
             self.generationTokenCount += 1
+            // Match the periodic refresh in the first-decode loop
+            // so the header keeps climbing during the tool-loop's
+            // second decode too.
+            if self.generationTokenCount % 16 == 0 {
+                self.refreshTokenUsage()
+            }
+        }
+        let tail2 = thinkFilter2.flush()
+        if assistantIndex < self.messages.count {
+            if !tail2.isEmpty {
+                self.messages[assistantIndex].text += tail2
+            }
+            self.messages[assistantIndex].isThinking = false
+            if !thinkFilter2.thinking.isEmpty {
+                self.messages[assistantIndex].thinkingText = thinkFilter2.thinking
+            }
         }
         if assistantIndex < self.messages.count {
             self.messages[assistantIndex].steps?.steps.append(.finalAnswer(finalAnswer))

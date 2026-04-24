@@ -135,6 +135,56 @@ actor MLXRunner {
         }
     }
 
+    /// Isolated single-turn generation — doesn't touch the main
+    /// conversation's history. Used by RAG's HyDE step, where we
+    /// want a model-generated hypothetical passage for embedding
+    /// retrieval without contaminating the user's chat.
+    ///
+    /// MLX is well-suited here: `ChatSession` is cheap to instantiate
+    /// with no history, and the app's `history` array isn't mutated
+    /// unless `appendCompletedTurn` is called. We skip that.
+    ///
+    /// Low-temperature (0.3) for focused, deterministic output —
+    /// HyDE hypotheticals should be grounded, not creative. Throws
+    /// `busy` if another generation is already in flight.
+    func generateOneShot(
+        prompt: String,
+        maxTokens: Int = 256
+    ) async throws -> String {
+        guard !isGenerating else { throw MLXRunnerError.busy }
+        guard let container else { throw MLXRunnerError.notLoaded }
+
+        let params = GenerateParameters(
+            maxTokens: maxTokens,
+            temperature: 0.3,
+            topP: 0.95
+        )
+        // Empty history + no instructions — we want the raw prompt
+        // to drive the session, free of any persona/system-prompt
+        // influence the main chat might be running under.
+        let session = ChatSession(
+            container,
+            instructions: nil,
+            history: [],
+            generateParameters: params
+        )
+
+        isGenerating = true
+        defer {
+            // Schedule finishGeneration on the actor; matches the
+            // pattern used by sendUserMessage.
+            Task { self.finishGeneration() }
+        }
+
+        var collected = ""
+        let stream = session.streamResponse(to: prompt)
+        for try await piece in stream {
+            if Task.isCancelled { throw MLXRunnerError.cancelled }
+            collected += piece
+        }
+        return collected
+    }
+
     func sendUserMessage(
         _ text: String,
         imageURLs: [URL] = [],

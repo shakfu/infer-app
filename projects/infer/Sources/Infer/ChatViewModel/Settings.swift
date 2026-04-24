@@ -26,6 +26,11 @@ extension ChatViewModel {
     /// Recompute context-window usage for the active backend. llama reports
     /// real token counts; MLX has no cheap way to query, so approximate from
     /// transcript character count (~4 chars/token for English).
+    ///
+    /// Currently consumed only by code paths that may use the data later
+    /// (vault, debug surfaces). The chat header no longer renders it —
+    /// the progress bar was visually crowding the header. If/when a
+    /// dedicated context-window UI lands, this is the data feed.
     func refreshTokenUsage() {
         let b = self.backend
         let msgs = self.messages

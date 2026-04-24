@@ -2,7 +2,7 @@
 
 Per-workspace retrieval-augmented generation, ported from the validated `cyllama` Python implementation at `~/projects/personal/cyllama`. Ships in six phases, ~2 weeks of focused work. Includes a "workspace-lite" prerequisite because RAG is workspace-scoped.
 
-**History note.** The original plan proposed vendoring `sqlite-vector` (Marco Bambini / SQLite AI) as a dynamic extension loaded via `sqlite3_load_extension`. A spike in `Sources/SqliteVecSmoke/` proved this unworkable under Apple's system SQLite — `sqlite3_enable_load_extension` is stripped from the TBD and `sqlite3_auto_extension` is a MISUSE-returning stub. Pivoted to `SQLiteVec` (jkrukowski, MIT), a Swift package that bundles its own SQLite amalgamation with `SQLITE_CORE` and statically links `sqlite-vec` (Alex Garcia, MIT). Works alongside GRDB's system-SQLite usage — they live in separate link-time worlds. The spike validated: extension registration, `vec0` virtual tables, insert/query round-trip, and GRDB coexistence in the same binary. See `Sources/SqliteVecSmoke/main.swift` for the proof.
+**History note.** The original plan proposed vendoring `sqlite-vector` (Marco Bambini / SQLite AI) as a dynamic extension loaded via `sqlite3_load_extension`. A spike (since deleted — see git history for `Sources/SqliteVecSmoke/`) proved this unworkable under Apple's system SQLite — `sqlite3_enable_load_extension` is stripped from the TBD and `sqlite3_auto_extension` is a MISUSE-returning stub. Pivoted to `SQLiteVec` (jkrukowski, MIT), a Swift package that bundles its own SQLite amalgamation with `SQLITE_CORE` and statically links `sqlite-vec` (Alex Garcia, MIT). Works alongside GRDB's system-SQLite usage — they live in separate link-time worlds.
 
 ---
 
@@ -94,7 +94,7 @@ A single `Database` instance per app (pointing at `~/Library/Application Support
 
 ### 1.4 Smoke test
 
-Already passing. See `Sources/SqliteVecSmoke/` — delete after phase 3 lands.
+Was provided by the `Sources/SqliteVecSmoke/` spike (since deleted). Validated: `SQLiteVec.initialize()` registers the `vec0` extension; `Database(.uri(...))` opens with the vec0 virtual table available; insertions with `[Float]` vectors round-trip; KNN via `MATCH ?` returns hits in ascending-distance order; GRDB (using Apple's system SQLite) coexists with SQLiteVec (bundled SQLite) in the same binary.
 
 ---
 

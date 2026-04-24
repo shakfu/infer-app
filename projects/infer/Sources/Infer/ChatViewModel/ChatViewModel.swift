@@ -1,6 +1,7 @@
 import Foundation
 import InferAgents
 import InferCore
+import InferRAG
 
 @MainActor
 @Observable
@@ -57,6 +58,19 @@ final class ChatViewModel {
     /// mutations (see `Agents.swift`). Extracted to `InferAgents` so the
     /// selection logic is unit-testable without the runner stack.
     let agentController = AgentController()
+    /// Dedicated llama.cpp context configured for embedding inference.
+    /// Loaded lazily on the first RAG ingest/query; stays resident
+    /// after that. Independent of the chat `LlamaRunner`/`MLXRunner`.
+    let embedder = EmbeddingRunner()
+    /// Cross-encoder reranker (bge-reranker-v2-m3). Scores (query,
+    /// chunk) pairs and is used by the RAG pipeline to reorder
+    /// hybrid-search candidates when the user enables reranking on
+    /// a workspace. Lazy-loads; stays resident after first use.
+    let reranker = RerankerRunner()
+    /// RAG vector store (sqlite-vec via SQLiteVec's bundled SQLite).
+    /// One shared instance for the whole app; separate DB file from
+    /// the main vault. Schema is bootstrapped lazily on first use.
+    let vectorStore = VectorStore()
     /// Non-modal notification surface for background confirmations
     /// (duplicate success, non-fatal warnings). Overlaid on `ChatView`;
     /// any `@MainActor` code can call `toasts.show(_:)` to surface a
@@ -67,6 +81,23 @@ final class ChatViewModel {
     /// fallback so developers running from a shell still see output.
     /// Surfaced in the Console sidebar tab.
     let logs = LogCenter()
+    /// True while a background download of the embedding model is
+    /// in flight. Observed by the workspace sheet to show progress
+    /// and disable scan affordances.
+    var embeddingModelDownloading: Bool = false
+    /// Fractional progress of the embedding model download [0, 1].
+    var embeddingModelDownloadProgress: Double = 0
+    /// Same pair for the reranker model.
+    var rerankerModelDownloading: Bool = false
+    var rerankerModelDownloadProgress: Double = 0
+    /// Live ingestion progress, non-nil while a scan is running.
+    /// Observed by the workspace sheet's progress UI.
+    var ingestProgress: IngestProgress? = nil
+    /// Corpus stats for the workspace currently visible in the
+    /// management sheet. Refreshed after `refreshCorpusStats`; nil
+    /// if the sheet isn't open or no workspace is selected.
+    var corpusStats: (workspaceId: Int64, sources: Int, chunks: Int)? = nil
+
     /// All workspaces in the vault. Refreshed on launch and after
     /// create/rename/delete. The Default workspace (created by the v4
     /// migration) is always present — this array is never empty on a
@@ -211,6 +242,7 @@ final class ChatViewModel {
         }
         bootstrapAgents()
         refreshWorkspaces()
+        logRAGIndexHealth()
     }
 
     /// Speak the assistant's completed reply and, in voice-loop mode, arm

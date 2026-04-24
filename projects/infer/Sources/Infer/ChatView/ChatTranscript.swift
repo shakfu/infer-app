@@ -210,6 +210,15 @@ struct MessageRow: View {
             if let trace = message.steps, !trace.steps.isEmpty {
                 StepTraceDisclosure(trace: trace)
             }
+            if let refs = message.retrievedChunks, !refs.isEmpty {
+                SourcesDisclosure(chunks: refs)
+            }
+            if message.isThinking || (message.thinkingText?.isEmpty == false) {
+                ThinkingDisclosure(
+                    text: message.thinkingText ?? "",
+                    isLive: message.isThinking
+                )
+            }
             if let url = message.imageURL, let img = NSImage(contentsOf: url) {
                 Image(nsImage: img)
                     .resizable()
@@ -434,5 +443,158 @@ struct AgentDividerRow: View {
                 .frame(height: 1)
         }
         .padding(.vertical, 4)
+    }
+}
+
+/// Collapsed "Sources" disclosure rendered on assistant messages
+/// that went through RAG. Mirrors `StepTraceDisclosure` visually so
+/// the two supplementary rows sit together naturally. Each row is a
+/// Reveal-in-Finder affordance — click to open the source file.
+struct SourcesDisclosure: View {
+    let chunks: [RetrievedChunkRef]
+    @State private var expanded: Bool = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $expanded) {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(chunks.enumerated()), id: \.offset) { _, chunk in
+                    SourceRow(chunk: chunk)
+                }
+            }
+            .padding(.top, 4)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text("\(chunks.count) source\(chunks.count == 1 ? "" : "s")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if let best = chunks.first {
+                    // Similarity = 1 - distance/2 for cosine distance
+                    // in [0, 2]. Closer to 1 = better match.
+                    let sim = 1.0 - best.distance / 2.0
+                    Text(String(format: "best %.2f", sim))
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.secondary.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.2))
+        )
+    }
+}
+
+private struct SourceRow: View {
+    let chunk: RetrievedChunkRef
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text((chunk.sourceURI as NSString).lastPathComponent)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.primary)
+                Text("chunk \(chunk.ord)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                // Show similarity (1 - distance/2 under cosine) so
+                // the per-row number is comparable to the header's
+                // "best X.XX" without the user juggling two metrics.
+                // Higher is better; 1.0 is identical, 0.0 is
+                // orthogonal.
+                Text(String(format: "%.2f", 1.0 - chunk.distance / 2.0))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([
+                        URL(fileURLWithPath: chunk.sourceURI)
+                    ])
+                } label: {
+                    Image(systemName: "folder")
+                        .font(.caption2)
+                }
+                .buttonStyle(.plain)
+                .help("Reveal \((chunk.sourceURI as NSString).lastPathComponent) in Finder")
+            }
+            Text(chunk.preview)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+    }
+}
+
+/// Collapsible disclosure rendering captured `<think>…</think>`
+/// content from reasoning models (Qwen-3, DeepSeek-R1, etc.).
+/// Mirrors `SourcesDisclosure` styling so the auxiliary disclosures
+/// stack consistently. Auto-expands while the model is actively
+/// inside a `<think>` block (`isLive == true`); collapses to a
+/// "thoughts" summary once thinking finishes and the visible answer
+/// starts streaming. User toggle overrides the auto-state for the
+/// row's lifetime.
+struct ThinkingDisclosure: View {
+    let text: String
+    let isLive: Bool
+    @State private var userOverride: Bool?
+
+    var body: some View {
+        // Always start collapsed — the live "thinking…" header is
+        // enough signal that the model is reasoning. User clicks to
+        // peek. Override sticks for the row's lifetime once toggled.
+        let expanded = Binding<Bool>(
+            get: { userOverride ?? false },
+            set: { userOverride = $0 }
+        )
+        DisclosureGroup(isExpanded: expanded) {
+            // Reasoning content. Monospaced + selectable + secondary
+            // foreground so it reads as commentary, not the answer.
+            ScrollView {
+                Text(text.isEmpty ? "…" : text)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 4)
+            }
+            .frame(maxHeight: 240)
+        } label: {
+            HStack(spacing: 6) {
+                if isLive {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Image(systemName: "brain")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Text(isLive ? "thinking…" : "thoughts")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if !isLive, !text.isEmpty {
+                    Text("\(text.count) chars")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.secondary.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.2))
+        )
     }
 }

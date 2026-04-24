@@ -61,6 +61,32 @@ extension ChatViewModel {
     /// Called from `ChatViewModel.init`. Seeds cached decoding params
     /// synchronously then kicks off async persona discovery, tool
     /// registration, and catalog publication to the controller.
+    /// Log the RAG vector store's row counts once at startup so
+    /// we can confirm the FTS5 index matches the `chunks` table.
+    /// Mismatch = backfill didn't cover existing chunks and hybrid
+    /// retrieval is operating on a partial index.
+    func logRAGIndexHealth() {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let (chunks, fts) = try await self.vectorStore.rowCounts()
+                let level: LogLevel = (chunks == fts) ? .info : .warning
+                self.logs.logFromBackground(
+                    level,
+                    source: "rag",
+                    message: "index health: chunks=\(chunks), chunks_fts=\(fts)\(chunks == fts ? "" : " (MISMATCH)")"
+                )
+            } catch {
+                self.logs.logFromBackground(
+                    .warning,
+                    source: "rag",
+                    message: "index health check failed",
+                    payload: String(describing: error)
+                )
+            }
+        }
+    }
+
     func bootstrapAgents() {
         let firstParty = Self.firstPartyPersonaURLs()
         Task { [controller = self.agentController, registry = self.toolRegistry, settings = self.settings, logs = self.logs] in

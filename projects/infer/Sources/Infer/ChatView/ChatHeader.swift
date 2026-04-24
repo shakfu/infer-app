@@ -6,8 +6,8 @@ extension ChatView {
             statusView
             WorkspacePickerMenu(vm: vm)
             AgentPickerMenu(vm: vm, sidebarOpen: $sidebarOpen)
-            tokenIndicator
             generationRateView
+            contextPercentView
 
             Spacer()
 
@@ -34,28 +34,27 @@ extension ChatView {
         }
     }
 
+    /// Context-window usage as a percentage. Sits to the right of
+    /// the per-generation tok/s readout. Compact on purpose — the
+    /// tooltip carries the raw used/total numbers for users who
+    /// want them. Only renders when the backend exposes a real
+    /// context size: llama has it via `llama_n_ctx`; MLX doesn't,
+    /// so this stays absent there (consistent with the rest of the
+    /// MLX header). Tinted orange at >80% and red at >95% to
+    /// telegraph "you're approaching context exhaustion" without
+    /// the user having to read the number.
     @ViewBuilder
-    var tokenIndicator: some View {
-        if let usage = vm.tokenUsage {
-            if let total = usage.total, total > 0 {
-                let ratio = min(1.0, Double(usage.used) / Double(total))
-                let tint: SwiftUI.Color = ratio > 0.95 ? .red : (ratio > 0.80 ? .orange : .accentColor)
-                HStack(spacing: 6) {
-                    ProgressView(value: ratio)
-                        .progressViewStyle(.linear)
-                        .tint(tint)
-                        .frame(width: 80)
-                    Text("\(usage.used) / \(total)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                }
-                .help("Context window: \(usage.used) of \(total) tokens used")
-            } else {
-                Text("~\(usage.used) tok")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .help("Approximate token count (backend does not expose context size)")
-            }
+    var contextPercentView: some View {
+        if let usage = vm.tokenUsage, let total = usage.total, total > 0 {
+            let ratio = min(1.0, Double(usage.used) / Double(total))
+            let pct = Int((ratio * 100).rounded())
+            let tint: SwiftUI.Color = ratio > 0.95
+                ? .red
+                : (ratio > 0.80 ? .orange : .secondary)
+            Text("\(pct)%")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(tint)
+                .help("Context: \(usage.used) / \(total) tokens used")
         }
     }
 

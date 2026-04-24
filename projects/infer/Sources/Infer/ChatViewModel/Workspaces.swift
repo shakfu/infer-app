@@ -1,8 +1,37 @@
 import Foundation
 import AppKit
 import InferCore
+import InferRAG
 
 extension ChatViewModel {
+    // MARK: - Per-workspace settings (UserDefaults-backed)
+
+    /// Read a per-workspace boolean setting. Pure convenience over
+    /// `UserDefaults.standard.bool(forKey:)` with a consistent key
+    /// shape (`infer.workspace.<id>.<setting>`) so settings storage
+    /// stays greppable and mistake-resistant.
+    func workspaceSetting(
+        _ setting: PersistKey.WorkspaceSetting,
+        workspaceId: Int64,
+        default defaultValue: Bool = false
+    ) -> Bool {
+        let key = PersistKey.workspaceKey(id: workspaceId, setting: setting.rawValue)
+        if UserDefaults.standard.object(forKey: key) == nil {
+            return defaultValue
+        }
+        return UserDefaults.standard.bool(forKey: key)
+    }
+
+    /// Write a per-workspace boolean setting.
+    func setWorkspaceSetting(
+        _ setting: PersistKey.WorkspaceSetting,
+        workspaceId: Int64,
+        _ value: Bool
+    ) {
+        let key = PersistKey.workspaceKey(id: workspaceId, setting: setting.rawValue)
+        UserDefaults.standard.set(value, forKey: key)
+    }
+
     /// Active workspace row (looked up from `workspaces` by id).
     /// Nil only transiently during app launch before the first
     /// `refreshWorkspaces` completes.
@@ -127,13 +156,29 @@ extension ChatViewModel {
 
     /// Delete a workspace. Orphans its conversations (they stay in the
     /// vault with workspace_id = NULL, visible in the History tab).
-    /// The caller is responsible for confirmation. Switches to the
-    /// Default workspace if the deleted one was active.
+    /// Also drops the workspace's RAG corpus from the vector store —
+    /// sources + chunks + vec_items — since that data is derived and
+    /// specific to this workspace. The caller is responsible for
+    /// confirmation.
     func deleteWorkspace(id: Int64) {
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await self.vault.deleteWorkspace(id: id)
+                // Drop the workspace's vector data too; failures here
+                // are non-fatal (the corpus is derived, re-ingestable).
+                do {
+                    try await self.vectorStore.deleteWorkspaceData(
+                        workspaceId: id
+                    )
+                } catch {
+                    self.logs.logFromBackground(
+                        .warning,
+                        source: "vector",
+                        message: "failed to delete workspace vector data",
+                        payload: String(describing: error)
+                    )
+                }
                 await MainActor.run {
                     self.refreshWorkspaces()
                     if self.activeWorkspaceId == id {

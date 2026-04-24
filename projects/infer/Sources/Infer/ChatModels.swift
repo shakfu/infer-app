@@ -37,6 +37,24 @@ struct ChatMessage: Identifiable, Equatable {
     /// Snapshotted alongside `agentName` so renaming or deleting the
     /// persona does not retroactively change historical rows.
     var agentLabel: String? = nil
+    /// RAG context injected into this reply's prompt. Populated by
+    /// the query pipeline before generation; rendered below the
+    /// message body as a collapsed "Sources" disclosure. Ephemeral —
+    /// only the prose lands in the vault; reloading a conversation
+    /// from history shows messages without their retrieval provenance.
+    var retrievedChunks: [RetrievedChunkRef]? = nil
+    /// Captured `<think>…</think>` content for reasoning models
+    /// (Qwen-3, DeepSeek-R1, etc.). Streamed in real time alongside
+    /// the visible body, displayed in a collapsible "thinking"
+    /// disclosure on the assistant message. Nil when the model
+    /// emitted no thinking content. Ephemeral — same vault posture
+    /// as `retrievedChunks`.
+    var thinkingText: String? = nil
+    /// True while the runner is currently inside a `<think>` block.
+    /// Drives the live "thinking…" indicator state in the disclosure
+    /// header — switches off when the model emits `</think>` and
+    /// the visible answer starts arriving.
+    var isThinking: Bool = false
 }
 
 enum Backend: String, CaseIterable, Identifiable {

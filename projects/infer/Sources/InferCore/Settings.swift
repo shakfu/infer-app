@@ -12,6 +12,24 @@ public enum PersistKey {
     public static let sidebarOpen = "infer.sidebarOpen"
     public static let sidebarTab = "infer.sidebarTab"
     public static let activeWorkspaceId = "infer.activeWorkspaceId"
+
+    /// Per-workspace toggles stored as UserDefaults keys of the form
+    /// `infer.workspace.<id>.<setting>`. Per-workspace defaults live
+    /// here so we can add more without a vault migration for each.
+    /// Callers use the helper functions below — don't build the key
+    /// string by hand at the call site.
+    public static func workspaceKey(
+        id: Int64,
+        setting: String
+    ) -> String {
+        "infer.workspace.\(id).\(setting)"
+    }
+
+    /// Setting names. Extend as new per-workspace toggles arrive.
+    public enum WorkspaceSetting: String {
+        case hydeEnabled
+        case rerankEnabled
+    }
     public static let appearance = "infer.appearance"
     public static let ttsEnabled = "infer.ttsEnabled"
     public static let ttsVoiceId = "infer.ttsVoiceId"

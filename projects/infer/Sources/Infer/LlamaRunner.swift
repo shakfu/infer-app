@@ -88,6 +88,8 @@ actor LlamaRunner {
     /// runs on process exit.
     func shutdown() {
         cancelFlag.set()
+        if let oneShotSampler { llama_sampler_free(oneShotSampler); self.oneShotSampler = nil }
+        if let oneShotCtx { llama_free(oneShotCtx); self.oneShotCtx = nil }
         if let sampler { llama_sampler_free(sampler); self.sampler = nil }
         if let ctx { llama_free(ctx); self.ctx = nil }
         if let model { llama_model_free(model); self.model = nil }
@@ -109,10 +111,39 @@ actor LlamaRunner {
     var loadedModelPath: String? { modelPath }
 
     /// Report current prompt token count vs configured context size.
-    /// Renders the chat template without the assistant tag and tokenizes it.
+    ///
+    /// Two paths:
+    ///
+    /// 1. **Live (KV-cache) path** — fast, O(1) read of
+    ///    `llama_memory_seq_pos_max(mem, 0) + 1`. Reflects every token
+    ///    currently in the context window, including ones being
+    ///    streamed mid-generation. Used during streaming so the
+    ///    header's context-percentage indicator updates in real time.
+    ///
+    /// 2. **Tokenize-template path** — re-renders the chat template
+    ///    and tokenizes it. Slower, used when the KV cache is empty
+    ///    (just-loaded model, freshly cleared) so the count reflects
+    ///    what the next decode will actually feed.
+    ///
+    /// Both paths return the same `total` from `llama_n_ctx`.
     func tokenUsage() -> TokenUsage? {
         guard let ctx, let vocab else { return nil }
         let total = Int(llama_n_ctx(ctx))
+
+        // Live path. `seq_pos_max` returns the highest position
+        // index present in the KV cache for sequence 0, or -1 when
+        // empty. Adding 1 turns it into a count.
+        if let mem = llama_get_memory(ctx) {
+            let last = llama_memory_seq_pos_max(mem, 0)
+            if last >= 0 {
+                return TokenUsage(used: Int(last) + 1, total: total)
+            }
+        }
+
+        // Fallback for the empty-KV case: tokenize the rendered
+        // template so we report what *would* be in context after the
+        // next decode (instead of bare 0 when there's e.g. a system
+        // prompt waiting to be sent).
         guard !messages.isEmpty else { return TokenUsage(used: 0, total: total) }
         guard let rendered = try? renderTemplate(addAssistant: false) else {
             return TokenUsage(used: 0, total: total)
@@ -145,6 +176,8 @@ actor LlamaRunner {
         Self.ensureBackend()
 
         // Tear down any prior state.
+        if let oneShotSampler { llama_sampler_free(oneShotSampler); self.oneShotSampler = nil }
+        if let oneShotCtx { llama_free(oneShotCtx); self.oneShotCtx = nil }
         if let sampler { llama_sampler_free(sampler); self.sampler = nil }
         if let ctx { llama_free(ctx); self.ctx = nil }
         if let model { llama_model_free(model); self.model = nil }
@@ -456,9 +489,25 @@ actor LlamaRunner {
     // MARK: - Template rendering
 
     private func renderTemplate(addAssistant: Bool) throws -> String {
+        try Self.renderTemplate(
+            template: chatTemplate,
+            messages: messages,
+            addAssistant: addAssistant
+        )
+    }
+
+    /// Render a list of messages through the model's chat template.
+    /// Static so it can be called from one-shot paths (which don't
+    /// have access to the actor's `messages` / `chatTemplate` state)
+    /// or from tests. A nil `template` falls back to llama.cpp's
+    /// built-in default template.
+    static func renderTemplate(
+        template: String?,
+        messages: [(role: String, content: String)],
+        addAssistant: Bool
+    ) throws -> String {
         let msgCount = messages.count
         let totalChars = messages.reduce(0) { $0 + $1.content.count + $1.role.count }
-        let tmpl = chatTemplate
 
         // Keep the C string backing storage alive for the duration of the call.
         let roleBufs: [ContiguousArray<CChar>] = messages.map { ContiguousArray($0.role.utf8CString) }
@@ -472,7 +521,7 @@ actor LlamaRunner {
             cMessages.append(llama_chat_message(role: rolePtr, content: contentPtr))
         }
 
-        let tmplCString: [CChar]? = tmpl.map { Array($0.utf8CString) }
+        let tmplCString: [CChar]? = template.map { Array($0.utf8CString) }
         var bufSize = max(1024, totalChars * 4)
         var buf = [CChar](repeating: 0, count: bufSize)
 
@@ -507,6 +556,109 @@ actor LlamaRunner {
         }
         if n < 0 { throw LlamaError.templateFailed }
         return Self.decodeCChars(buf, length: Int(n))
+    }
+
+    // MARK: - One-shot generation (isolated from main conversation)
+
+    /// Secondary context for side-channel generation (HyDE, future
+    /// title generation, summarization, etc.). Shares the model
+    /// handle with the main context but has its own KV cache, so
+    /// one-shot calls don't corrupt conversation state. Lazy-init on
+    /// first use to avoid the allocation cost when the feature isn't
+    /// in use. Low-temperature sampler — we want deterministic,
+    /// focused output for these auxiliary queries, not creativity.
+    private var oneShotCtx: OpaquePointer? = nil
+    private var oneShotSampler: UnsafeMutablePointer<llama_sampler>? = nil
+
+    /// Run a single isolated generation that doesn't append to the
+    /// main conversation. Renders `prompt` as a standalone user turn
+    /// via the model's chat template, decodes via a secondary
+    /// context, returns the full generated text. Caller-controlled
+    /// `maxTokens` ceiling (default 256 — enough for a HyDE
+    /// hypothetical, short of a typical chat reply).
+    ///
+    /// Concurrency: serialized on the actor like everything else;
+    /// safe to call while another `sendUserMessage` is streaming on
+    /// the main context, because the two contexts are independent.
+    /// Throws `busy` if another generation (main or one-shot) is
+    /// already active on this actor.
+    func generateOneShot(
+        prompt: String,
+        maxTokens: Int = 256
+    ) async throws -> String {
+        guard !isGenerating else { throw LlamaError.busy }
+        guard let model = self.model, let vocab = self.vocab else {
+            throw LlamaError.backendNotReady
+        }
+        try ensureOneShotContext(model: model)
+        guard let ctx = oneShotCtx, let sampler = oneShotSampler else {
+            throw LlamaError.backendNotReady
+        }
+
+        // Clear the secondary KV cache between calls so successive
+        // one-shots don't accumulate state. Each call is independent.
+        if let mem = llama_get_memory(ctx) {
+            llama_memory_clear(mem, true)
+        }
+
+        // Render just this single user turn through the chat template.
+        // System prompt is intentionally omitted — HyDE doesn't benefit
+        // from the main conversation's persona, and callers can bake
+        // any context they want into `prompt`.
+        let rendered = try Self.renderTemplate(
+            template: chatTemplate,
+            messages: [(role: "user", content: prompt)],
+            addAssistant: true
+        )
+
+        isGenerating = true
+        defer { isGenerating = false }
+
+        var collected = ""
+        // Flag stays unused here — one-shot isn't cancellable by the
+        // user (it's a background pipeline step, not a visible
+        // generation). Pass a fresh flag so `runDecodeLoop`'s cancel
+        // check never fires.
+        let flag = CancelFlag()
+        try Self.runDecodeLoop(
+            ctx: ctx, sampler: sampler, vocab: vocab,
+            prompt: rendered, maxTokens: maxTokens,
+            cancel: flag
+        ) { piece in
+            collected += piece
+        }
+        return collected
+    }
+
+    private func ensureOneShotContext(model: OpaquePointer) throws {
+        if oneShotCtx != nil, oneShotSampler != nil { return }
+
+        // 2048-token context is enough for a HyDE query (<100 tokens)
+        // plus a short hypothetical (<500). Smaller than the main
+        // context's default 4096 so memory cost stays modest.
+        var cparams = llama_context_default_params()
+        cparams.n_ctx = 2048
+        cparams.n_batch = 512
+        cparams.n_ubatch = 512
+
+        guard let c = llama_init_from_model(model, cparams) else {
+            throw LlamaError.contextCreationFailed
+        }
+
+        let sparams = llama_sampler_chain_default_params()
+        guard let chain = llama_sampler_chain_init(sparams) else {
+            llama_free(c)
+            throw LlamaError.contextCreationFailed
+        }
+        // Low-temperature sampler — HyDE hypothetical should be
+        // specific and grounded, not creative. No need for top-k /
+        // top-p theatrics.
+        llama_sampler_chain_add(chain, llama_sampler_init_top_p(0.95, 1))
+        llama_sampler_chain_add(chain, llama_sampler_init_temp(0.3))
+        llama_sampler_chain_add(chain, llama_sampler_init_dist(UInt32(LLAMA_DEFAULT_SEED)))
+
+        self.oneShotCtx = c
+        self.oneShotSampler = chain
     }
 
     // MARK: - Decode loop (runs off-actor)

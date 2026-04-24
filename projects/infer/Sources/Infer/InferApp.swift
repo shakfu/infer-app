@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import llama
 import InferCore
+import InferRAG
 
 @main
 struct InferApp: App {
@@ -82,6 +83,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // Register sqlite-vec with SQLiteVec's bundled SQLite as early
+        // as possible. Every Database opened after this point gets
+        // the vec0 virtual table machinery. Idempotent — safe to call
+        // before the first VectorStore access.
+        do {
+            try RAG.initialize()
+        } catch {
+            // Non-fatal: RAG will fail cleanly on first ingest. Log
+            // so the cause shows up in the Console tab.
+            FileHandle.standardError.write(
+                Data("RAG.initialize() failed: \(error)\n".utf8)
+            )
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -96,6 +110,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await vm.llama.shutdown()
             await vm.mlx.requestStop()
             await vm.mlx.shutdown()
+            await vm.embedder.shutdown()
+            await vm.reranker.shutdown()
+            await vm.vectorStore.shutdown()
             await MainActor.run { vm.audioRecorder.cancel() }
             await WhisperRunner.shared.shutdown()
             await VaultStore.shared.shutdown()
