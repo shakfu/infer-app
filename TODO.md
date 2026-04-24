@@ -100,6 +100,24 @@ Reasoning models (Qwen-3, DeepSeek-R1, etc.) emit `<think>…</think>` blocks th
 
 - [ ] **Design an in-tree tool-calling agent architecture.** Local-centric: llama-first, MLX second, no cloud providers. Covers tool-call parsing per template family, MCP client over stdio, consent model, and transcript schema for tool turns. Sketch lives at `docs/dev/plugins.md`; expand into a fuller agent-architecture doc covering multi-step loops, cancellation, and agent state before implementation.
 
+## Deferred — image generation (track upstream maturity)
+
+Parked as premature (2026-04-25). Rationale: no natural pull from the current chat/agent/RAG spine; every candidate backend is markedly less mature than the LLM equivalents (stable-diffusion.cpp lags llama.cpp — confirmed by wrapping pain in `~/projects/personal/cyllama`; `mlx-swift-examples` SD isn't a library product; FLUX Swift ports are single-maintainer); unified-memory pressure against an already-loaded LLM + Whisper + embedder + reranker forces an unload/reload policy that doesn't exist. Revisit when (a) the tool-calling agent loop can invoke non-text verbs cleanly, or (b) one of the upstreams below ships a stable library product.
+
+Tracking items:
+
+- [ ] **Watch for an MLX image-gen library split.** Upstream recently split the LM/VLM code out of `mlx-swift-examples` into `mlx-swift-lm` (proper SwiftPM library — already our dependency). StableDiffusion stayed behind as an example target (pipeline sources — UNet, VAE, CLIP, scheduler, tokenizer — live under `Applications/StableDiffusionExample/`, not exposed as a `.library` product). The LM split is the template; when upstream does the same for image gen (e.g. a hypothetical `mlx-swift-diffusion`), the vendor-and-own-churn cost drops to near zero. Check: https://github.com/ml-explore/mlx-swift-examples `Package.swift` products list; also watch ml-explore org for a new diffusion-focused repo.
+
+- [ ] **Watch `argmaxinc/DiffusionKit` Swift-side maturity.** MLX-backed, claims SD3 + FLUX.1-schnell. Swift surface currently lags the Python surface. Re-evaluate when the Swift API is documented at parity with Python and tagged past 1.0. https://github.com/argmaxinc/DiffusionKit
+
+- [ ] **Watch `mzbac/flux.swift` and `VincentGourbin/flux-2-swift-mlx`.** Single-maintainer FLUX ports on mlx-swift. Useful as reference implementations even if we don't depend on them directly; revisit if either picks up co-maintainers or ships a stable tag. https://github.com/mzbac/flux.swift · https://github.com/VincentGourbin/flux-2-swift-mlx
+
+- [ ] **Watch stable-diffusion.cpp maturity (cyllama wrap).** `~/projects/personal/cyllama` already wraps it; the wrap is painful because upstream API churns and lacks llama.cpp-grade stability. Not a blocker here — Infer has no cyllama dependency — but relevant signal: if sd.cpp stabilizes, a llama.cpp-style xcframework path (mirroring `thirdparty/llama.xcframework` / `whisper.xcframework`) becomes plausible as a third backend alongside any MLX choice.
+
+- [ ] **Pre-req: memory arbitration across runners.** Before any image backend lands, runners need a coordinated "unload on pressure" story so SDXL/FLUX (~7–24 GB resident) can coexist with a loaded LLM. Today each runner owns its lifecycle independently; a central `ResourceArbiter` (or convention) is needed. Scope this when image gen is no longer deferred.
+
+- [ ] **Pre-req: agent tool-calling loop.** If image gen lands as an agent tool (framing (2) from the investigation — prompt → image-tool → inline render) rather than a separate Images tab, the in-tree tool-calling architecture (see P3 "Design an in-tree tool-calling agent architecture") must exist first.
+
 ## Known foot-guns (document, don't necessarily fix)
 
 - `~/.cache/huggingface/hub` grows unbounded; no eviction.
