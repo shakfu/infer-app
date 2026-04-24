@@ -67,6 +67,25 @@ final class ChatViewModel {
     /// fallback so developers running from a shell still see output.
     /// Surfaced in the Console sidebar tab.
     let logs = LogCenter()
+    /// All workspaces in the vault. Refreshed on launch and after
+    /// create/rename/delete. The Default workspace (created by the v4
+    /// migration) is always present — this array is never empty on a
+    /// healthy vault.
+    var workspaces: [WorkspaceSummary] = []
+    /// Id of the currently-active workspace. Persisted to UserDefaults.
+    /// Every new conversation is created against this workspace; the
+    /// RAG pipeline scopes its queries to this workspace's corpus.
+    /// Nil at first launch before workspaces are loaded; set to the
+    /// persisted value (or the Default workspace id) after bootstrap.
+    var activeWorkspaceId: Int64? = nil
+    /// Workspace currently open in the management sheet (nil = sheet
+    /// dismissed). Presenting the sheet from the header switcher sets
+    /// this to the currently-active workspace, which prefills fields.
+    var workspaceInSheet: WorkspaceSummary? = nil
+    /// True when the management sheet is presenting the create-new form
+    /// rather than editing an existing workspace.
+    var creatingWorkspace: Bool = false
+
     /// Listing currently displayed in the agent inspector sheet.
     /// Single source of truth so the sheet can be triggered from
     /// anywhere — library row click, app-level command (`Cmd+Shift+I`),
@@ -191,6 +210,7 @@ final class ChatViewModel {
             self?.bargeInMonitor.stop()
         }
         bootstrapAgents()
+        refreshWorkspaces()
     }
 
     /// Speak the assistant's completed reply and, in voice-loop mode, arm

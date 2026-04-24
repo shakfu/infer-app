@@ -11,6 +11,7 @@ public enum PersistKey {
     public static let seed = "infer.seed"
     public static let sidebarOpen = "infer.sidebarOpen"
     public static let sidebarTab = "infer.sidebarTab"
+    public static let activeWorkspaceId = "infer.activeWorkspaceId"
     public static let appearance = "infer.appearance"
     public static let ttsEnabled = "infer.ttsEnabled"
     public static let ttsVoiceId = "infer.ttsVoiceId"

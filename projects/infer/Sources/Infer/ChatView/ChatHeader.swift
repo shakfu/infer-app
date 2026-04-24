@@ -4,6 +4,7 @@ extension ChatView {
     var header: some View {
         HStack(spacing: 12) {
             statusView
+            WorkspacePickerMenu(vm: vm)
             AgentPickerMenu(vm: vm, sidebarOpen: $sidebarOpen)
             tokenIndicator
             generationRateView

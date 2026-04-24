@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.1
 import PackageDescription
 
 let package = Package(
@@ -13,6 +13,16 @@ let package = Package(
         .package(url: "https://github.com/JohnSundell/Splash", from: "0.16.0"),
         .package(url: "https://github.com/swiftlang/swift-markdown", from: "0.7.0"),
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
+        // SQLiteVec (jkrukowski, MIT) — Swift wrapper around sqlite-vec
+        // (Alex Garcia, MIT). Bundles its *own* SQLite amalgamation
+        // with `SQLITE_CORE`, with sqlite-vec statically registered via
+        // `sqlite3_auto_extension`. Sidesteps Apple's system-SQLite
+        // restriction on loading extensions (sqlite3_enable_load_extension
+        // is stripped; sqlite3_auto_extension is a stub). The bundled
+        // SQLite is independent of GRDB's (which keeps using Apple's
+        // for the main vault). RAG data lives in a separate .sqlite
+        // file opened via SQLiteVec's Database type.
+        .package(url: "https://github.com/jkrukowski/SQLiteVec", from: "0.0.9"),
     ],
     targets: [
         // Pure-Swift library for logic that does not depend on binary
@@ -57,6 +67,23 @@ let package = Package(
             dependencies: ["whisper"],
             path: "Sources/CWhisperBridge",
             publicHeadersPath: "include"
+        ),
+        // Spike: smoke-test that sqlite-vector loads into GRDB and the
+        // `vector_*` SQL functions round-trip. Run with `swift run
+        // SqliteVectorSmoke`. Kept as a separate executable so it
+        // doesn't pull the xcframework into the library test bundles
+        // and so the spike can be deleted cleanly after RAG lands
+        // without touching the main app target.
+        // Spike: smoke-test that SQLiteVec's bundled SQLite + sqlite-vec
+        // round-trip end-to-end. Run with `swift run SqliteVecSmoke`.
+        // Throwaway — delete after RAG Phase 1 confirms the approach.
+        .executableTarget(
+            name: "SqliteVecSmoke",
+            dependencies: [
+                .product(name: "SQLiteVec", package: "SQLiteVec"),
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "Sources/SqliteVecSmoke"
         ),
         .executableTarget(
             name: "Infer",

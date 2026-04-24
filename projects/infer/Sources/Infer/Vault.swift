@@ -1,6 +1,27 @@
 import Foundation
 import GRDB
 
+enum VaultError: Error, Equatable {
+    /// Caller-provided input failed validation. Message is
+    /// user-facing; use for things like empty workspace names or
+    /// malformed paths.
+    case invalidInput(String)
+}
+
+struct WorkspaceSummary: Identifiable, Sendable, Equatable {
+    let id: Int64
+    let name: String
+    /// Absolute path to the folder whose files will be ingested into
+    /// this workspace's RAG corpus. Nil means "no corpus yet."
+    let dataFolder: String?
+    let createdAt: Date
+    let updatedAt: Date
+    /// Number of conversations assigned to this workspace. Computed
+    /// via subquery in `listWorkspaces` so the UI can show a count
+    /// without a second round-trip.
+    let conversationCount: Int
+}
+
 struct VaultConversationSummary: Identifiable, Sendable, Equatable {
     let id: Int64
     let title: String
@@ -169,6 +190,47 @@ actor VaultStore {
                     ON conversation_tags(tag_id, conversation_id)
             """)
         }
+        // v4: workspaces as an organizational container with an
+        // optional data folder for RAG ingestion. Every existing
+        // conversation is backfilled to a "Default" workspace so no
+        // data is orphaned. Nullable FK on conversations — deletion
+        // of a workspace sets its conversations' workspace_id to
+        // NULL rather than cascading (conversations survive).
+        m.registerMigration("v4_workspaces") { db in
+            try db.execute(sql: """
+                CREATE TABLE workspaces (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    data_folder TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+            """)
+            try db.execute(sql: """
+                ALTER TABLE conversations
+                    ADD COLUMN workspace_id INTEGER
+                        REFERENCES workspaces(id) ON DELETE SET NULL
+            """)
+            try db.execute(sql: """
+                CREATE INDEX idx_conversations_workspace
+                    ON conversations(workspace_id, updated_at DESC)
+            """)
+            // Backfill: create the Default workspace and assign every
+            // existing conversation to it.
+            let now = Int64(Date().timeIntervalSince1970)
+            try db.execute(
+                sql: """
+                    INSERT INTO workspaces (name, data_folder, created_at, updated_at)
+                        VALUES ('Default', NULL, ?, ?)
+                """,
+                arguments: [now, now]
+            )
+            let defaultId = db.lastInsertedRowID
+            try db.execute(
+                sql: "UPDATE conversations SET workspace_id = ? WHERE workspace_id IS NULL",
+                arguments: [defaultId]
+            )
+        }
         return m
     }()
 
@@ -177,7 +239,8 @@ actor VaultStore {
     func startConversation(
         backend: String,
         modelId: String,
-        systemPrompt: String
+        systemPrompt: String,
+        workspaceId: Int64? = nil
     ) async throws -> Int64 {
         let db = try pool()
         let now = Int64(Date().timeIntervalSince1970)
@@ -185,10 +248,10 @@ actor VaultStore {
             try db.execute(
                 sql: """
                     INSERT INTO conversations
-                        (created_at, updated_at, backend, model_id, system_prompt, title)
-                        VALUES (?, ?, ?, ?, ?, NULL)
+                        (created_at, updated_at, backend, model_id, system_prompt, title, workspace_id)
+                        VALUES (?, ?, ?, ?, ?, NULL, ?)
                 """,
-                arguments: [now, now, backend, modelId, systemPrompt]
+                arguments: [now, now, backend, modelId, systemPrompt, workspaceId]
             )
             return db.lastInsertedRowID
         }
@@ -518,6 +581,148 @@ actor VaultStore {
     /// llama / MLX cleanup pattern. Idempotent.
     func shutdown() {
         cachedPool = nil
+    }
+
+    // MARK: - Workspaces
+
+    /// List all workspaces, with conversation counts. Sorted with the
+    /// Default workspace pinned first (it's always present post-v4
+    /// migration) and the rest alphabetically. Returns at least one
+    /// row on a healthy vault.
+    func listWorkspaces() async throws -> [WorkspaceSummary] {
+        let db = try pool()
+        return try await db.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT w.id, w.name, w.data_folder, w.created_at, w.updated_at,
+                       (SELECT COUNT(*) FROM conversations c WHERE c.workspace_id = w.id) AS cnt
+                    FROM workspaces w
+                    ORDER BY (w.name = 'Default') DESC,
+                             LOWER(w.name) ASC
+            """)
+            return rows.map { row in
+                WorkspaceSummary(
+                    id: row["id"],
+                    name: row["name"],
+                    dataFolder: row["data_folder"],
+                    createdAt: Date(timeIntervalSince1970: TimeInterval(row["created_at"] as Int64)),
+                    updatedAt: Date(timeIntervalSince1970: TimeInterval(row["updated_at"] as Int64)),
+                    conversationCount: row["cnt"]
+                )
+            }
+        }
+    }
+
+    /// Create a new workspace. Names are free-form and do not need to
+    /// be unique (the id is the stable handle). `dataFolder` is
+    /// expected to be an absolute path if provided; validation lives
+    /// at the UI layer.
+    func createWorkspace(
+        name: String,
+        dataFolder: String? = nil
+    ) async throws -> Int64 {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw VaultError.invalidInput("workspace name cannot be empty")
+        }
+        let db = try pool()
+        let now = Int64(Date().timeIntervalSince1970)
+        return try await db.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO workspaces (name, data_folder, created_at, updated_at)
+                        VALUES (?, ?, ?, ?)
+                """,
+                arguments: [trimmed, dataFolder, now, now]
+            )
+            return db.lastInsertedRowID
+        }
+    }
+
+    /// Rename a workspace in place. No-op if the name is unchanged.
+    func renameWorkspace(id: Int64, name: String) async throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw VaultError.invalidInput("workspace name cannot be empty")
+        }
+        let db = try pool()
+        let now = Int64(Date().timeIntervalSince1970)
+        try await db.write { db in
+            try db.execute(
+                sql: "UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?",
+                arguments: [trimmed, now, id]
+            )
+        }
+    }
+
+    /// Update a workspace's data folder. Pass nil to clear. The RAG
+    /// ingestion pipeline reads this path; validation is the caller's
+    /// responsibility.
+    func setWorkspaceDataFolder(id: Int64, dataFolder: String?) async throws {
+        let db = try pool()
+        let now = Int64(Date().timeIntervalSince1970)
+        try await db.write { db in
+            try db.execute(
+                sql: "UPDATE workspaces SET data_folder = ?, updated_at = ? WHERE id = ?",
+                arguments: [dataFolder, now, id]
+            )
+        }
+    }
+
+    /// Delete a workspace. Conversations assigned to it have their
+    /// workspace_id set to NULL (they survive, orphaned, visible in the
+    /// History tab regardless of workspace filter). The caller is
+    /// responsible for warning the user — this is destructive.
+    ///
+    /// The RAG store for this workspace is *not* touched by this call;
+    /// it's a separate DB (vectors.sqlite). The caller should invoke
+    /// `VectorStore.deleteWorkspaceData(workspaceId:)` alongside.
+    func deleteWorkspace(id: Int64) async throws {
+        let db = try pool()
+        try await db.write { db in
+            try db.execute(
+                sql: "DELETE FROM workspaces WHERE id = ?",
+                arguments: [id]
+            )
+        }
+    }
+
+    /// Assign or reassign a conversation to a workspace. Pass nil for
+    /// `workspaceId` to orphan the conversation.
+    func setConversationWorkspace(
+        conversationId: Int64,
+        workspaceId: Int64?
+    ) async throws {
+        let db = try pool()
+        try await db.write { db in
+            try db.execute(
+                sql: "UPDATE conversations SET workspace_id = ? WHERE id = ?",
+                arguments: [workspaceId, conversationId]
+            )
+        }
+    }
+
+    /// Look up a single workspace by id. Nil if not found.
+    func workspace(id: Int64) async throws -> WorkspaceSummary? {
+        let db = try pool()
+        return try await db.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT w.id, w.name, w.data_folder, w.created_at, w.updated_at,
+                       (SELECT COUNT(*) FROM conversations c WHERE c.workspace_id = w.id) AS cnt
+                    FROM workspaces w
+                    WHERE w.id = ?
+                    LIMIT 1
+            """, arguments: [id])
+            return rows.first.map { row in
+                WorkspaceSummary(
+                    id: row["id"],
+                    name: row["name"],
+                    dataFolder: row["data_folder"],
+                    createdAt: Date(timeIntervalSince1970: TimeInterval(row["created_at"] as Int64)),
+                    updatedAt: Date(timeIntervalSince1970: TimeInterval(row["updated_at"] as Int64)),
+                    conversationCount: row["cnt"]
+                )
+            }
+        }
     }
 
     // MARK: - Helpers

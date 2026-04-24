@@ -43,6 +43,7 @@ extension ChatViewModel {
             : "(agent: \(activeAgentName()))"
         let modelIdForVault = self.vaultModelId()
         let backendName = backend.rawValue
+        let workspaceId = self.activeWorkspaceId
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -53,7 +54,8 @@ extension ChatViewModel {
                     cid = try await self.vault.startConversation(
                         backend: backendName,
                         modelId: modelIdForVault,
-                        systemPrompt: systemPrompt
+                        systemPrompt: systemPrompt,
+                        workspaceId: workspaceId
                     )
                     await MainActor.run { self.currentConversationId = cid }
                 }

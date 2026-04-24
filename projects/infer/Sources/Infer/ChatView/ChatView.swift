@@ -41,6 +41,20 @@ struct ChatView: View {
                 vm.inspectorListing = nil
             }
         }
+        .sheet(isPresented: Binding(
+            get: { vm.workspaceInSheet != nil || vm.creatingWorkspace },
+            set: { open in
+                if !open {
+                    vm.workspaceInSheet = nil
+                    vm.creatingWorkspace = false
+                }
+            }
+        )) {
+            WorkspaceSheet(vm: vm) {
+                vm.workspaceInSheet = nil
+                vm.creatingWorkspace = false
+            }
+        }
         .onDrop(of: [.audiovisualContent, .audio, .fileURL], isTargeted: nil) { providers in
             handleAudioDrop(providers: providers)
         }
