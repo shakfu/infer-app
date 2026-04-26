@@ -27,6 +27,15 @@ extension ChatViewModel {
             .appendingPathComponent("agents", isDirectory: true)
     }
 
+    /// `~/Library/Application Support/Infer/mcp/`. Holds one
+    /// `MCPServerConfig` JSON per server. Missing directory is fine
+    /// (no servers configured); per-file errors surface as Console
+    /// diagnostics.
+    static func userMCPDirectory() -> URL {
+        userAgentsRootDirectory()
+            .appendingPathComponent("mcp", isDirectory: true)
+    }
+
     // MARK: - Controller passthrough
 
     var availableAgents: [AgentListing] { agentController.availableAgents }
@@ -152,7 +161,7 @@ extension ChatViewModel {
     func bootstrapAgents() {
         let firstParty = Self.firstPartyPersonaURLs()
         let retriever = self.makeAgentRetriever()
-        Task { [controller = self.agentController, registry = self.toolRegistry, settings = self.settings, logs = self.logs, retriever] in
+        Task { [controller = self.agentController, registry = self.toolRegistry, settings = self.settings, logs = self.logs, mcpHost = self.mcpHost, retriever] in
             // Register the PR 2 built-ins. Tool registrations and the
             // controller bootstrap happen in the same task so the
             // first switchAgent after launch sees a populated catalog.
@@ -190,6 +199,40 @@ extension ChatViewModel {
                 ]),
                 VaultSearchTool(retriever: retriever),
             ])
+            // MCP servers (item 11). Each `*.json` under the user's
+            // mcp directory describes one subprocess to spawn; tools
+            // discovered via `initialize` + `tools/list` register
+            // into the same `ToolRegistry` as the builtins under
+            // `mcp.<server>.<tool>` names. Per-server failures
+            // surface as Console diagnostics; the rest of the
+            // bootstrap continues so a broken server doesn't
+            // blackhole the agent layer.
+            let mcpDiagnostics = await mcpHost.bootstrap(
+                directory: Self.userMCPDirectory(),
+                into: registry,
+                clientName: "infer",
+                clientVersion: "0.1.6",
+                stderrSink: { line in
+                    logs.logFromBackground(
+                        .info,
+                        source: "mcp.stderr",
+                        message: line
+                    )
+                }
+            )
+            for diag in mcpDiagnostics {
+                let level: LogLevel
+                switch diag.severity {
+                case .error: level = .error
+                case .warning: level = .warning
+                case .skipped: level = .info
+                }
+                logs.log(
+                    level,
+                    source: "mcp",
+                    message: "\(diag.serverID): \(diag.message)"
+                )
+            }
             let specs = await registry.allSpecs()
             let catalog = ToolCatalog(tools: specs)
             await controller.bootstrap(

@@ -156,6 +156,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await vm.embedder.shutdown()
             await vm.reranker.shutdown()
             await vm.vectorStore.shutdown()
+            // Tear down MCP server subprocesses before the process
+            // exits — otherwise the children outlive us and either
+            // get reaped by launchd or hold onto file handles we
+            // can't release.
+            await vm.mcpHost.shutdown()
             await MainActor.run { vm.audioRecorder.cancel() }
             await WhisperRunner.shared.shutdown()
             await VaultStore.shared.shutdown()

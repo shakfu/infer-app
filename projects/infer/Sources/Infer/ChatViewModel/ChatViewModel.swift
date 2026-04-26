@@ -143,10 +143,19 @@ final class ChatViewModel {
 
     /// Registry of locally-implemented Swift tools. Populated at init
     /// with the PR 2 built-ins (`clock.now`, `text.wordcount`). Grows
-    /// as more tools ship; MCP-backed tools arrive here via a future
-    /// `PluginHost` (see `docs/dev/plugins.md`). The agent loop's
-    /// `invoke(name:arguments:)` path consumes it.
+    /// as more tools ship. MCP-backed tools land here too via
+    /// `mcpHost.bootstrap`, which spawns each configured server,
+    /// runs `initialize` + `tools/list`, and registers one
+    /// `MCPBuiltinTool` adapter per discovered tool. The agent loop's
+    /// `invoke(name:arguments:)` path consumes the merged catalog.
     let toolRegistry = ToolRegistry()
+
+    /// Owns the running MCP server subprocesses. Bootstrapped during
+    /// `bootstrapAgents` from `~/Library/Application Support/Infer/mcp/`
+    /// and torn down by `AppDelegate.applicationWillTerminate` so
+    /// child processes don't leak across app restarts. Empty in unit
+    /// tests; the chat UI works fine with no MCP servers configured.
+    let mcpHost = MCPHost()
 
     let llama = LlamaRunner()
     let mlx = MLXRunner()
