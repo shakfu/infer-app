@@ -524,7 +524,7 @@ public final class AgentController {
     /// - `.openai`: same Llama-3 wording for now (no in-stream syntax —
     ///   real OpenAI tool-calling is structured outside the assistant
     ///   text and isn't reachable from a local-only deployment).
-    public static func composeSystemPrompt(
+    public nonisolated static func composeSystemPrompt(
         base: String,
         tools: [ToolSpec],
         family: TemplateFamily = .llama3
@@ -538,7 +538,7 @@ public final class AgentController {
         return base + section
     }
 
-    private static func toolPromptSection(
+    private nonisolated static func toolPromptSection(
         family: TemplateFamily,
         tools: [ToolSpec]
     ) -> String {

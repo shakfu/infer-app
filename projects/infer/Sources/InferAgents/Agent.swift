@@ -3,10 +3,29 @@ import Foundation
 /// What a named configuration driving a runner for a particular purpose
 /// looks like. See `docs/dev/agents.md` for the design doc.
 ///
-/// The protocol is deliberately narrow: a small set of hooks over a shared
-/// loop, rather than a god-type. Conformances override only what they
-/// need; the `run` default throws `AgentError.loopNotAvailable` until
-/// PR 2's `AgentSession` provides a real loop implementation.
+/// The protocol is deliberately narrow: a small set of hooks over a
+/// shared loop, rather than a god-type. Conformances override only what
+/// they need.
+///
+/// `Agent` is a *policy* type. The host owns *mechanism* — the loop
+/// that decodes tokens, parses tool calls, mutates the transcript,
+/// and emits events. Two host loops exist:
+///
+/// 1. `BasicLoop` (this module). Runner-agnostic; consumes any
+///    `AgentRunner`. Use it from CLI / batch / headless contexts.
+/// 2. `ChatViewModel.Generation` (host app). Specialised for the
+///    SwiftUI VM — bundles vault writes, KV compaction, think-block
+///    filtering, MainActor isolation, speech.
+///
+/// An agent that fits the standard tool-call cycle (decode → optional
+/// tool call → re-decode → final answer) needs no custom loop hook;
+/// the host's loop drives it via `systemPrompt`, `toolsAvailable`,
+/// `transformToolResult`, `shouldContinue`. An agent that does NOT fit
+/// (deterministic tool-only pipeline, agent driving an external
+/// service, agent with a custom decoding protocol) overrides
+/// `customLoop` to produce its `StepTrace` directly — the host then
+/// uses that trace verbatim and never invokes an `AgentRunner` for
+/// this turn.
 public protocol Agent: Sendable {
     var id: AgentID { get }
     var metadata: AgentMetadata { get }
@@ -44,11 +63,33 @@ public protocol Agent: Sendable {
         context: AgentContext
     ) async -> LoopDecision
 
-    /// Escape hatch: the agent runs its own loop. Default implementation
-    /// throws `AgentError.loopNotAvailable` until PR 2 wires a real loop.
-    /// Overriding is rare; provided for agents whose shape doesn't match
-    /// the standard tool-call loop.
-    func run(turn: AgentTurn, context: AgentContext) async throws -> StepTrace
+    /// Custom turn driver. When this returns a non-nil `StepTrace`,
+    /// the host uses it verbatim and does NOT invoke any `AgentRunner`
+    /// for this agent's turn — the agent has supplied its own
+    /// mechanism. Three concrete use cases:
+    ///
+    /// 1. *Deterministic / tool-only agents* — call one or more tools
+    ///    and stitch the results into a `finalAnswer`, with no LLM
+    ///    decode at all. See `DeterministicPipelineAgent`.
+    /// 2. *External-service agents* — drive a remote API or local
+    ///    process and adapt its output into a `StepTrace`.
+    /// 3. *Custom decoding protocols* — agents whose shape doesn't
+    ///    match `BasicLoop`'s standard tool-call cycle.
+    ///
+    /// `context.invokeTool` is the way to call tools without an LLM;
+    /// `context.retrieve` is available for context enrichment. The
+    /// agent's `metadata.id` becomes the `SegmentSpan.agentId` for
+    /// the steps it produces, so composition attribution works the
+    /// same as for LLM-backed agents.
+    ///
+    /// Default returns nil → the host falls through to its standard
+    /// loop, which drives this agent through `systemPrompt`,
+    /// `toolsAvailable`, etc. Most conformances should leave this
+    /// default in place.
+    func customLoop(
+        turn: AgentTurn,
+        context: AgentContext
+    ) async throws -> StepTrace?
 }
 
 public extension Agent {
@@ -87,7 +128,10 @@ public extension Agent {
         }
     }
 
-    func run(turn: AgentTurn, context: AgentContext) async throws -> StepTrace {
-        throw AgentError.loopNotAvailable
+    func customLoop(
+        turn: AgentTurn,
+        context: AgentContext
+    ) async throws -> StepTrace? {
+        nil
     }
 }

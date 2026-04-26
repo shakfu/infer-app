@@ -202,17 +202,24 @@ public enum LoopDecision: Sendable, Equatable {
 }
 
 public enum AgentError: Error, Sendable, Equatable {
-    /// Thrown by the default `Agent.run` implementation. PR 1 ships the
-    /// substrate without a loop; conformances that want to produce a
-    /// `StepTrace` from a user turn must wait for PR 2's `AgentSession`
-    /// or override `run` directly.
-    case loopNotAvailable
     /// JSON parse or validation failure. Message is user-facing (surfaced
     /// in the Agents tab as the reason a persona failed to load).
     case invalidPersona(String)
     /// The persona file declared a `schemaVersion` this build doesn't know
     /// how to read. See `PromptAgent.supportedSchemaVersions`.
     case unsupportedSchemaVersion(Int)
+    /// The agent attempted an action that requires a tool invoker
+    /// (`AgentContext.invokeTool`) but the host did not wire one. Hits
+    /// when a deterministic agent's `customLoop` calls tools in a
+    /// context that wasn't constructed by a real loop driver
+    /// (typically a misconfigured test or a unit context built from
+    /// `AgentController.activate` rather than `BasicLoop`).
+    case toolInvokerMissing
+    /// A deterministic agent's tool call referenced a tool that isn't
+    /// in the catalog or rejected the supplied arguments at the JSON
+    /// layer. The error string is propagated from the underlying
+    /// invoker (`ToolError.unknown` or a per-tool decoding error).
+    case toolDispatchFailed(String)
 }
 
 public enum AgentSource: Sendable, Equatable {

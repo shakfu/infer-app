@@ -295,6 +295,20 @@ extension ChatViewModel {
         state.lastAssistantIndex = segmentIndex
         state.segmentCount += 1
 
+        // customLoop short-circuit. A non-LLM agent
+        // (`DeterministicPipelineAgent`, an external-service adapter,
+        // any conformance overriding `customLoop`) supplies its full
+        // `StepTrace` directly — the chat-VM's LLM decode + tool loop
+        // path is bypassed. Falls through to the standard path when
+        // the agent returns nil (the common case).
+        if let customOutcome = await self.runCustomLoopIfAvailable(
+            agentId: agentId,
+            userText: userText,
+            assistantIndex: segmentIndex
+        ) {
+            return customOutcome
+        }
+
         let outcome = await self.runOneAgentTurn(
             userText: userText,
             assistantIndex: segmentIndex,
@@ -743,6 +757,103 @@ extension ChatViewModel {
         guard index < messages.count else { return }
         guard let trace = messages[index].steps, trace.terminator == nil else { return }
         emitToolLoopEvent(.terminated(terminator), at: index)
+    }
+
+    /// Resolve the active segment's agent and call its `customLoop`
+    /// hook. Returns the AgentOutcome and writes the trace + final
+    /// text into the segment's `ChatMessage` when the agent has a
+    /// custom implementation (deterministic / non-LLM / external-
+    /// service agents). Returns nil to signal "no custom loop, host
+    /// must run its standard LLM decode path."
+    ///
+    /// The vault write for completed segments is delegated back to
+    /// `runOneSegment`'s post-call block — we return the outcome and
+    /// let the existing persistence logic fire there. This keeps the
+    /// short-circuit additive: it adds one branch and shares every
+    /// other piece of segment-completion plumbing with the LLM path.
+    @MainActor
+    private func runCustomLoopIfAvailable(
+        agentId: AgentID,
+        userText: String,
+        assistantIndex: Int
+    ) async -> AgentOutcome? {
+        // Default agent has no JSON-backed registry entry and never
+        // overrides customLoop, so the lookup is skipped — the
+        // standard LLM path handles every Default-agent turn.
+        guard agentId != DefaultAgent.id else { return nil }
+        guard let agent = await agentController.registry.agent(id: agentId) else {
+            return nil
+        }
+        let toolRegistry = self.toolRegistry
+        let invoker: ToolInvoker = { name, args in
+            try await toolRegistry.invoke(name: name, arguments: args)
+        }
+        let context = AgentContext(
+            runner: RunnerHandle(
+                backend: currentBackendPreference,
+                templateFamily: agentController.activeToolFamily,
+                maxContext: 0,
+                currentTokenCount: 0
+            ),
+            tools: agentController.toolCatalog,
+            transcript: [],
+            stepCount: 0,
+            retrieve: agentController.retriever,
+            invokeTool: invoker
+        )
+        let trace: StepTrace?
+        do {
+            trace = try await agent.customLoop(
+                turn: AgentTurn(userText: userText),
+                context: context
+            )
+        } catch {
+            logs.log(
+                .warning,
+                source: "agents",
+                message: "customLoop threw for \(agentId)",
+                payload: String(describing: error)
+            )
+            // Fall through to LLM path on a customLoop throw — the
+            // host's standard loop is the safe fallback. The error is
+            // preserved in the Console for debugging.
+            return nil
+        }
+        guard let trace else { return nil }
+
+        // Materialise the trace into the segment's ChatMessage. Pull
+        // the user-visible text from the trace's terminator (when
+        // it's a finalAnswer); other terminators surface as outcomes
+        // without a body so the composition layer can route them.
+        let finalText: String
+        switch trace.terminator {
+        case .finalAnswer(let text): finalText = text
+        case .cancelled, .budgetExceeded, .error, .none: finalText = ""
+        default: finalText = ""
+        }
+        if assistantIndex < messages.count {
+            messages[assistantIndex].text = finalText
+            messages[assistantIndex].steps = trace
+        }
+        // Mirror the LLM path's event emission so observers see a
+        // single `terminated` event regardless of whether the segment
+        // was driven by an LLM decode or a custom loop.
+        if let term = trace.terminator {
+            agentController.emit(.terminated(term))
+        }
+
+        switch trace.terminator {
+        case .finalAnswer(let text):
+            return .completed(text: text, trace: trace)
+        case .cancelled:
+            return .abandoned(reason: "cancelled", trace: trace)
+        case .budgetExceeded:
+            return .failed(message: "step budget exhausted", trace: trace)
+        case .error(let message):
+            return .failed(message: message, trace: trace)
+        case .none, .some:
+            return .completed(text: finalText, trace: trace)
+        }
     }
 
     /// Shared precondition + transcript mutation for regenerate and

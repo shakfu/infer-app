@@ -88,15 +88,16 @@ final class AgentProtocolTests: XCTestCase {
         XCTAssertEqual(b, .continue)
     }
 
-    func testRunDefaultThrowsLoopNotAvailable() async {
+    func testCustomLoopDefaultIsNil() async throws {
+        // Default behaviour: agents without a custom loop fall through
+        // to the host's standard loop. Conformances that *do* want to
+        // skip the LLM (deterministic / tool-only / external-service
+        // agents) override this to return a non-nil StepTrace.
         let agent = StubAgent()
-        do {
-            _ = try await agent.run(turn: AgentTurn(userText: "hi"), context: makeContext())
-            XCTFail("expected throw")
-        } catch let error as AgentError {
-            XCTAssertEqual(error, .loopNotAvailable)
-        } catch {
-            XCTFail("unexpected error type: \(error)")
-        }
+        let trace = try await agent.customLoop(
+            turn: AgentTurn(userText: "hi"),
+            context: makeContext()
+        )
+        XCTAssertNil(trace)
     }
 }

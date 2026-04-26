@@ -101,6 +101,20 @@ public struct RetrievedChunk: Codable, Equatable, Sendable {
 /// relevant in scope" — not an error.
 public typealias Retriever = @Sendable (_ query: String, _ topK: Int) async throws -> [RetrievedChunk]
 
+/// Host-supplied tool invocation closure. Wraps the host's
+/// `ToolRegistry` so loops driving an agent (`BasicLoop`, the chat
+/// view-model's `Generation`, a custom CLI host) can hand the agent
+/// a way to execute tools without leaking the registry actor itself
+/// across module boundaries.
+///
+/// The `name` corresponds to a `ToolSpec.name` from the catalog;
+/// `arguments` is a JSON-encoded string matching the tool's schema.
+/// Implementations throw on unknown tools or argument-parse failures
+/// the loop should treat as fatal; tool-side errors that the model
+/// should see and recover from arrive as `ToolResult(error:)` with no
+/// throw. This mirrors `BuiltinTool.invoke`'s contract.
+public typealias ToolInvoker = @Sendable (_ name: ToolName, _ arguments: String) async throws -> ToolResult
+
 /// The set of tools the plugin layer has made available for a given turn,
 /// already filtered by per-plugin consent. Agents further restrict this set
 /// via `toolsAllow`/`toolsDeny` in their requirements (default hook in
@@ -141,19 +155,29 @@ public struct AgentContext: Sendable {
     /// is the lower-level surface for compiled `Agent` conformances
     /// that want to enrich context before issuing a tool call.
     public let retrieve: Retriever?
+    /// Optional tool invocation hook. Set by the loop driver
+    /// (`BasicLoop`, the chat view-model's tool loop, a CLI host)
+    /// before calling into agent hooks. `Agent.customLoop`
+    /// implementations require this to do useful work — a
+    /// deterministic / non-LLM agent that calls tools but doesn't
+    /// decode tokens treats nil as a hard error rather than a
+    /// degradation, since there's nothing to fall back to.
+    public let invokeTool: ToolInvoker?
 
     public init(
         runner: RunnerHandle,
         tools: ToolCatalog = .empty,
         transcript: [TranscriptMessage] = [],
         stepCount: Int = 0,
-        retrieve: Retriever? = nil
+        retrieve: Retriever? = nil,
+        invokeTool: ToolInvoker? = nil
     ) {
         self.runner = runner
         self.tools = tools
         self.transcript = transcript
         self.stepCount = stepCount
         self.retrieve = retrieve
+        self.invokeTool = invokeTool
     }
 }
 
