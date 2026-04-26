@@ -910,6 +910,26 @@ extension ChatViewModel {
         let invoker: ToolInvoker = { name, args in
             try await toolRegistry.invoke(name: name, arguments: args)
         }
+        // Hand the customLoop agent an LLM decode hook wired to the
+        // active backend. Required by `PlannerAgent` (item 10), which
+        // owns its own loop but still needs to talk to the model.
+        // Deterministic / tool-only agents leave the hook unused.
+        // Both backends conform to `AgentRunner` via the
+        // `+AgentRunner` adapters; we pick the one matching `backend`.
+        let backendCopy = self.backend
+        let llamaRunner = self.llama
+        let mlxRunner = self.mlx
+        let decoder: AgentDecoder = { messages, params in
+            let runner: any AgentRunner = backendCopy == .llama
+                ? llamaRunner
+                : mlxRunner
+            let stream = runner.decode(messages: messages, params: params)
+            var text = ""
+            for try await chunk in stream {
+                text += chunk
+            }
+            return text
+        }
         let context = AgentContext(
             runner: RunnerHandle(
                 backend: currentBackendPreference,
@@ -921,7 +941,8 @@ extension ChatViewModel {
             transcript: [],
             stepCount: 0,
             retrieve: agentController.retriever,
-            invokeTool: invoker
+            invokeTool: invoker,
+            decode: decoder
         )
         let trace: StepTrace?
         do {

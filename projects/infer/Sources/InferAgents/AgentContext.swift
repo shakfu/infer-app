@@ -115,6 +115,26 @@ public typealias Retriever = @Sendable (_ query: String, _ topK: Int) async thro
 /// throw. This mirrors `BuiltinTool.invoke`'s contract.
 public typealias ToolInvoker = @Sendable (_ name: ToolName, _ arguments: String) async throws -> ToolResult
 
+/// Host-supplied LLM decode closure. Drives one decode round against
+/// whatever runner the host has wired up (the active `LlamaRunner` /
+/// `MLXRunner` actor under the chat VM, or the `AgentRunner` passed
+/// to `BasicLoop`) and returns the fully-accumulated assistant text.
+///
+/// Required by `customLoop` agents that need to talk to an LLM in
+/// addition to (or instead of) calling tools — most importantly the
+/// `PlannerAgent`, which decodes the plan as a structured response,
+/// then re-decodes per step and again to synthesise a final answer.
+/// Deterministic / tool-only agents (`DeterministicPipelineAgent`)
+/// don't touch this hook and tolerate it being nil.
+///
+/// The closure is `@Sendable` because the loop driver hands it across
+/// the actor boundary into the agent's `customLoop` context. The
+/// returned string is the post-decode assistant body (no streaming,
+/// no chunk-by-chunk delivery — the planner needs whole structured
+/// output, and adding streaming here would force every customLoop
+/// caller to consume an `AsyncThrowingStream` it doesn't want).
+public typealias AgentDecoder = @Sendable (_ messages: [TranscriptMessage], _ params: DecodingParams) async throws -> String
+
 /// The set of tools the plugin layer has made available for a given turn,
 /// already filtered by per-plugin consent. Agents further restrict this set
 /// via `toolsAllow`/`toolsDeny` in their requirements (default hook in
@@ -163,6 +183,18 @@ public struct AgentContext: Sendable {
     /// decode tokens treats nil as a hard error rather than a
     /// degradation, since there's nothing to fall back to.
     public let invokeTool: ToolInvoker?
+    /// Optional LLM decode hook. Set by the loop driver before
+    /// calling into agent hooks. `customLoop` agents that need to
+    /// talk to an LLM (e.g. `PlannerAgent`, which generates a plan,
+    /// executes per-step, replans on failure, and synthesises a final
+    /// answer all via decode rounds) require this. Deterministic /
+    /// tool-only agents leave it nil. The default LLM-driven loop
+    /// (`BasicLoop` standard path, the chat-VM tool loop) does not
+    /// consult this hook — it streams via `AgentRunner.decode`
+    /// directly. The hook exists for the inverse case: an agent that
+    /// owns its own loop but still wants to decode against the host's
+    /// runner.
+    public let decode: AgentDecoder?
 
     public init(
         runner: RunnerHandle,
@@ -170,7 +202,8 @@ public struct AgentContext: Sendable {
         transcript: [TranscriptMessage] = [],
         stepCount: Int = 0,
         retrieve: Retriever? = nil,
-        invokeTool: ToolInvoker? = nil
+        invokeTool: ToolInvoker? = nil,
+        decode: AgentDecoder? = nil
     ) {
         self.runner = runner
         self.tools = tools
@@ -178,6 +211,7 @@ public struct AgentContext: Sendable {
         self.stepCount = stepCount
         self.retrieve = retrieve
         self.invokeTool = invokeTool
+        self.decode = decode
     }
 }
 

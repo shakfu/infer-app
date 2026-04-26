@@ -259,6 +259,11 @@ public enum AgentError: Error, Sendable, Equatable {
     /// layer. The error string is propagated from the underlying
     /// invoker (`ToolError.unknown` or a per-tool decoding error).
     case toolDispatchFailed(String)
+    /// A `customLoop` agent (e.g. `PlannerAgent`) needs to call the
+    /// LLM via `AgentContext.decode` but the loop driver didn't wire
+    /// one. Hard error rather than a degradation: a planner without
+    /// decode access cannot make a plan or revise it.
+    case decoderMissing
 }
 
 public enum AgentSource: Sendable, Equatable {

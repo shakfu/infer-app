@@ -69,8 +69,32 @@ public enum BasicLoop {
     ) async throws -> StepTrace {
 
         // 1. Custom-loop short-circuit. Deterministic / tool-only /
-        // external-service agents produce their trace directly here.
-        if let custom = try await agent.customLoop(turn: turn, context: context) {
+        // external-service / planner agents produce their trace
+        // directly here. Inject a decoder closure (item 10) so an
+        // LLM-driven custom loop (`PlannerAgent`) can reach the
+        // runner without needing a reference to it. The host-passed
+        // context is snapshotted with the new hook attached; existing
+        // fields (`tools`, `transcript`, `invokeTool`, `retrieve`)
+        // pass through unchanged.
+        let runnerCopy: any AgentRunner = runner
+        let decoder: AgentDecoder = { messages, params in
+            let stream = runnerCopy.decode(messages: messages, params: params)
+            var text = ""
+            for try await chunk in stream {
+                text += chunk
+            }
+            return text
+        }
+        let customCtx = AgentContext(
+            runner: context.runner,
+            tools: context.tools,
+            transcript: context.transcript,
+            stepCount: context.stepCount,
+            retrieve: context.retrieve,
+            invokeTool: context.invokeTool,
+            decode: context.decode ?? decoder
+        )
+        if let custom = try await agent.customLoop(turn: turn, context: customCtx) {
             // Even though the loop didn't decode, replay the trace's
             // terminal step through the event hook so observers see a
             // single `terminated` event regardless of agent shape.

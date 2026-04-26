@@ -100,6 +100,16 @@ Reasoning models (Qwen-3, DeepSeek-R1, etc.) emit `<think>…</think>` blocks th
 
 - [ ] **Design an in-tree tool-calling agent architecture.** Local-centric: llama-first, MLX second, no cloud providers. Covers tool-call parsing per template family, MCP client over stdio, consent model, and transcript schema for tool turns. Sketch lives at `docs/dev/plugins.md`; expand into a fuller agent-architecture doc covering multi-step loops, cancellation, and agent state before implementation.
 
+## P3 — `PlannerAgent` follow-ups
+
+Carved out of scope when the v1 planner landed (item 10 of `REVIEW.md`). The current planner is linear-with-replanning, single-agent, Swift-coded. Each item below is independently shippable.
+
+- [ ] **Sub-agent dispatch from a planner step.** Today a `PlanStep` resolves to either a tool call or a bare text reply. Allow a step to route to a registered peer agent (probably by surfacing a synthetic `agents.invoke`-style tool the planner can call from inside an execute decode). The composition primitives (`chain`, `orchestrator`) already cover hand-offs at the workflow level; this is the "planner as a controller" variant. Watch out for cycles (planner → planner → planner) — bound by the existing step-budget machinery.
+
+- [ ] **Branching / parallel plans.** `PlanLedger` is currently a flat ordered list. Lift to a DAG (each step has zero-or-more dependencies), execute independent steps concurrently via `TaskGroup`, gate on dependency completion. Final synthesis collects all leaf outputs. Big lift on the executor side; the prompt protocol also has to teach the model to emit a structured plan (probably JSON) instead of a numbered list.
+
+- [ ] **JSON-backed planner schema (`PromptAgent` extension).** Right now `PlannerAgent` is a Swift conformance instantiated by the host. A schema-v4 `PromptAgent` variant could declare `kind: "planner"` plus knobs (`maxStepDecodes`, `maxReplans`, an authored planning prompt) so users can ship custom planners without touching Swift. Trade-off: making the policy hot-editable trades against the readability of a typed Swift conformance — wait until two or three real custom planners exist before committing to a wire format.
+
 ## Deferred — image generation (track upstream maturity)
 
 Parked as premature (2026-04-25). Rationale: no natural pull from the current chat/agent/RAG spine; every candidate backend is markedly less mature than the LLM equivalents (stable-diffusion.cpp lags llama.cpp — confirmed by wrapping pain in `~/projects/personal/cyllama`; `mlx-swift-examples` SD isn't a library product; FLUX Swift ports are single-maintainer); unified-memory pressure against an already-loaded LLM + Whisper + embedder + reranker forces an unload/reload policy that doesn't exist. Revisit when (a) the tool-calling agent loop can invoke non-text verbs cleanly, or (b) one of the upstreams below ships a stable library product.
