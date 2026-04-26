@@ -75,6 +75,21 @@ public struct MCPServerConfig: Codable, Sendable, Equatable {
     /// server. Useful for keeping a config file around while
     /// temporarily disabling it.
     public let enabled: Bool
+    /// Skip the consent gate for this server. Set on configs the
+    /// user wrote themselves and trusts implicitly (first-party
+    /// servers, ones they've vetted). Default false so unknown
+    /// servers must go through `MCPApprovalProvider` — that gate is
+    /// the point of consent enforcement.
+    public let autoApprove: Bool
+    /// Filesystem paths the server is allowed to operate on, surfaced
+    /// to the server via the MCP `roots` capability. Empty disables
+    /// the capability advertisement entirely; the server falls back
+    /// to whatever the OS-level subprocess permissions allow (which
+    /// is everything the parent process can reach — the reason the
+    /// roots advertisement matters in the first place). A
+    /// well-behaved server respects the list; non-conformant servers
+    /// can ignore it, which is why the consent gate runs first.
+    public let roots: [String]
 
     public init(
         id: String,
@@ -82,7 +97,9 @@ public struct MCPServerConfig: Codable, Sendable, Equatable {
         command: String,
         args: [String] = [],
         env: [String: String]? = nil,
-        enabled: Bool = true
+        enabled: Bool = true,
+        autoApprove: Bool = false,
+        roots: [String] = []
     ) {
         self.id = id
         self.displayName = displayName
@@ -90,11 +107,15 @@ public struct MCPServerConfig: Codable, Sendable, Equatable {
         self.args = args
         self.env = env
         self.enabled = enabled
+        self.autoApprove = autoApprove
+        self.roots = roots
     }
 
     /// Decode tolerantly: every field except `id` and `command` is
     /// optional; `enabled` defaults to true so a minimal config (just
-    /// id + command) is valid.
+    /// id + command) is valid. `autoApprove` and `roots` default to
+    /// the safe values (gate enabled, no advertised filesystem
+    /// scope).
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try c.decode(String.self, forKey: .id)
@@ -103,6 +124,8 @@ public struct MCPServerConfig: Codable, Sendable, Equatable {
         self.args = try c.decodeIfPresent([String].self, forKey: .args) ?? []
         self.env = try c.decodeIfPresent([String: String].self, forKey: .env)
         self.enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        self.autoApprove = try c.decodeIfPresent(Bool.self, forKey: .autoApprove) ?? false
+        self.roots = try c.decodeIfPresent([String].self, forKey: .roots) ?? []
     }
 }
 
@@ -146,14 +169,24 @@ public actor MCPHost {
     /// Discover and launch servers from `directory`, register their
     /// tools into `registry`. Returns the per-server diagnostics so
     /// the host can surface them.
+    ///
+    /// `approvalProvider` runs once per discovered enabled server
+    /// (after `autoApprove` short-circuit, before subprocess launch).
+    /// Default deny-all behaviour means a fresh install with no
+    /// stored approvals will skip every server with a clear
+    /// diagnostic — the user has to opt in either by setting
+    /// `autoApprove: true` in the config or by approving through a
+    /// host-supplied UI that calls `MCPApprovalStore.approve`.
     @discardableResult
     public func bootstrap(
         directory: URL,
         into registry: ToolRegistry,
         clientName: String = "infer",
         clientVersion: String = "0.0.0",
-        stderrSink: StdioMCPTransport.StderrSink? = nil
+        stderrSink: StdioMCPTransport.StderrSink? = nil,
+        approvalProvider: MCPApprovalProvider? = nil
     ) async -> [MCPLoadDiagnostic] {
+        let provider = approvalProvider ?? defaultMCPApprovalProvider()
         var collected: [MCPLoadDiagnostic] = []
         let fm = FileManager.default
         guard let urls = try? fm.contentsOfDirectory(
@@ -175,6 +208,15 @@ public actor MCPHost {
                         serverID: config.id,
                         severity: .skipped,
                         message: "disabled in config"
+                    ))
+                    continue
+                }
+                let decision = await provider(config)
+                guard decision != .deny else {
+                    collected.append(MCPLoadDiagnostic(
+                        serverID: config.id,
+                        severity: .skipped,
+                        message: "consent required — call MCPApprovalStore.approve(serverID:) or set autoApprove:true in the config"
                     ))
                     continue
                 }
@@ -230,7 +272,8 @@ public actor MCPHost {
         let client = MCPClient(
             serverID: config.id,
             displayName: config.displayName ?? config.id,
-            transport: transport
+            transport: transport,
+            roots: config.roots
         )
         do {
             try await client.start(clientName: clientName, clientVersion: clientVersion)
@@ -249,6 +292,20 @@ public actor MCPHost {
                 serverID: config.id,
                 severity: .warning,
                 message: "server initialized but exposed no tools"
+            ))
+        }
+        // Surface the granted filesystem scope so the user can see
+        // what the server is allowed to reach (only meaningful when
+        // the server actually honors the advertised roots — non-
+        // conformant servers ignore them, which is why the consent
+        // gate runs first).
+        let resolvedRoots = await client.configuredRoots()
+        if !resolvedRoots.isEmpty {
+            let scope = resolvedRoots.map { $0.uri }.joined(separator: ", ")
+            collected.append(MCPLoadDiagnostic(
+                serverID: config.id,
+                severity: .warning,
+                message: "advertised roots: \(scope)"
             ))
         }
         clients[config.id] = client

@@ -28,6 +28,10 @@ public actor MCPClient {
     public let displayName: String
     private let transport: any MCPTransport
     private let requestTimeout: TimeInterval
+    /// Filesystem roots advertised to the server on `initialize` and
+    /// returned on inbound `roots/list` requests. Stored as MCP
+    /// `Root`s with `file://` URIs already normalised.
+    private let roots: [MCP.Root]
 
     /// Pending requests waiting on a response. Keyed by JSON-RPC id.
     /// The continuation resumes with the raw response when it arrives,
@@ -43,12 +47,38 @@ public actor MCPClient {
         serverID: String,
         displayName: String,
         transport: any MCPTransport,
-        requestTimeout: TimeInterval = 30
+        requestTimeout: TimeInterval = 30,
+        roots: [String] = []
     ) {
         self.serverID = serverID
         self.displayName = displayName
         self.transport = transport
         self.requestTimeout = requestTimeout
+        self.roots = roots.map { Self.normalizeRoot($0) }
+    }
+
+    /// Configured roots (normalised to `file://` URIs). Surfaced for
+    /// the host's startup logging.
+    public func configuredRoots() -> [MCP.Root] { roots }
+
+    /// Convert a host-friendly path (`/abs/path`, `~/Documents`,
+    /// `file:///abs/path`) into an MCP `Root` with a normalised
+    /// `file://` URI. Tilde is expanded; relative paths are resolved
+    /// against the current working directory; existing `file://`
+    /// URIs are accepted as-is. The display `name` defaults to the
+    /// last path component.
+    static func normalizeRoot(_ raw: String) -> MCP.Root {
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("file://") {
+            let path = (trimmed as NSString).lastPathComponent
+            return MCP.Root(uri: trimmed, name: path.isEmpty ? nil : path)
+        }
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        let url = URL(fileURLWithPath: expanded).standardizedFileURL
+        return MCP.Root(
+            uri: url.absoluteString,
+            name: url.lastPathComponent.isEmpty ? nil : url.lastPathComponent
+        )
     }
 
     /// Drive the `initialize` handshake, send `notifications/initialized`,
@@ -64,9 +94,12 @@ public actor MCPClient {
         }
         startReaderIfNeeded()
 
+        let capabilities = MCP.ClientCapabilities(
+            roots: roots.isEmpty ? nil : MCP.RootsCapability(listChanged: false)
+        )
         let initParams = MCP.InitializeParams(
             protocolVersion: "2025-03-26",
-            capabilities: MCP.ClientCapabilities(),
+            capabilities: capabilities,
             clientInfo: MCP.ClientInfo(name: clientName, version: clientVersion)
         )
         let initData = try JSONEncoder().encode(initParams)
@@ -230,18 +263,73 @@ public actor MCPClient {
             do {
                 for try await frame in stream {
                     guard let self else { return }
-                    if let response = try? JSONDecoder().decode(MCP.Response.self, from: frame),
-                       response.id != nil {
+                    // A frame can be one of three things:
+                    //   1. Outbound-request response — has `id`, no `method`.
+                    //      Match against `pending` continuations.
+                    //   2. Inbound request — has both `id` and `method`.
+                    //      Dispatch and send a response back.
+                    //   3. Notification — has `method`, no `id`. Ignored in v1.
+                    // Peek at the frame to decide which lane it
+                    // belongs in. Inbound requests/notifications carry
+                    // a `method` string; outbound-request responses
+                    // don't. We re-parse inside the handler rather
+                    // than passing the dict across the actor hop —
+                    // [String: Any] isn't Sendable.
+                    let isInbound: Bool = {
+                        guard let raw = (try? JSONSerialization.jsonObject(with: frame))
+                                as? [String: Any] else { return false }
+                        return raw["method"] is String
+                    }()
+                    if isInbound {
+                        await self.handleInbound(frame: frame)
+                    } else if let response = try? JSONDecoder().decode(
+                        MCP.Response.self, from: frame
+                    ), response.id != nil {
                         await self.deliver(response)
                     }
-                    // Notifications (no id) are ignored in v1; later
-                    // versions can decode `notifications/tools/list_changed`
-                    // and trigger refreshTools.
                 }
                 await self?.failAllPending(error: MCPError.transportClosed)
             } catch {
                 await self?.failAllPending(error: error)
             }
+        }
+    }
+
+    /// Dispatch an inbound JSON-RPC frame that carried a `method`.
+    /// Notifications are no-ops in v1; requests are dispatched per
+    /// method name and a response is sent back. Unknown methods get a
+    /// JSON-RPC `-32601` (method not found) error so the server gets
+    /// a clear answer instead of a hang.
+    private func handleInbound(frame: Data) async {
+        guard let raw = (try? JSONSerialization.jsonObject(with: frame))
+            as? [String: Any] else { return }
+        let method = (raw["method"] as? String) ?? ""
+        guard let id = raw["id"] as? Int else {
+            // Notification — `notifications/tools/list_changed` etc.
+            // Wired in a future revision; ignored for v1.
+            return
+        }
+        do {
+            switch method {
+            case "roots/list":
+                let result = MCP.ListRootsResult(roots: roots)
+                let envelope = MCP.OutboundResponse(id: id, result: result)
+                let data = try JSONEncoder().encode(envelope)
+                try await transport.send(data)
+            default:
+                let envelope = MCP.OutboundErrorResponse(
+                    id: id,
+                    code: -32601,
+                    message: "method not implemented by client: \(method)"
+                )
+                let data = try JSONEncoder().encode(envelope)
+                try await transport.send(data)
+            }
+        } catch {
+            // Failure to respond is best-effort; the server will
+            // eventually time out its request. We don't surface this
+            // to outbound callers because the inbound request was the
+            // server's, not ours.
         }
     }
 }

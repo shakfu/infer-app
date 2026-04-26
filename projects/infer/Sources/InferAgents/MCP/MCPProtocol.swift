@@ -111,8 +111,86 @@ public enum MCP {
     }
 
     public struct ClientCapabilities: Encodable, Sendable {
-        // Empty for v1 — we don't subscribe to roots / sampling.
-        public init() {}
+        /// Filesystem-roots capability. Present when the client is
+        /// going to respond to inbound `roots/list` requests with a
+        /// non-empty list. `listChanged: false` means we don't push
+        /// notifications when roots change mid-session — sufficient
+        /// for v1 since roots are configured at server launch and
+        /// don't drift.
+        public let roots: RootsCapability?
+
+        public init(roots: RootsCapability? = nil) {
+            self.roots = roots
+        }
+    }
+
+    public struct RootsCapability: Encodable, Sendable, Equatable {
+        public let listChanged: Bool
+
+        public init(listChanged: Bool = false) {
+            self.listChanged = listChanged
+        }
+    }
+
+    /// One filesystem root advertised to the server. `uri` is a
+    /// `file://` URI; `name` is an optional human-readable label.
+    public struct Root: Encodable, Sendable, Equatable {
+        public let uri: String
+        public let name: String?
+
+        public init(uri: String, name: String? = nil) {
+            self.uri = uri
+            self.name = name
+        }
+
+        private enum CodingKeys: String, CodingKey { case uri, name }
+
+        public func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(uri, forKey: .uri)
+            if let name { try c.encode(name, forKey: .name) }
+        }
+    }
+
+    /// Response payload for an inbound `roots/list` request from the
+    /// server. The client sends one back when `roots` are configured.
+    public struct ListRootsResult: Encodable, Sendable {
+        public let roots: [Root]
+        public init(roots: [Root]) { self.roots = roots }
+    }
+
+    /// JSON-RPC response envelope the client sends back to the server
+    /// when handling an inbound request (e.g. `roots/list`). Same
+    /// shape as a JSON-RPC response — `id` echoes the inbound id,
+    /// `result` carries the typed payload.
+    public struct OutboundResponse<R: Encodable & Sendable>: Encodable, Sendable {
+        public let jsonrpc: String = "2.0"
+        public let id: Int
+        public let result: R
+
+        public init(id: Int, result: R) {
+            self.id = id
+            self.result = result
+        }
+    }
+
+    /// JSON-RPC error response envelope for inbound requests we
+    /// can't handle (e.g. method not in our v1 set). Mirrors the
+    /// inbound `Response.error` shape.
+    public struct OutboundErrorResponse: Encodable, Sendable {
+        public let jsonrpc: String = "2.0"
+        public let id: Int
+        public let error: OutboundError
+
+        public init(id: Int, code: Int, message: String) {
+            self.id = id
+            self.error = OutboundError(code: code, message: message)
+        }
+    }
+
+    public struct OutboundError: Encodable, Sendable {
+        public let code: Int
+        public let message: String
     }
 
     public struct ClientInfo: Encodable, Sendable {
