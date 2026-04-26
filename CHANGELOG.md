@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Vector-store retrieval hook on `AgentContext`.** New `RetrievedChunk` value type and `Retriever = (query, topK) async throws -> [RetrievedChunk]` typealias in `InferAgents`. `AgentContext` carries an optional `retrieve: Retriever?` so compiled `Agent` conformances can pull from the host's corpus before issuing a tool call. The host wires it in `Agents.makeAgentRetriever()` by wrapping `embedder.embed` + `vectorStore.search` and mapping cosine distance into a `[0, 1]` relevance score. Nil when no workspace is active or the active workspace has no corpus, so agents degrade to parametric knowledge instead of erroring.
+
+- **`vault.search` builtin tool.** Wraps the same retrieval closure for tool-calling agents. Argument schema `{"query": "<text>", "topK": 5}` (clamped `[1, 20]`); returns a JSON array of `{sourceURI, content, score}` ordered by descending relevance, or `[]` when no corpus is configured.
+
+- **`fs.read` builtin tool.** Sandboxed file read. Refuses any path that does not resolve under one of the host-configured `allowedRoots` (after tilde expansion + symlink resolution, so a symlink inside an allowed root can't escape it), returns up to 64 KB and truncates with a marker beyond that. Default sandbox is the user's `~/Documents` directory plus the Infer Application Support root.
+
+- **`http.fetch` builtin tool.** HTTPS GET with strict host allowlist. Refuses non-HTTPS schemes, hosts not on the allowlist, and redirects whose final host leaves the allowlist; caps response bodies at 256 KB with truncation marker; 60-second timeout. Default allowlist ships `en.wikipedia.org` and `raw.githubusercontent.com`.
+
+- **`infer.research-assistant` bundled agent.** Demonstrates the retrieval hook end-to-end: calls `vault.search` with a focused query, reads the returned chunks, and writes a concise answer with inline `sourceURI` citations. Falls back to parametric knowledge with an explicit note when the workspace has no indexed corpus.
+
+- **`CompositionResult.unifiedTrace()` helper.** Flattens a composition's per-segment outcomes into one `StepTrace` with `SegmentSpan`s tiling the steps in dispatch order. Replaces ad-hoc span construction at every caller that wants single-trace persistence.
+
+- **`StepTrace.agentId(forStepAt:)`.** Promoted from a private helper in the chat transcript renderer to public API on `StepTrace` so non-UI callers (tests, exporters) can attribute steps without duplicating the logic.
+
+- **`AgentController.WarningSink` injection point.** Optional `@Sendable (source, message, payload?) -> Void` closure passed at controller construction. The chat view-model wires it to `LogCenter.logFromBackground(.warning, ...)` so misbehaving agent hooks are visible in the Console rather than silently degrading.
+
+- **`CompositionSegmentSpanSmokeTests`.** Three end-to-end tests covering chained-turn `SegmentSpan` attribution, single-agent turns producing the expected span shape, and handoff-resolved segments attributing to the target agent.
+
+### Changed
+
+- **`Predicate.regex` evaluation caches compiled `NSRegularExpression`s by pattern.** Previously each `evaluate` call recompiled the regex; refine loops, branch probes, and fallback walks now share one compiled instance per pattern through a thread-safe `RegexCache`.
+
+- **Agent activation no longer swallows `systemPrompt` / `toolsAvailable` errors with `try?`.** `AgentController.activate` catches each hook explicitly and forwards the error message + payload to the injected `WarningSink`, then degrades to the previous fallback (empty prompt / no tools) so the rest of the activation still completes.
+
+- **`ChatViewModel.agentController` initialised in `init`** (previously a stored property with inline construction). Required by the warning-sink wiring — `@Observable` doesn't allow `lazy` and the controller now needs a reference to `self.logs` at construction.
+
 ## [0.1.6]
 
 ### Added

@@ -78,6 +78,22 @@ public struct StepTrace: Codable, Equatable, Sendable {
         StepTrace(steps: [.finalAnswer(text)])
     }
 
+    /// Find the agent whose `SegmentSpan` covers `stepIndex`, or nil
+    /// when the trace has no segments (single-agent turn — every step
+    /// belongs to the message-level `agentId` already). Spans are
+    /// expected to tile the trace with no gaps and no overlap; the
+    /// linear scan is fine because spans rarely exceed a handful per
+    /// turn. Promoted from a local helper in the transcript renderer
+    /// so non-UI callers (composition tests, exporters) can attribute
+    /// steps without duplicating the logic.
+    public func agentId(forStepAt stepIndex: Int) -> AgentID? {
+        guard !segments.isEmpty else { return nil }
+        for span in segments where stepIndex >= span.startStep && stepIndex < span.endStep {
+            return span.agentId
+        }
+        return nil
+    }
+
     /// The trace's terminal step, if any. A trace without a terminator is
     /// in-progress (only meaningful inside the loop; persisted traces are
     /// always terminated).

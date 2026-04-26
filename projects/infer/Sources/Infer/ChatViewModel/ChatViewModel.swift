@@ -73,7 +73,7 @@ final class ChatViewModel {
     /// translates the effects it returns into runner and transcript
     /// mutations (see `Agents.swift`). Extracted to `InferAgents` so the
     /// selection logic is unit-testable without the runner stack.
-    let agentController = AgentController()
+    let agentController: AgentController
     /// Dedicated llama.cpp context configured for embedding inference.
     /// Loaded lazily on the first RAG ingest/query; stays resident
     /// after that. Independent of the chat `LlamaRunner`/`MLXRunner`.
@@ -238,6 +238,22 @@ final class ChatViewModel {
     var loadTask: Task<Void, Never>? = nil
 
     init() {
+        // Build the agent controller with a warning sink that routes
+        // hook failures into the Console. Keeps a strong ref to the
+        // log center via `[weak logs]` — `logs` outlives the
+        // controller, so a hook that fires after VM teardown still
+        // has a place to log (not that it should happen).
+        let logSink = self.logs
+        self.agentController = AgentController(
+            warn: { [weak logSink] source, message, payload in
+                logSink?.logFromBackground(
+                    .warning,
+                    source: source,
+                    message: message,
+                    payload: payload
+                )
+            }
+        )
         // Wire TTS completion to auto-arm the mic when in voice-loop mode.
         // onFinish fires only on natural completion — a user-initiated Stop
         // (didCancel) skips the callback so the loop doesn't resume over an

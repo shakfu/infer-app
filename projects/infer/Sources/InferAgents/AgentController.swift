@@ -124,6 +124,13 @@ public final class AgentController {
     /// PR 1 callers keep defaulting to `.empty`.
     public private(set) var toolCatalog: ToolCatalog = .empty
 
+    /// Retrieval closure threaded into every `AgentContext` produced by
+    /// `activate`. Set at `bootstrap` by the host (typically wrapping
+    /// the app's vector store + RAG pipeline). Nil when no corpus is
+    /// available — `AgentContext.retrieve` becomes nil and any agent
+    /// depending on retrieval falls back to parametric knowledge.
+    public private(set) var retriever: Retriever? = nil
+
     /// Id of the agents-layer tool list the active agent exposes for
     /// the current turn. Empty when no tools are allowed (e.g. Default)
     /// or when the catalog is empty. Published so the VM send path can
@@ -156,6 +163,15 @@ public final class AgentController {
 
     public let registry: AgentRegistry
 
+    /// Host-supplied warning sink. Called when an agent hook
+    /// (`systemPrompt`, `toolsAvailable`) throws during activation —
+    /// previously these errors were swallowed with `try?`. The host
+    /// wires this to its Console / log subsystem so misbehaving agents
+    /// are visible in the live observability view rather than silently
+    /// degrading. Default no-op preserves behaviour for unit tests.
+    public typealias WarningSink = @Sendable (_ source: String, _ message: String, _ payload: String?) -> Void
+    public nonisolated let warn: WarningSink
+
     /// Process-lifetime broadcast of `AgentEvent`s emitted by the active
     /// turn. UX plan Phase 0.2: streaming disclosures, transcript live
     /// updates, and exporters subscribe here rather than polling
@@ -164,8 +180,12 @@ public final class AgentController {
     public nonisolated let events: AsyncStream<AgentEvent>
     private nonisolated let eventContinuation: AsyncStream<AgentEvent>.Continuation
 
-    public init(registry: AgentRegistry = AgentRegistry()) {
+    public init(
+        registry: AgentRegistry = AgentRegistry(),
+        warn: @escaping WarningSink = { _, _, _ in }
+    ) {
         self.registry = registry
+        self.warn = warn
         var cont: AsyncStream<AgentEvent>.Continuation!
         self.events = AsyncStream<AgentEvent>(bufferingPolicy: .unbounded) { c in
             cont = c
@@ -189,13 +209,15 @@ public final class AgentController {
         settings: InferSettings,
         firstPartyPersonas: [URL] = [],
         personasDirectory: URL?,
-        toolCatalog: ToolCatalog = .empty
+        toolCatalog: ToolCatalog = .empty,
+        retriever: Retriever? = nil
     ) async {
         await bootstrap(
             settings: settings,
             firstPartyPersonas: firstPartyPersonas,
             personasDirectories: personasDirectory.map { [$0] } ?? [],
-            toolCatalog: toolCatalog
+            toolCatalog: toolCatalog,
+            retriever: retriever
         )
     }
 
@@ -209,10 +231,12 @@ public final class AgentController {
         settings: InferSettings,
         firstPartyPersonas: [URL] = [],
         personasDirectories: [URL] = [],
-        toolCatalog: ToolCatalog = .empty
+        toolCatalog: ToolCatalog = .empty,
+        retriever: Retriever? = nil
     ) async {
         self.activeDecodingParams = DecodingParams(from: settings)
         self.toolCatalog = toolCatalog
+        self.retriever = retriever
         var diagnostics: [AgentRegistry.PersonaLoadError] = []
         diagnostics.append(contentsOf: await loadFirstPartyPersonas(from: firstPartyPersonas))
         for dir in personasDirectories {
@@ -436,10 +460,31 @@ public final class AgentController {
                 maxContext: 0,
                 currentTokenCount: 0
             ),
-            tools: toolCatalog
+            tools: toolCatalog,
+            retrieve: retriever
         )
-        let basePrompt = (try? await agent.systemPrompt(for: ctx)) ?? ""
-        let tools = (try? await agent.toolsAvailable(for: ctx)) ?? []
+        let basePrompt: String
+        do {
+            basePrompt = try await agent.systemPrompt(for: ctx)
+        } catch {
+            warn(
+                "agents",
+                "agent \(agentId) systemPrompt threw; falling back to empty prompt",
+                String(describing: error)
+            )
+            basePrompt = ""
+        }
+        let tools: [ToolSpec]
+        do {
+            tools = try await agent.toolsAvailable(for: ctx)
+        } catch {
+            warn(
+                "agents",
+                "agent \(agentId) toolsAvailable threw; falling back to no tools",
+                String(describing: error)
+            )
+            tools = []
+        }
         self.activeToolSpecs = tools
         // The agent declares which family its tool-call syntax targets.
         // Falls back to whatever the runner reports detecting; if both

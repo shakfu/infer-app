@@ -33,7 +33,7 @@ public enum Predicate: Equatable, Sendable {
         switch self {
         case .regex(let pattern):
             let text = Self.text(of: outcome)
-            guard let re = try? NSRegularExpression(pattern: pattern) else {
+            guard let re = Self.compiledRegex(for: pattern) else {
                 return false
             }
             let range = NSRange(text.startIndex..<text.endIndex, in: text)
@@ -60,6 +60,43 @@ public enum Predicate: Equatable, Sendable {
 
         case .stepBudgetExceeded:
             return remainingBudget <= 0
+        }
+    }
+
+    /// Compiled-regex cache keyed by pattern. `Predicate` values are
+    /// reused across many evaluations during a composition (refine
+    /// loops, branch probes, fallback walks), and `NSRegularExpression`
+    /// initialisation is the dominant cost. Patterns that fail to
+    /// compile are not cached — they go on returning `false` cheaply.
+    private static let regexCache = RegexCache()
+
+    private static func compiledRegex(for pattern: String) -> NSRegularExpression? {
+        regexCache.regex(for: pattern)
+    }
+
+    /// Thread-safe wrapper around a small in-memory regex cache. Uses a
+    /// `pthread_mutex` via `NSLock` rather than an actor so `evaluate`
+    /// can stay synchronous (called from inside the composition driver
+    /// which already serialises access on its own actor; the lock is
+    /// belt-and-braces for any other caller).
+    private final class RegexCache: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cache: [String: NSRegularExpression] = [:]
+
+        func regex(for pattern: String) -> NSRegularExpression? {
+            lock.lock()
+            if let cached = cache[pattern] {
+                lock.unlock()
+                return cached
+            }
+            lock.unlock()
+            guard let compiled = try? NSRegularExpression(pattern: pattern) else {
+                return nil
+            }
+            lock.lock()
+            cache[pattern] = compiled
+            lock.unlock()
+            return compiled
         }
     }
 

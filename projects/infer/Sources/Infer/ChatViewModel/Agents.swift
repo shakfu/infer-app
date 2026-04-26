@@ -108,9 +108,51 @@ extension ChatViewModel {
         }
     }
 
+    /// Build the agent-layer retrieval closure that wraps the host's
+    /// vector store + embedder. Captures `weak self` so a teardown
+    /// during a long retrieval doesn't keep the VM alive. Returns nil-
+    /// equivalent (an empty array) when no workspace is active or the
+    /// active workspace has no corpus — agents then degrade to
+    /// parametric knowledge instead of erroring.
+    func makeAgentRetriever() -> Retriever {
+        return { [weak self] query, topK in
+            guard let self else { return [] }
+            // Hop to MainActor to read the live workspace id, then drop
+            // back off-actor for the corpus check + embedding + search,
+            // none of which need MainActor isolation. `vectorStore` and
+            // `embedder` are actors / Sendable.
+            let workspaceId: Int64? = await MainActor.run { self.activeWorkspaceId }
+            guard let workspaceId else { return [] }
+            let hasCorpus = await self.workspaceHasCorpus(workspaceId)
+            guard hasCorpus else { return [] }
+            try await self.ensureEmbeddingModelLoaded()
+            let queryVec = try await self.embedder.embed(query)
+            let hits = try await self.vectorStore.search(
+                workspaceId: workspaceId,
+                queryEmbedding: queryVec,
+                queryText: query,
+                k: topK
+            )
+            // Map sqlite-vec's distance into a relevance score in
+            // roughly [0, 1]. Cosine distance lands in [0, 2]; the
+            // `1 - d/2` mapping keeps the agent-facing score
+            // monotone-increasing-with-relevance regardless of the
+            // host's distance metric. Fused / FTS-only hits already
+            // ride the vector hit's distance through `rrfFuse`.
+            return hits.map { hit in
+                RetrievedChunk(
+                    sourceURI: hit.sourceURI,
+                    content: hit.content,
+                    score: max(0.0, 1.0 - hit.distance / 2.0)
+                )
+            }
+        }
+    }
+
     func bootstrapAgents() {
         let firstParty = Self.firstPartyPersonaURLs()
-        Task { [controller = self.agentController, registry = self.toolRegistry, settings = self.settings, logs = self.logs] in
+        let retriever = self.makeAgentRetriever()
+        Task { [controller = self.agentController, registry = self.toolRegistry, settings = self.settings, logs = self.logs, retriever] in
             // Register the PR 2 built-ins. Tool registrations and the
             // controller bootstrap happen in the same task so the
             // first switchAgent after launch sees a populated catalog.
@@ -122,6 +164,25 @@ extension ChatViewModel {
                 // composition driver reads it from the trace
                 // post-segment and dispatches to the chosen candidate.
                 AgentsInvokeTool(),
+                // Real tools. The fs.read sandbox is restricted to the
+                // user's Documents directory + the Infer Application
+                // Support root so agents can read user-authored notes
+                // and persona JSON without exposing arbitrary disk.
+                // The http.fetch allowlist is intentionally narrow and
+                // points at canonical sources of structured public
+                // content (Wikipedia HTML/JSON, raw GitHub files); it
+                // can be extended by users authoring custom agents
+                // once a settings surface lands.
+                FilesystemReadTool(allowedRoots: [
+                    URL(fileURLWithPath: NSHomeDirectory())
+                        .appendingPathComponent("Documents", isDirectory: true),
+                    Self.userAgentsRootDirectory(),
+                ]),
+                URLFetchTool(allowedHosts: [
+                    "en.wikipedia.org",
+                    "raw.githubusercontent.com",
+                ]),
+                VaultSearchTool(retriever: retriever),
             ])
             let specs = await registry.allSpecs()
             let catalog = ToolCatalog(tools: specs)
@@ -132,7 +193,8 @@ extension ChatViewModel {
                     Self.userPersonasDirectory(),
                     Self.userAgentsDirectory(),
                 ],
-                toolCatalog: catalog
+                toolCatalog: catalog,
+                retriever: retriever
             )
             // Surface per-file parse failures into the Console so they
             // show up in the live observability view, not just the

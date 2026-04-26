@@ -58,6 +58,45 @@ public actor CompositionController {
             self.outcome = outcome
             self.segments = segments
         }
+
+        /// Flatten this composition's per-segment outcomes into one
+        /// `StepTrace` with `SegmentSpan`s attributing each contiguous
+        /// run of steps back to its agent. Used by callers that
+        /// persist a single trace per user-turn (e.g. the chat
+        /// transcript renderer's per-step agent attribution) instead
+        /// of one trace per segment.
+        ///
+        /// Spans tile the resulting trace with no gaps and no overlap.
+        /// Empty `segments` produces an empty trace with no spans.
+        public func unifiedTrace() -> StepTrace {
+            var steps: [StepTrace.Step] = []
+            var spans: [StepTrace.SegmentSpan] = []
+            for segment in segments {
+                let start = steps.count
+                let segmentSteps: [StepTrace.Step]
+                switch segment.outcome {
+                case .completed(_, let trace),
+                     .handoff(_, _, let trace),
+                     .abandoned(_, let trace),
+                     .failed(_, let trace):
+                    segmentSteps = trace.steps
+                }
+                steps.append(contentsOf: segmentSteps)
+                let end = steps.count
+                // Skip zero-length spans: a segment with no steps has
+                // nothing to attribute. Should be rare in practice
+                // (every segment writes at least a terminator), but
+                // we don't want to emit malformed [start, start) spans.
+                if end > start {
+                    spans.append(StepTrace.SegmentSpan(
+                        agentId: segment.agentId,
+                        startStep: start,
+                        endStep: end
+                    ))
+                }
+            }
+            return StepTrace(steps: steps, segments: spans)
+        }
     }
 
     public init() {}
