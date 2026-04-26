@@ -12,6 +12,11 @@ public struct AgentListing: Identifiable, Equatable, Sendable {
     public let backend: BackendPreference
     public let templateFamily: TemplateFamily?
 
+    /// Persona vs agent classification (`docs/dev/agent_kinds.md`). The
+    /// Default row is a persona (no tools). Library/picker UIs group by
+    /// this value.
+    public let kind: AgentKind
+
     /// True when the listing is the synthetic Default row (no registry
     /// entry, derived live from `InferSettings`).
     public let isDefault: Bool
@@ -30,6 +35,7 @@ public struct AgentListing: Identifiable, Equatable, Sendable {
         source: AgentSource,
         backend: BackendPreference,
         templateFamily: TemplateFamily?,
+        kind: AgentKind,
         isDefault: Bool
     ) {
         self.id = id
@@ -38,6 +44,7 @@ public struct AgentListing: Identifiable, Equatable, Sendable {
         self.source = source
         self.backend = backend
         self.templateFamily = templateFamily
+        self.kind = kind
         self.isDefault = isDefault
         self.displayLabel = Self.makeDisplayLabel(from: name, fallbackId: id)
     }
@@ -123,6 +130,13 @@ public final class AgentController {
     /// read `maxSteps > 0` decisions synchronously.
     public private(set) var activeToolSpecs: [ToolSpec] = []
 
+    /// Tool-call template family the active agent expects in its
+    /// emitted tool calls. Read by the chat view-model's tool loop
+    /// when choosing which `ToolCallParser` family to feed first-decode
+    /// text into. Defaults to `.llama3` to preserve pre-M4 behaviour
+    /// for any agent that doesn't declare a `templateFamily`.
+    public private(set) var activeToolFamily: TemplateFamily = .llama3
+
     /// Per-file parse failures from the most recent `bootstrap`. Reset
     /// each bootstrap so the UI shows only currently-broken files
     /// (not a historical accretion). Published so the Agents tab can
@@ -130,29 +144,85 @@ public final class AgentController {
     /// swallowing malformed JSON.
     public private(set) var libraryDiagnostics: [AgentRegistry.PersonaLoadError] = []
 
+    /// Template family detected from the currently-loaded GGUF, or nil
+    /// when no model is loaded / the runner backend has no notion of
+    /// templates (MLX). Pushed in by the chat view-model after a model
+    /// load completes; consumed by `isCompatible` to fail loud on
+    /// agents that declare a `templateFamily` requirement.
+    /// `docs/dev/agent_implementation_plan.md` decision 5: detection
+    /// lives on the runner side so `InferAgents` stays free of llama
+    /// / MLX dependencies.
+    public private(set) var detectedTemplateFamily: TemplateFamily? = nil
+
     public let registry: AgentRegistry
+
+    /// Process-lifetime broadcast of `AgentEvent`s emitted by the active
+    /// turn. UX plan Phase 0.2: streaming disclosures, transcript live
+    /// updates, and exporters subscribe here rather than polling
+    /// `messages[i].steps`. Single-consumer (`AsyncStream`); if a future
+    /// caller needs multicast, wrap it then.
+    public nonisolated let events: AsyncStream<AgentEvent>
+    private nonisolated let eventContinuation: AsyncStream<AgentEvent>.Continuation
 
     public init(registry: AgentRegistry = AgentRegistry()) {
         self.registry = registry
+        var cont: AsyncStream<AgentEvent>.Continuation!
+        self.events = AsyncStream<AgentEvent>(bufferingPolicy: .unbounded) { c in
+            cont = c
+        }
+        self.eventContinuation = cont
     }
 
-    /// Initialise from live settings and optionally load user personas
-    /// from `personasDirectory`. `firstPartyPersonas` is a list of
-    /// bundled JSON URLs (typically resolved from `Bundle.module`) to
-    /// register under `.firstParty`. Safe to call more than once.
+    /// Yield an event to the broadcast stream. Called by the loop driver
+    /// at every state transition (tool requested, running, resulted,
+    /// chunk, terminated). The driver remains responsible for applying
+    /// the event's effect on `ChatMessage` — the stream is observer-only.
+    public nonisolated func emit(_ event: AgentEvent) {
+        eventContinuation.yield(event)
+    }
+
+    /// Single-directory back-compat shim for the array-based
+    /// `bootstrap(personasDirectories:)`. Predates the schema-v2 split
+    /// of user content into `personas/` and `agents/` subdirs; kept so
+    /// older test call sites remain valid.
     public func bootstrap(
         settings: InferSettings,
         firstPartyPersonas: [URL] = [],
         personasDirectory: URL?,
         toolCatalog: ToolCatalog = .empty
     ) async {
+        await bootstrap(
+            settings: settings,
+            firstPartyPersonas: firstPartyPersonas,
+            personasDirectories: personasDirectory.map { [$0] } ?? [],
+            toolCatalog: toolCatalog
+        )
+    }
+
+    /// Initialise from live settings and optionally load user personas
+    /// from `personasDirectories`. Each directory is scanned independently
+    /// for `*.json`; missing directories are silently skipped (a fresh
+    /// install has neither). `firstPartyPersonas` is a list of bundled
+    /// JSON URLs (typically resolved from `Bundle.module`) to register
+    /// under `.firstParty`. Safe to call more than once.
+    public func bootstrap(
+        settings: InferSettings,
+        firstPartyPersonas: [URL] = [],
+        personasDirectories: [URL] = [],
+        toolCatalog: ToolCatalog = .empty
+    ) async {
         self.activeDecodingParams = DecodingParams(from: settings)
         self.toolCatalog = toolCatalog
         var diagnostics: [AgentRegistry.PersonaLoadError] = []
         diagnostics.append(contentsOf: await loadFirstPartyPersonas(from: firstPartyPersonas))
-        if let dir = personasDirectory {
+        for dir in personasDirectories {
             diagnostics.append(contentsOf: await registry.loadUserPersonas(from: dir))
         }
+        // Cross-agent reference validation runs after every file is
+        // registered — order of file load is undefined, so per-file
+        // existence checks would race. Cycles + dangling references
+        // surface here as `.warning` diagnostics.
+        diagnostics.append(contentsOf: await registry.validateCompositionReferences())
         self.libraryDiagnostics = diagnostics
         await refreshListings()
     }
@@ -167,12 +237,10 @@ public final class AgentController {
         from urls: [URL]
     ) async -> [AgentRegistry.PersonaLoadError] {
         var errors: [AgentRegistry.PersonaLoadError] = []
-        let decoder = JSONDecoder()
         for url in urls {
             do {
-                let data = try Data(contentsOf: url)
-                let agent = try decoder.decode(PromptAgent.self, from: data)
-                await registry.register(agent, source: .firstParty)
+                let agent = try AgentRegistry.decodePersona(at: url)
+                await registry.register(agent, source: .firstParty, sourceURL: url)
             } catch {
                 errors.append(AgentRegistry.PersonaLoadError(
                     url: url,
@@ -196,6 +264,7 @@ public final class AgentController {
                 source: entry.source,
                 backend: entry.agent.requirements.backend,
                 templateFamily: entry.agent.requirements.templateFamily,
+                kind: Self.kind(of: entry.agent),
                 isDefault: false
             )
         }
@@ -212,28 +281,79 @@ public final class AgentController {
             source: .firstParty,
             backend: .any,
             templateFamily: nil,
+            kind: .persona,
             isDefault: true
         )
         self.availableAgents = [defaultListing] + registered
+    }
+
+    /// Classify any `Agent` conformance for the listing UI. JSON-backed
+    /// agents carry their authored `kind`; compiled conformances are
+    /// derived from whether they expose tools (presence of `toolsAllow`
+    /// is treated as agent-shaped here so the picker badges them
+    /// correctly).
+    private static func kind(of agent: any Agent) -> AgentKind {
+        if let prompt = agent as? PromptAgent { return prompt.kind }
+        return agent.requirements.toolsAllow.isEmpty ? .persona : .agent
+    }
+
+    /// Push the runner-detected template family in. Caller (chat
+    /// view-model) calls this after a model load completes and again
+    /// with nil after unload. Refreshes `availableAgents` listings so
+    /// the picker re-evaluates compatibility on the next render.
+    public func setDetectedTemplateFamily(_ family: TemplateFamily?) {
+        guard family != detectedTemplateFamily else { return }
+        detectedTemplateFamily = family
     }
 
     public func isCompatible(
         _ listing: AgentListing,
         backend: BackendPreference
     ) -> Bool {
+        // Backend match comes first — a Qwen-template Llama agent
+        // running on the MLX backend is wrong for two independent
+        // reasons; surface the backend one.
         switch listing.backend {
-        case .any: return true
-        case .llama: return backend == .llama
-        case .mlx: return backend == .mlx
+        case .any: break
+        case .llama: if backend != .llama { return false }
+        case .mlx: if backend != .mlx { return false }
         }
+        // Template-family check only applies when the agent declares a
+        // requirement. An unset `templateFamily` means "any template
+        // works for this agent" (most personas) — those stay
+        // compatible. When the requirement is set and we have a
+        // detection, the two must match. When the requirement is set
+        // but detection is nil (no model loaded yet, or template
+        // unrecognised), the picker fails loud — better than silently
+        // emitting Llama 3.1 tags into a Qwen template at first send.
+        if let required = listing.templateFamily {
+            guard let detected = detectedTemplateFamily else { return false }
+            return detected == required
+        }
+        return true
     }
 
-    public func incompatibilityReason(_ listing: AgentListing) -> String {
+    public func incompatibilityReason(
+        _ listing: AgentListing,
+        backend: BackendPreference
+    ) -> String {
+        // Backend mismatch wins — the user can't fix template before
+        // fixing backend. Surface the more fundamental reason first.
         switch listing.backend {
-        case .any: return ""
-        case .llama: return "Requires llama.cpp backend"
-        case .mlx: return "Requires MLX backend"
+        case .any: break
+        case .llama: if backend != .llama { return "Requires llama.cpp backend" }
+        case .mlx: if backend != .mlx { return "Requires MLX backend" }
         }
+        if let required = listing.templateFamily {
+            if let detected = detectedTemplateFamily {
+                if detected != required {
+                    return "Requires \(required.rawValue) template — current: \(detected.rawValue)"
+                }
+                return ""
+            }
+            return "Requires \(required.rawValue) template — none detected"
+        }
+        return ""
     }
 
     public func activeAgentName() -> String {
@@ -251,18 +371,60 @@ public final class AgentController {
     ) async -> [AgentEffect] {
         guard listing.id != activeAgentId else { return [] }
         guard isCompatible(listing, backend: currentBackend) else { return [] }
+        let runnerEffects = await activate(
+            agentId: listing.id,
+            currentBackend: currentBackend,
+            settings: settings
+        )
+        return [
+            .insertDivider(agentName: listing.name),
+            .invalidateConversation,
+        ] + runnerEffects
+    }
 
-        activeAgentId = listing.id
+    /// Mid-composition agent activation. M5a-runtime Phase B: when a
+    /// chain hops from agent A to agent B inside a single user turn,
+    /// the runner needs B's system prompt + sampling pushed (so the KV
+    /// cache rewinds and the next decode is shaped correctly), but the
+    /// transcript should NOT get a divider row and the vault
+    /// conversation MUST stay open — chain segments belong to one
+    /// logical user turn, not separate ones. Returns runner-state
+    /// effects only; the caller appends a fresh assistant message for
+    /// the new segment with its own agent attribution.
+    public func activateForSegment(
+        agentId: AgentID,
+        currentBackend: BackendPreference,
+        settings: InferSettings
+    ) async -> [AgentEffect] {
+        guard agentId != activeAgentId else { return [] }
+        return await activate(
+            agentId: agentId,
+            currentBackend: currentBackend,
+            settings: settings
+        )
+    }
+
+    /// Shared body for `switchAgent` and `activateForSegment`. Resolves
+    /// the agent, refreshes `activeToolSpecs` / `activeToolFamily` /
+    /// `activeDecodingParams`, and returns the runner-state effects
+    /// (`pushSystemPrompt`, `pushSampling`). Callers wrap with whatever
+    /// transcript/vault effects they need.
+    private func activate(
+        agentId: AgentID,
+        currentBackend: BackendPreference,
+        settings: InferSettings
+    ) async -> [AgentEffect] {
+        activeAgentId = agentId
 
         let agent: any Agent
-        if listing.id == DefaultAgent.id {
+        if agentId == DefaultAgent.id {
             agent = DefaultAgent(settings: settings)
-        } else if let resolved = await registry.agent(id: listing.id) {
+        } else if let resolved = await registry.agent(id: agentId) {
             agent = resolved
         } else {
             // Registry evicted the agent (e.g. user deleted persona
-            // out-of-band between listing refresh and switch). Fall back
-            // to Default rather than ending up in a nil-agent state.
+            // out-of-band between listing refresh and activate). Fall
+            // back to Default rather than ending up in a nil-agent state.
             activeAgentId = DefaultAgent.id
             agent = DefaultAgent(settings: settings)
         }
@@ -279,13 +441,24 @@ public final class AgentController {
         let basePrompt = (try? await agent.systemPrompt(for: ctx)) ?? ""
         let tools = (try? await agent.toolsAvailable(for: ctx)) ?? []
         self.activeToolSpecs = tools
-        let composedPrompt = Self.composeSystemPrompt(base: basePrompt, tools: tools)
+        // The agent declares which family its tool-call syntax targets.
+        // Falls back to whatever the runner reports detecting; if both
+        // are nil and we have tools, default to .llama3 so historical
+        // behaviour (only llama3 family was supported pre-M4) is
+        // preserved for any agent that didn't bother to declare.
+        let promptFamily = agent.requirements.templateFamily
+            ?? detectedTemplateFamily
+            ?? .llama3
+        self.activeToolFamily = promptFamily
+        let composedPrompt = Self.composeSystemPrompt(
+            base: basePrompt,
+            tools: tools,
+            family: promptFamily
+        )
         let params = agent.decodingParams(for: ctx)
         self.activeDecodingParams = params
 
         return [
-            .insertDivider(agentName: listing.name),
-            .invalidateConversation,
             .pushSystemPrompt(composedPrompt.isEmpty ? nil : composedPrompt),
             .pushSampling(
                 temperature: params.temperature,
@@ -295,34 +468,54 @@ public final class AgentController {
         ]
     }
 
-    /// Combine an agent's base system prompt with a Llama 3.1 tool-call
-    /// instruction block. When `tools` is empty, returns `base`
+    /// Combine an agent's base system prompt with a tool-call instruction
+    /// block tailored to `family`. When `tools` is empty, returns `base`
     /// unchanged so agents without tools see no behaviour drift.
     ///
-    /// Format is pragmatic rather than spec-authoritative: the section
-    /// tells the model which tools exist, which arguments they take,
-    /// and exactly which tag sequence to emit (`<|python_tag|>` +
-    /// `<|eom_id|>`) so `ToolCallParser.llama3` matches it. Models that
-    /// don't understand Llama 3.1 tool syntax will ignore the block.
+    /// Each family gets the exact tag sequence its parser
+    /// (`ToolCallParser.findFirstCall`) matches:
+    /// - `.llama3`: `<|python_tag|>{JSON}<|eom_id|>`
+    /// - `.qwen` / `.hermes`: `<tool_call>{JSON}</tool_call>`
+    /// - `.openai`: same Llama-3 wording for now (no in-stream syntax —
+    ///   real OpenAI tool-calling is structured outside the assistant
+    ///   text and isn't reachable from a local-only deployment).
     public static func composeSystemPrompt(
         base: String,
-        tools: [ToolSpec]
+        tools: [ToolSpec],
+        family: TemplateFamily = .llama3
     ) -> String {
         guard !tools.isEmpty else { return base }
 
-        var section = ""
-        section += "\n\n# Tools\n\n"
-        section += "You have access to the following tools. When you need one, emit EXACTLY one tool call in this format and stop — do not add any text after `<|eom_id|>`:\n\n"
-        section += "<|python_tag|>{\"name\": \"<tool name>\", \"parameters\": {<json args>}}<|eom_id|>\n\n"
-        section += "The tool's result will be returned to you as an `ipython` role message. Then you continue with your final answer.\n\n"
+        let section = toolPromptSection(family: family, tools: tools)
+        if base.isEmpty {
+            return section.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return base + section
+    }
+
+    private static func toolPromptSection(
+        family: TemplateFamily,
+        tools: [ToolSpec]
+    ) -> String {
+        var section = "\n\n# Tools\n\n"
+
+        switch family {
+        case .llama3, .openai:
+            section += "You have access to the following tools. When you need one, emit EXACTLY one tool call in this format and stop — do not add any text after `<|eom_id|>`:\n\n"
+            section += "<|python_tag|>{\"name\": \"<tool name>\", \"parameters\": {<json args>}}<|eom_id|>\n\n"
+            section += "The tool's result will be returned to you as an `ipython` role message. Then you continue with your final answer.\n\n"
+        case .qwen, .hermes:
+            section += "You have access to the following tools. When you need one, emit EXACTLY one tool call wrapped in `<tool_call>` … `</tool_call>` and stop:\n\n"
+            section += "<tool_call>\n{\"name\": \"<tool name>\", \"arguments\": {<json args>}}\n</tool_call>\n\n"
+            section += "The tool's result will be returned to you in the next turn. Then you continue with your final answer.\n\n"
+        }
+
         section += "Available tools:\n"
         for tool in tools {
             section += "- `\(tool.name)`: \(tool.description)\n"
         }
         section += "\nCall at most one tool per turn. If no tool is needed, answer directly without emitting a tool call."
-
-        if base.isEmpty { return section.trimmingCharacters(in: .whitespacesAndNewlines) }
-        return base + section
+        return section
     }
 
     /// Apply a settings change. Always updates the cached decoding

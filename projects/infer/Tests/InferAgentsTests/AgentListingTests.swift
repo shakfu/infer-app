@@ -63,6 +63,7 @@ final class AgentListingTests: XCTestCase {
             source: .user,
             backend: .any,
             templateFamily: nil,
+            kind: .persona,
             isDefault: false
         )
         XCTAssertEqual(l.displayLabel, "docs-writer")

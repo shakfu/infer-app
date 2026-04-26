@@ -59,15 +59,9 @@ private struct AgentsLibraryBody: View {
             }
 
             let defaultAgent = vm.availableAgents.first { $0.isDefault }
-            let userAgents = filter(
-                vm.availableAgents.filter { $0.source == .user && !$0.isDefault }
-            )
-            let pluginAgents = filter(
-                vm.availableAgents.filter { $0.source == .plugin && !$0.isDefault }
-            )
-            let firstPartyAgents = filter(
-                vm.availableAgents.filter { $0.source == .firstParty && !$0.isDefault }
-            )
+            let registered = vm.availableAgents.filter { !$0.isDefault }
+            let personas = filter(registered.filter { $0.kind == .persona })
+            let agents = filter(registered.filter { $0.kind == .agent })
             let defaultMatches = defaultAgent.map(matches) ?? false
 
             if let defaultAgent, defaultMatches {
@@ -81,60 +75,46 @@ private struct AgentsLibraryBody: View {
                 }
             }
 
-            if !firstPartyAgents.isEmpty {
-                LibraryGroup(title: "First-party personas") {
-                    ForEach(firstPartyAgents) { listing in
+            if !personas.isEmpty {
+                LibraryGroup(title: "Personas") {
+                    ForEach(personas) { listing in
                         LibraryRow(
                             vm: vm,
                             listing: listing,
-                            canDuplicate: true,
+                            canDuplicate: listing.source != .user,
                             onInspect: { vm.inspectorListing = $0 }
                         )
                     }
                 }
             }
 
-            if !pluginAgents.isEmpty {
-                LibraryGroup(title: "Plugin-shipped") {
-                    ForEach(pluginAgents) { listing in
+            if !agents.isEmpty {
+                LibraryGroup(title: "Agents") {
+                    ForEach(agents) { listing in
                         LibraryRow(
                             vm: vm,
                             listing: listing,
-                            canDuplicate: true,
+                            canDuplicate: listing.source != .user,
                             onInspect: { vm.inspectorListing = $0 }
                         )
                     }
                 }
             }
 
-            let userGroupVisible = !userAgents.isEmpty || search.isEmpty
-            if userGroupVisible {
-                if userAgents.isEmpty {
-                    LibraryGroup(title: "User") {
-                        Text("No user agents yet. Duplicate any built-in above, or drop a JSON file in the user folder.")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                } else {
-                    LibraryGroup(title: "User") {
-                        ForEach(userAgents) { listing in
-                            LibraryRow(
-                            vm: vm,
-                            listing: listing,
-                            canDuplicate: false,
-                            onInspect: { vm.inspectorListing = $0 }
-                        )
-                        }
-                    }
+            if search.isEmpty,
+               !registered.contains(where: { $0.source == .user }) {
+                LibraryGroup(title: "User") {
+                    Text("No user personas or agents yet. Duplicate any built-in above, or drop a JSON file in the user folder.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
             if !search.isEmpty,
                !defaultMatches,
-               firstPartyAgents.isEmpty,
-               pluginAgents.isEmpty,
-               userAgents.isEmpty {
+               personas.isEmpty,
+               agents.isEmpty {
                 Text("No agents match \"\(search)\".")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
@@ -348,6 +328,9 @@ private struct LibraryRow: View {
                 if let fam = listing.templateFamily {
                     MetaLabel(key: "template", value: fam.rawValue)
                 }
+                if !listing.isDefault {
+                    MetaLabel(key: "source", value: sourceLabel(listing.source))
+                }
                 if !vm.isCompatible(listing) {
                     Text(vm.incompatibilityReason(listing))
                         .font(.caption2)
@@ -394,6 +377,14 @@ private struct LibraryRow: View {
                 Text("The JSON file will be moved to the system Trash. You can restore it from there.")
             }
         )
+    }
+
+    private func sourceLabel(_ source: AgentSource) -> String {
+        switch source {
+        case .user: return "user"
+        case .plugin: return "plugin"
+        case .firstParty: return "first-party"
+        }
     }
 
     /// Row background. Subtle hover tint so users discover the click-to-

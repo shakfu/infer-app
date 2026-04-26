@@ -7,11 +7,14 @@ final class PromptAgentTests: XCTestCase {
         schemaVersion: Int = PromptAgent.currentSchemaVersion,
         id: String = "code-reviewer",
         name: String = "Code reviewer",
-        prompt: String = "You are a meticulous code reviewer."
+        prompt: String = "You are a meticulous code reviewer.",
+        kind: String? = "persona"
     ) -> Data {
-        """
+        let kindLine = kind.map { "\"kind\": \"\($0)\"," } ?? ""
+        return """
         {
           "schemaVersion": \(schemaVersion),
+          \(kindLine)
           "id": "\(id)",
           "metadata": {
             "name": "\(name)",
@@ -37,6 +40,7 @@ final class PromptAgentTests: XCTestCase {
     func testRoundTripPreservesFields() throws {
         let original = PromptAgent(
             id: "rt",
+            kind: .agent,
             metadata: AgentMetadata(name: "RT", description: "round-trip"),
             requirements: AgentRequirements(
                 backend: .llama,

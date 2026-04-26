@@ -1,5 +1,6 @@
 import Foundation
 import llama
+import InferAgents
 import InferCore
 
 enum LlamaError: Error {
@@ -235,6 +236,15 @@ actor LlamaRunner {
         }
     }
 
+    /// Best-effort classification of the currently-loaded model's chat
+    /// template into a `TemplateFamily`. Returns nil before a model is
+    /// loaded, when the GGUF didn't ship a template, or when no
+    /// heuristic in `TemplateFamily.fingerprint` matched. Used by the
+    /// agent layer to gate tool-using agents on a compatible template.
+    func detectedTemplateFamily() -> TemplateFamily? {
+        TemplateFamily.fingerprint(template: chatTemplate)
+    }
+
     /// Rebuild the sampler chain with new parameters. Preserves conversation state.
     func updateSampling(temperature: Float, topP: Float, topK: Int32, seed: UInt64? = nil) {
         self.samplerTemperature = temperature
@@ -416,10 +426,21 @@ actor LlamaRunner {
         }
     }
 
-    /// Append a Llama 3.1 `ipython`-role tool result to the transcript
-    /// and decode another assistant turn. Intended for one-step tool
-    /// loops: the caller feeds a tool output back to the model and
-    /// receives the final-answer stream.
+    /// Append a tool-result message to the transcript and decode the
+    /// follow-up assistant turn. Intended for one-step tool loops: the
+    /// caller feeds a tool output back to the model and receives the
+    /// final-answer stream.
+    ///
+    /// `family` selects the role name written into the message — Jinja
+    /// template rendering then wraps it correctly. llama.cpp's
+    /// `llama_chat_apply_template` honours whatever role the template
+    /// recognises; different model families use different conventions:
+    /// - `.llama3` / `.openai`: `ipython` (Llama 3.1's tool-result role).
+    /// - `.qwen` / `.hermes`: `tool` (the role both ChatML-derived
+    ///   tool-calling templates expect).
+    /// Passing the wrong role lets the template fall through to a
+    /// literal role-name marker the model doesn't recognise, and the
+    /// follow-up answer hallucinates from there.
     ///
     /// Expects the previous `sendUserMessage` to have completed (the
     /// assistant turn containing the model's tool call must already be
@@ -427,6 +448,7 @@ actor LlamaRunner {
     /// decode still counts — `finishGeneration` commits partial output.
     func appendToolResultAndContinue(
         toolResult: String,
+        family: TemplateFamily = .llama3,
         maxTokens: Int = 512
     ) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
@@ -442,7 +464,12 @@ actor LlamaRunner {
                 return
             }
 
-            messages.append((role: "ipython", content: toolResult))
+            let role: String
+            switch family {
+            case .llama3, .openai: role = "ipython"
+            case .qwen, .hermes:   role = "tool"
+            }
+            messages.append((role: role, content: toolResult))
             let fullWithAss: String
             do {
                 fullWithAss = try renderTemplate(addAssistant: true)

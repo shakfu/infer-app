@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 3,
+  "kind": "agent",
+  "id": "infer.draft-then-edit",
+  "metadata": {
+    "name": "Draft then edit",
+    "description": "Two-step composition demo. First the Brainstorm partner produces a draft / list of angles; then the Writing editor tightens the prose. M5a-runtime Phase B chain dispatch — each segment renders as its own assistant message.",
+    "author": "Infer"
+  },
+  "requirements": {
+    "backend": "any"
+  },
+  "decodingParams": { "temperature": 0.6, "topP": 0.95, "maxTokens": 1024 },
+  "systemPrompt": "Pipeline coordinator. Your output is forwarded to the next agent in the chain — do not address the user directly here. The chain handles user-facing output.",
+  "chain": ["infer.brainstorm", "infer.writing-editor"]
+}

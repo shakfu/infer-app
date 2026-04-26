@@ -2,6 +2,29 @@ import Foundation
 import InferAgents
 import InferCore
 
+/// Mutable per-user-turn state shared with the composition driver's
+/// `@Sendable` runOne closure. A class (rather than `inout` / captured
+/// var) so mutation is legal under strict Swift concurrency. Always
+/// mutated on `MainActor` via the closure body, which hops back to
+/// MainActor before reading/writing — `@unchecked Sendable` documents
+/// the expected isolation.
+final class SegmentDispatchState: @unchecked Sendable {
+    /// Index of the most recently dispatched segment's assistant
+    /// message. After dispatch returns, `send()` reads this to address
+    /// the LAST segment's row for TTS / KV-compaction.
+    var lastAssistantIndex: Int
+    /// Number of segments dispatched so far. The runOne closure uses
+    /// `segmentCount == 0` to distinguish "first segment, reuse the
+    /// existing assistant skeleton" from "follow-on segment, switch
+    /// agent and append a new one."
+    var segmentCount: Int
+
+    init(lastAssistantIndex: Int, segmentCount: Int) {
+        self.lastAssistantIndex = lastAssistantIndex
+        self.segmentCount = segmentCount
+    }
+}
+
 extension ChatViewModel {
     func send() {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -88,177 +111,382 @@ extension ChatViewModel {
             }
         }
 
-        // Tool loop is llama-only and only engages when the active agent
-        // exposes at least one tool. MLX gets the existing single-stream
-        // path; so does llama-with-Default.
+        generationTask = Task {
+            // Retrieval-augmented generation: if the active workspace
+            // has an indexed corpus, embed the user query, fetch
+            // top-K chunks, and build a context-prefixed prompt.
+            // Failures downgrade cleanly to a plain reply (no error
+            // surfaced to the user); the vault still stores the
+            // *original* user text, not the augmented prompt, so
+            // history stays clean.
+            let augmentation = await self.runRAGIfAvailable(userText: text)
+            if augmentation.didAugment,
+               assistantIndex < self.messages.count {
+                self.messages[assistantIndex].retrievedChunks = augmentation.chunks
+            }
+            let promptText = augmentation.didAugment
+                ? augmentation.augmentedText
+                : text
+
+            // Build the composition plan for the active agent. `.single`
+            // for every persona / non-composition agent (most cases);
+            // `.chain` / `.fallback` for agents that declared composition
+            // fields in their JSON. Plan resolution falls back to
+            // `.single(activeAgentId)` if the registry can't find the
+            // agent (Default), which exercises the same dispatch path.
+            let plan: CompositionPlan
+            if let active = await self.agentController.registry.agent(id: self.activeAgentId) {
+                plan = CompositionPlan.make(for: active)
+            } else {
+                plan = .single(self.activeAgentId)
+            }
+
+            // Phase B: the runOne closure handles per-segment lifecycle
+            // — agent switching mid-turn, fresh assistant message
+            // creation, per-segment vault writes. State threaded through
+            // a class wrapper because the closure is `@Sendable` and
+            // SwiftConcurrency rejects captured-var mutation.
+            let dispatchState = SegmentDispatchState(
+                lastAssistantIndex: assistantIndex,
+                segmentCount: 0
+            )
+            let driver = CompositionController()
+            let result = await driver.dispatch(
+                plan: plan,
+                userText: promptText,
+                budget: self.settings.maxAgentSteps,
+                runOne: { @Sendable [weak self] segmentAgentId, segmentText in
+                    guard let self else {
+                        return .failed(message: "vm gone", trace: StepTrace())
+                    }
+                    return await self.runOneSegment(
+                        agentId: segmentAgentId,
+                        userText: segmentText,
+                        firstSegmentAssistantIndex: assistantIndex,
+                        state: dispatchState,
+                        runnerMaxTokens: runnerMaxTokens,
+                        netCap: maxTokens,
+                        backend: backend,
+                        attachedImage: attachedImage
+                    )
+                }
+            )
+
+            // Post-dispatch lifecycle. Per `agent_implementation_plan.md`
+            // M5a-runtime decision 4: TTS / KV-compaction fire once per
+            // *user* turn — not per segment — against the LAST segment's
+            // assistant message. Per-segment vault writes happen inside
+            // `runOneSegment`. The dispatch outcome carries the final
+            // text; we look up the last assistant index from the state.
+            let finalIndex = dispatchState.lastAssistantIndex
+            switch result.outcome {
+            case .completed, .handoff:
+                if self.generationEnd == nil { self.generationEnd = Date() }
+                if finalIndex < self.messages.count,
+                   self.messages[finalIndex].thinkingText?.isEmpty == false {
+                    // KV cache holds raw decoded tokens (incl. <think>
+                    // blocks); visible reply doesn't. Without compaction
+                    // the hidden reasoning carries forward and burns
+                    // the context window 2-4x faster than the visible
+                    // text suggests. One prefill cost at turn end.
+                    self.compactKVForVisibleHistory()
+                }
+                if self.ttsEnabled, finalIndex < self.messages.count {
+                    self.speakAssistantReply(self.messages[finalIndex].text)
+                }
+            case .abandoned:
+                // Cancellation / intentional no-answer. Trace already
+                // carries the terminator; nothing to speak, no popup.
+                break
+            case .failed(let message, _):
+                // Real error (not cancellation — those come back as
+                // .abandoned). Surface in the UI.
+                self.errorMessage = "Generation error: \(message)"
+            }
+            self.refreshTokenUsage()
+            if self.generationEnd == nil { self.generationEnd = Date() }
+            self.isGenerating = false
+        }
+    }
+
+    /// Phase B: per-segment dispatch. Called by the composition driver
+    /// once per chain / fallback hop. Handles three concerns the
+    /// `runOneAgentTurn` primitive doesn't touch:
+    /// 1. **Agent switching** for follow-on segments — invokes
+    ///    `AgentController.activateForSegment` (which resets the
+    ///    runner's KV cache and pushes the new system prompt + sampling)
+    ///    and applies the runner-state effects via `apply(_:)`.
+    /// 2. **Fresh assistant message** for follow-on segments — the
+    ///    first segment uses the message `send()` already created;
+    ///    each subsequent segment gets its own `ChatMessage` so the
+    ///    transcript shows each agent's reply distinctly.
+    /// 3. **Per-segment vault write** — completed segments persist
+    ///    individually so reload preserves attribution.
+    /// `attachedImage` is only ever passed to the first segment because
+    /// follow-on segments take their predecessor's *text* as input.
+    @MainActor
+    func runOneSegment(
+        agentId: AgentID,
+        userText: String,
+        firstSegmentAssistantIndex: Int,
+        state: SegmentDispatchState,
+        runnerMaxTokens: Int,
+        netCap: Int,
+        backend: Backend,
+        attachedImage: URL?
+    ) async -> AgentOutcome {
+        let isFirstSegment = state.segmentCount == 0
+        let segmentIndex: Int
+        if isFirstSegment {
+            segmentIndex = firstSegmentAssistantIndex
+            // Composition wrappers (chain / branch / refine) carry the
+            // wrapper's AgentID into the assistant skeleton `send()`
+            // pre-created, but segment 0 actually runs a different
+            // agent — the chain's first member, the branch's then/else
+            // dispatch, the refine's producer. Re-attribute the row so
+            // its `agentId` / `agentName` / `agentLabel` reflect the
+            // agent whose voice is filling the body. Orchestrator's
+            // segment 0 is the router (same id as the wrapper); the
+            // condition below is false there, so no re-attribution
+            // and no churn.
+            if segmentIndex < self.messages.count,
+               self.messages[segmentIndex].agentId != agentId {
+                let listing = self.availableAgents.first { $0.id == agentId }
+                let nameSnapshot = agentId == DefaultAgent.id ? nil : (listing?.name ?? agentId)
+                let labelSnapshot: String? = nameSnapshot.map { name in
+                    listing?.displayLabel
+                        ?? AgentListing.makeDisplayLabel(from: name, fallbackId: agentId)
+                }
+                self.messages[segmentIndex].agentId = agentId
+                self.messages[segmentIndex].agentName = nameSnapshot
+                self.messages[segmentIndex].agentLabel = labelSnapshot
+            }
+        } else {
+            // Switch runner state to the new segment's agent. Returns
+            // runner-state effects only (no divider, no vault
+            // invalidate); apply pushes the new system prompt + sampling
+            // into both runners. KV cache is wiped inside the runner
+            // by `setSystemPrompt`'s call to `resetConversation`.
+            let effects = await self.agentController.activateForSegment(
+                agentId: agentId,
+                currentBackend: self.currentBackendPreference,
+                settings: self.settings
+            )
+            self.apply(effects)
+
+            // Append a fresh assistant skeleton with the new segment's
+            // agent attribution. The role label and per-message metadata
+            // are snapshotted now so renaming/deleting the agent later
+            // doesn't corrupt scrollback.
+            let nameSnapshot = agentId == DefaultAgent.id ? nil : self.agentController.activeAgentName()
+            let labelSnapshot: String? = nameSnapshot.map { name in
+                self.availableAgents.first { $0.id == agentId }?.displayLabel
+                    ?? AgentListing.makeDisplayLabel(from: name, fallbackId: agentId)
+            }
+            self.messages.append(ChatMessage(
+                role: .assistant,
+                text: "",
+                agentId: agentId,
+                agentName: nameSnapshot,
+                agentLabel: labelSnapshot
+            ))
+            segmentIndex = self.messages.count - 1
+        }
+        state.lastAssistantIndex = segmentIndex
+        state.segmentCount += 1
+
+        let outcome = await self.runOneAgentTurn(
+            userText: userText,
+            assistantIndex: segmentIndex,
+            runnerMaxTokens: runnerMaxTokens,
+            netCap: netCap,
+            backend: backend,
+            // Image only attaches to the first segment — chain segments
+            // beyond the first take their predecessor's text as input,
+            // not the user's original attachment.
+            attachedImage: isFirstSegment ? attachedImage : nil
+        )
+
+        // Per-segment vault write: each completed segment persists as
+        // its own assistant row. Skip on .abandoned / .failed so
+        // partial-output rows don't accumulate in history.
+        if case .completed = outcome,
+           segmentIndex < self.messages.count,
+           let cid = self.currentConversationId {
+            let segmentText = self.messages[segmentIndex].text
+            let stats = self.generationStats
+            Task { [vault = self.vault, logs = self.logs] in
+                do {
+                    try await vault.appendMessage(
+                        conversationId: cid,
+                        role: "assistant",
+                        content: segmentText,
+                        tokens: stats?.tokens,
+                        tokPerSec: stats?.tps
+                    )
+                } catch {
+                    logs.logFromBackground(
+                        .error,
+                        source: "vault",
+                        message: "write failed (assistant segment)",
+                        payload: String(describing: error)
+                    )
+                }
+            }
+        }
+
+        return outcome
+    }
+
+    /// Single-agent turn: stream the first decode against the active
+    /// runner, run the tool loop if the active agent exposes tools,
+    /// and translate the message's final state into an `AgentOutcome`.
+    /// All decode errors and cancellations are caught here and converted
+    /// to outcomes — the function does not throw — so
+    /// `CompositionController` can drive multi-segment dispatches
+    /// without per-segment try/catch.
+    ///
+    /// Phase A wires this for `.single` plans only; Phase B will
+    /// handle agent-switching + per-segment assistant-message creation
+    /// for chain/fallback dispatches.
+    @MainActor
+    func runOneAgentTurn(
+        userText: String,
+        assistantIndex: Int,
+        runnerMaxTokens: Int,
+        netCap: Int,
+        backend: Backend,
+        attachedImage: URL?
+    ) async -> AgentOutcome {
         let toolSpecs = self.agentController.activeToolSpecs
         let engageToolLoop = backend == .llama && !toolSpecs.isEmpty
 
-        generationTask = Task {
-            do {
-                // Retrieval-augmented generation: if the active
-                // workspace has an indexed corpus, embed the user
-                // query, fetch top-K chunks, and build a context-
-                // prefixed prompt. Failures downgrade cleanly to a
-                // plain reply (no error surfaced to the user); the
-                // vault still stores the *original* user text, not
-                // the augmented prompt, so history stays clean.
-                let augmentation = await self.runRAGIfAvailable(userText: text)
-                if augmentation.didAugment,
-                   assistantIndex < self.messages.count {
-                    self.messages[assistantIndex].retrievedChunks = augmentation.chunks
-                }
-                let promptText = augmentation.didAugment
-                    ? augmentation.augmentedText
-                    : text
-
-                let stream: AsyncThrowingStream<String, Error>
-                switch backend {
-                case .llama:
-                    // llama backend has no multimodal path here; the send
-                    // button is disabled when an image is attached, so this
-                    // branch will not carry one in practice.
-                    stream = await self.llama.sendUserMessage(promptText, maxTokens: runnerMaxTokens)
-                case .mlx:
-                    let imgs: [URL] = attachedImage.map { [$0] } ?? []
-                    stream = await self.mlx.sendUserMessage(
-                        promptText, imageURLs: imgs, maxTokens: runnerMaxTokens
-                    )
-                }
-                var firstDecodeText = ""
-                // Strip <think>…</think> reasoning blocks from the
-                // visible body and capture them into the message's
-                // `thinkingText` for the collapsible disclosure.
-                // The filter is stateful across pieces because tags
-                // can split mid-chunk.
-                var thinkFilter = ThinkBlockStreamFilter()
-                for try await piece in stream {
-                    let display = thinkFilter.feed(piece)
-                    if assistantIndex < self.messages.count {
-                        if !display.isEmpty {
-                            self.messages[assistantIndex].text += display
-                        }
-                        // Update thinking state on the message in
-                        // real time so the disclosure header shows
-                        // live "thinking…" while the model is in a
-                        // <think> block.
-                        self.messages[assistantIndex].isThinking = thinkFilter.inThink
-                        if !thinkFilter.thinking.isEmpty {
-                            self.messages[assistantIndex].thinkingText = thinkFilter.thinking
-                        }
-                    }
-                    firstDecodeText += piece
-                    self.generationTokenCount += 1
-                    if !display.isEmpty {
-                        self.netTokenCount += 1
-                    }
-                    // Refresh the header's context-percentage every
-                    // 16 tokens so it climbs visibly during streaming
-                    // rather than jumping at completion. The llama
-                    // path reads `seq_pos_max` (O(1)) so this is
-                    // cheap; the MLX path estimates from char count
-                    // which is similarly cheap.
-                    if self.generationTokenCount % 16 == 0 {
-                        self.refreshTokenUsage()
-                    }
-                    // Net-token cap. Once the rendered reply has
-                    // reached `maxTokens` AND we're not still inside
-                    // a <think> block, stop the runner. The check
-                    // being out-of-think matters for reasoning
-                    // models that emit closing `</think>` right
-                    // before the answer — we need the filter to see
-                    // it so the first net token counts correctly.
-                    if self.netTokenCount >= maxTokens, !thinkFilter.inThink {
-                        await self.requestStopCurrentRunner()
-                        break
-                    }
-                }
-                // Flush any pending tail (e.g. unterminated <think>
-                // or partial-tag holdback that turned out literal).
-                let tail = thinkFilter.flush()
+        do {
+            let stream: AsyncThrowingStream<String, Error>
+            switch backend {
+            case .llama:
+                // llama backend has no multimodal path here; the send
+                // button is disabled when an image is attached, so this
+                // branch will not carry one in practice.
+                stream = await self.llama.sendUserMessage(userText, maxTokens: runnerMaxTokens)
+            case .mlx:
+                let imgs: [URL] = attachedImage.map { [$0] } ?? []
+                stream = await self.mlx.sendUserMessage(
+                    userText, imageURLs: imgs, maxTokens: runnerMaxTokens
+                )
+            }
+            var firstDecodeText = ""
+            // Strip <think>…</think> reasoning blocks from the
+            // visible body and capture them into the message's
+            // `thinkingText` for the collapsible disclosure.
+            // The filter is stateful across pieces because tags
+            // can split mid-chunk.
+            var thinkFilter = ThinkBlockStreamFilter()
+            for try await piece in stream {
+                let display = thinkFilter.feed(piece)
                 if assistantIndex < self.messages.count {
-                    if !tail.isEmpty {
-                        self.messages[assistantIndex].text += tail
+                    if !display.isEmpty {
+                        self.messages[assistantIndex].text += display
                     }
-                    self.messages[assistantIndex].isThinking = false
+                    self.messages[assistantIndex].isThinking = thinkFilter.inThink
                     if !thinkFilter.thinking.isEmpty {
                         self.messages[assistantIndex].thinkingText = thinkFilter.thinking
                     }
                 }
+                firstDecodeText += piece
+                self.generationTokenCount += 1
+                if !display.isEmpty {
+                    self.netTokenCount += 1
+                }
+                if self.generationTokenCount % 16 == 0 {
+                    self.refreshTokenUsage()
+                }
+                // Net-token cap. Once the rendered reply has reached
+                // the user's `maxTokens` AND we're not still inside a
+                // <think> block, stop the runner. The out-of-think
+                // check matters for reasoning models that emit
+                // closing `</think>` right before the answer — the
+                // filter must see it so the first net token counts.
+                if self.netTokenCount >= netCap, !thinkFilter.inThink {
+                    await self.requestStopCurrentRunner()
+                    break
+                }
+            }
+            // Flush any pending tail (e.g. unterminated <think> or
+            // partial-tag holdback that turned out literal).
+            let tail = thinkFilter.flush()
+            if assistantIndex < self.messages.count {
+                if !tail.isEmpty {
+                    self.messages[assistantIndex].text += tail
+                }
+                self.messages[assistantIndex].isThinking = false
+                if !thinkFilter.thinking.isEmpty {
+                    self.messages[assistantIndex].thinkingText = thinkFilter.thinking
+                }
+            }
 
-                if engageToolLoop {
-                    try await self.maybeRunToolLoop(
-                        firstDecodeText: firstDecodeText,
-                        assistantIndex: assistantIndex,
-                        maxTokens: runnerMaxTokens,
-                        netCap: maxTokens
-                    )
-                }
-
-                self.generationEnd = Date()
-                // If the model emitted <think>…</think>, the runner's
-                // KV cache holds the raw decoded sequence (including
-                // reasoning) but the visible reply doesn't. Without
-                // compaction, every subsequent turn carries that
-                // hidden reasoning forward — multi-turn conversations
-                // burn through the context window 2–4× faster than
-                // the visible text suggests. Replay the cleaned
-                // (visible-only) history into the runner so the cache
-                // matches what the user sees. Cost: one prefill at
-                // turn end. Only triggered when there's actually
-                // thinking to compact.
-                if assistantIndex < self.messages.count,
-                   self.messages[assistantIndex].thinkingText?.isEmpty == false {
-                    self.compactKVForVisibleHistory()
-                }
-                // Persist the assistant reply to the vault. Only on success —
-                // cancellations and errors are caught below and skip this.
-                if assistantIndex < self.messages.count,
-                   let cid = self.currentConversationId {
-                    let finalText = self.messages[assistantIndex].text
-                    let stats = self.generationStats
-                    Task { [vault = self.vault] in
-                        do {
-                            try await vault.appendMessage(
-                                conversationId: cid,
-                                role: "assistant",
-                                content: finalText,
-                                tokens: stats?.tokens,
-                                tokPerSec: stats?.tps
-                            )
-                        } catch {
-                            self.logs.logFromBackground(
-                                .error,
-                                source: "vault",
-                                message: "write failed (assistant turn)",
-                                payload: String(describing: error)
-                            )
-                        }
-                    }
-                }
-                if self.ttsEnabled, assistantIndex < self.messages.count {
-                    let finalText = self.messages[assistantIndex].text
-                    self.speakAssistantReply(finalText)
-                }
-                self.refreshTokenUsage()
-            } catch is CancellationError {
-                // user-initiated stop
-                self.finalizeIncompleteTrace(at: assistantIndex, with: .cancelled)
-            } catch LlamaError.cancelled {
-                // user-initiated stop
-                self.finalizeIncompleteTrace(at: assistantIndex, with: .cancelled)
-            } catch MLXRunnerError.cancelled {
-                // user-initiated stop
-                self.finalizeIncompleteTrace(at: assistantIndex, with: .cancelled)
-            } catch {
-                self.errorMessage = "Generation error: \(error)"
-                self.finalizeIncompleteTrace(
-                    at: assistantIndex,
-                    with: .error(String(describing: error))
+            if engageToolLoop {
+                try await self.maybeRunToolLoop(
+                    firstDecodeText: firstDecodeText,
+                    assistantIndex: assistantIndex,
+                    maxTokens: runnerMaxTokens,
+                    netCap: netCap
                 )
             }
-            if self.generationEnd == nil { self.generationEnd = Date() }
-            self.isGenerating = false
+
+            self.generationEnd = Date()
+
+            // Translate the final message state into an outcome. The
+            // tool loop already stamped `.finalAnswer(...)` as the
+            // trace terminator on success; for the no-tool path we
+            // synthesise a single-step trace from the visible body.
+            let finalText = assistantIndex < self.messages.count
+                ? self.messages[assistantIndex].text
+                : ""
+            let trace = self.messages[assistantIndex].steps
+                ?? StepTrace.finalAnswer(finalText)
+
+            // Handoff envelope: if the agent embedded `<<HANDOFF>>`
+            // in its visible body, strip the envelope and return a
+            // `.handoff` outcome the composition driver will follow.
+            // Single-agent dispatch ignores the envelope; chain/
+            // fallback consume it. (Phase A: not exercised by any
+            // shipping agent.)
+            let parsed = HandoffEnvelope.parse(finalText)
+            if let handoff = parsed.handoff {
+                if assistantIndex < self.messages.count {
+                    self.messages[assistantIndex].text = parsed.visibleText
+                }
+                return .handoff(target: handoff.target, payload: handoff.payload, trace: trace)
+            }
+
+            return .completed(text: finalText, trace: trace)
+        } catch is CancellationError {
+            self.finalizeIncompleteTrace(at: assistantIndex, with: .cancelled)
+            return .abandoned(
+                reason: "cancelled",
+                trace: self.messages[assistantIndex].steps ?? StepTrace(steps: [.cancelled])
+            )
+        } catch LlamaError.cancelled {
+            self.finalizeIncompleteTrace(at: assistantIndex, with: .cancelled)
+            return .abandoned(
+                reason: "cancelled",
+                trace: self.messages[assistantIndex].steps ?? StepTrace(steps: [.cancelled])
+            )
+        } catch MLXRunnerError.cancelled {
+            self.finalizeIncompleteTrace(at: assistantIndex, with: .cancelled)
+            return .abandoned(
+                reason: "cancelled",
+                trace: self.messages[assistantIndex].steps ?? StepTrace(steps: [.cancelled])
+            )
+        } catch {
+            let message = String(describing: error)
+            self.finalizeIncompleteTrace(at: assistantIndex, with: .error(message))
+            return .failed(
+                message: message,
+                trace: self.messages[assistantIndex].steps
+                    ?? StepTrace(steps: [.error(message)])
+            )
         }
     }
 
@@ -348,20 +576,47 @@ extension ChatViewModel {
         maxTokens: Int,
         netCap: Int
     ) async throws {
-        let parser = ToolCallParser(family: .llama3)
+        let parser = ToolCallParser(
+            family: ToolCallParser.Family(agentController.activeToolFamily)
+        )
         guard let match = parser.findFirstCall(in: firstDecodeText) else { return }
         guard assistantIndex < self.messages.count else { return }
 
-        // Stage 1: strip raw tool tokens from the visible text and stamp
-        // the in-flight trace. The disclosure UI now shows a spinner
-        // with "running <tool>…".
-        self.messages[assistantIndex].text = match.prefix
-        var trace = StepTrace()
-        if !match.prefix.isEmpty {
-            trace.steps.append(.assistantText(match.prefix))
+        // All trace mutations route through `emitToolLoopEvent` so the
+        // bytewise shape of `messages[i].steps` is dictated by
+        // `AgentEvent.applyToTrace`. Visible body / `isThinking` /
+        // `thinkingText` mutations remain inline because they depend on
+        // the streaming think-block filter, not on the trace.
+
+        // Stage 1: strip the tool-call tag from the visible body and
+        // stamp the in-flight trace. Disclosure UI shows "running <tool>…".
+        //
+        // `match.prefix` is the *raw* prefix from the unfiltered stream
+        // — including any `<think>...</think>` blocks the model emitted
+        // before the tool call. Both the visible body and the trace's
+        // `.assistantText` step want the *filtered* prefix instead, so
+        // the slice we compute from the already-filtered
+        // `messages[i].text` is the source of truth.
+        let visiblePrefix: String
+        if assistantIndex < self.messages.count,
+           let tagRange = self.messages[assistantIndex].text.range(of: parser.openTag) {
+            visiblePrefix = String(
+                self.messages[assistantIndex].text[..<tagRange.lowerBound]
+            )
+            self.messages[assistantIndex].text = visiblePrefix
+        } else {
+            visiblePrefix = assistantIndex < self.messages.count
+                ? self.messages[assistantIndex].text
+                : ""
         }
-        trace.steps.append(.toolCall(match.call))
-        self.messages[assistantIndex].steps = trace
+        self.emitToolLoopEvent(
+            .toolRequested(prefix: visiblePrefix, call: match.call),
+            at: assistantIndex
+        )
+        self.emitToolLoopEvent(
+            .toolRunning(name: match.call.name),
+            at: assistantIndex
+        )
 
         // Stage 2: invoke the tool. Registry errors surface into
         // `ToolResult` with an `error` field; the model sees them as
@@ -379,7 +634,7 @@ extension ChatViewModel {
             )
         }
         if assistantIndex < self.messages.count {
-            self.messages[assistantIndex].steps?.steps.append(.toolResult(toolResult))
+            self.emitToolLoopEvent(.toolResulted(toolResult), at: assistantIndex)
         }
 
         // Stage 3: feed the tool output back as an ipython-role message
@@ -388,6 +643,7 @@ extension ChatViewModel {
         let feedback = toolResult.error ?? toolResult.output
         let secondStream = await self.llama.appendToolResultAndContinue(
             toolResult: feedback,
+            family: agentController.activeToolFamily,
             maxTokens: maxTokens
         )
         var finalAnswer = ""
@@ -406,6 +662,15 @@ extension ChatViewModel {
                 }
             }
             finalAnswer += piece
+            // Notify observers of the streamed second-decode chunk.
+            // No trace effect — `AgentEvent.applyToTrace` ignores
+            // `.finalChunk`. Carries the post-think-filter text so a UI
+            // observer sees what the user is about to read; the raw
+            // piece is preserved in the `finalAnswer` accumulator that
+            // lands as `.finalAnswer(...)` below.
+            if !display.isEmpty {
+                self.emitToolLoopEvent(.finalChunk(display), at: assistantIndex)
+            }
             self.generationTokenCount += 1
             if !display.isEmpty {
                 self.netTokenCount += 1
@@ -435,22 +700,49 @@ extension ChatViewModel {
             }
         }
         if assistantIndex < self.messages.count {
-            self.messages[assistantIndex].steps?.steps.append(.finalAnswer(finalAnswer))
+            self.emitToolLoopEvent(
+                .terminated(.finalAnswer(finalAnswer)),
+                at: assistantIndex
+            )
         }
+    }
+
+    /// Apply an `AgentEvent` to the assistant message at `index`, then
+    /// forward it to `AgentController.events` so external observers
+    /// (streaming disclosure UI, exporters, tests) see it.
+    ///
+    /// Trace mutations are delegated to `AgentEvent.applyToTrace` so
+    /// there is exactly one definition of "what goes into the trace
+    /// when X happens" — covered by `AgentEventTests.bytewiseFinalTrace`.
+    /// Visible-body / `isThinking` mutations stay in the loop driver
+    /// because they depend on the streaming `ThinkBlockStreamFilter`
+    /// state that doesn't fit a per-event interface.
+    @MainActor
+    func emitToolLoopEvent(_ event: AgentEvent, at index: Int) {
+        guard index < messages.count else { return }
+        // Lazy-initialise the trace on first event.
+        var trace = messages[index].steps ?? StepTrace()
+        let before = trace.steps.count
+        event.applyToTrace(&trace)
+        if trace.steps.count != before {
+            messages[index].steps = trace
+        }
+        agentController.emit(event)
     }
 
     /// Append a terminator step to an in-flight trace. Called from the
     /// cancel/error paths in `send` so the disclosure UI doesn't render
-    /// a perpetual spinner on turns that ended abnormally.
+    /// a perpetual spinner on turns that ended abnormally. Also forwards
+    /// the corresponding `.terminated` event to the controller's stream
+    /// so subscribers see end-of-turn even on the abnormal paths.
     @MainActor
     func finalizeIncompleteTrace(
         at index: Int,
         with terminator: StepTrace.Step
     ) {
         guard index < messages.count else { return }
-        guard var trace = messages[index].steps, trace.terminator == nil else { return }
-        trace.steps.append(terminator)
-        messages[index].steps = trace
+        guard let trace = messages[index].steps, trace.terminator == nil else { return }
+        emitToolLoopEvent(.terminated(terminator), at: index)
     }
 
     /// Shared precondition + transcript mutation for regenerate and

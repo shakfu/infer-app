@@ -13,6 +13,7 @@ final class AgentControllerTests: XCTestCase {
         name: String = "Persona",
         backend: BackendPreference = .any,
         source: AgentSource = .user,
+        kind: AgentKind = .persona,
         isDefault: Bool = false
     ) -> AgentListing {
         AgentListing(
@@ -22,6 +23,7 @@ final class AgentControllerTests: XCTestCase {
             source: source,
             backend: backend,
             templateFamily: nil,
+            kind: kind,
             isDefault: isDefault
         )
     }
@@ -235,9 +237,13 @@ final class AgentControllerTests: XCTestCase {
 
     func testIncompatibilityReasonStrings() {
         let c = makeController()
-        XCTAssertEqual(c.incompatibilityReason(listing(backend: .any)), "")
-        XCTAssertEqual(c.incompatibilityReason(listing(backend: .llama)), "Requires llama.cpp backend")
-        XCTAssertEqual(c.incompatibilityReason(listing(backend: .mlx)), "Requires MLX backend")
+        // .any always compatible, so no reason regardless of current backend.
+        XCTAssertEqual(c.incompatibilityReason(listing(backend: .any), backend: .llama), "")
+        // Backend mismatch returns the requirement.
+        XCTAssertEqual(c.incompatibilityReason(listing(backend: .llama), backend: .mlx), "Requires llama.cpp backend")
+        XCTAssertEqual(c.incompatibilityReason(listing(backend: .mlx), backend: .llama), "Requires MLX backend")
+        // Backend match — no reason (template not declared on this listing).
+        XCTAssertEqual(c.incompatibilityReason(listing(backend: .llama), backend: .llama), "")
     }
 
     // MARK: - switchAgent effects

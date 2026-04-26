@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 3,
+  "kind": "agent",
+  "id": "infer.branch-by-topic",
+  "metadata": {
+    "name": "Branch by topic",
+    "description": "M5b branch demo. Runs no probe — the predicate evaluates against the user's text directly via regex. Code-shaped requests dispatch to Code reviewer; everything else goes to Writing editor. No model call for the routing decision; pure data.",
+    "author": "Infer"
+  },
+  "requirements": {
+    "backend": "any"
+  },
+  "decodingParams": { "temperature": 0.3, "topP": 0.9, "maxTokens": 256 },
+  "systemPrompt": "(unused — probe-less branch dispatches directly to then/else without running this agent)",
+  "branch": {
+    "predicate": {
+      "kind": "regex",
+      "pattern": "(?i)\\b(code|diff|bug|function|method|class|api|stack(?:trace)?|crash|programming|swift|python|rust|typescript|javascript|c\\+\\+|java)\\b"
+    },
+    "then": "infer.code-reviewer",
+    "else": "infer.writing-editor"
+  }
+}

@@ -4,15 +4,26 @@ import InferAgents
 import InferCore
 
 extension ChatViewModel {
-    /// Directory where user-authored JSON personas live.
-    /// `~/Library/Application Support/Infer/agents/`.
-    static func userAgentsDirectory() -> URL {
+    /// Root directory under which user-authored JSON personas/agents live.
+    /// `~/Library/Application Support/Infer/`. Subdirectories `personas/`
+    /// and `agents/` are scanned individually; both are optional.
+    static func userAgentsRootDirectory() -> URL {
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory())
                 .appendingPathComponent("Library/Application Support", isDirectory: true)
-        return base
-            .appendingPathComponent("Infer", isDirectory: true)
+        return base.appendingPathComponent("Infer", isDirectory: true)
+    }
+
+    /// `~/Library/Application Support/Infer/personas/`.
+    static func userPersonasDirectory() -> URL {
+        userAgentsRootDirectory()
+            .appendingPathComponent("personas", isDirectory: true)
+    }
+
+    /// `~/Library/Application Support/Infer/agents/`.
+    static func userAgentsDirectory() -> URL {
+        userAgentsRootDirectory()
             .appendingPathComponent("agents", isDirectory: true)
     }
 
@@ -40,22 +51,32 @@ extension ChatViewModel {
     }
 
     func incompatibilityReason(_ listing: AgentListing) -> String {
-        agentController.incompatibilityReason(listing)
+        agentController.incompatibilityReason(listing, backend: currentBackendPreference)
     }
 
     func activeAgentName() -> String { agentController.activeAgentName() }
 
     // MARK: - Lifecycle
 
-    /// Resolve URLs of bundled first-party personas. Looks inside
-    /// `Bundle.module` (the SwiftPM-generated resource bundle for this
-    /// target) under the `agents` subdirectory — same path used by
+    /// Resolve URLs of bundled first-party personas and agents. Looks
+    /// inside `Bundle.module` (the SwiftPM-generated resource bundle for
+    /// this target) under both `personas/` and `agents/` subdirectories —
+    /// same paths used by `.copy("Resources/personas")` and
     /// `.copy("Resources/agents")` in `Package.swift`.
+    ///
+    /// Order is stable but not meaningful; `kind` in each JSON drives
+    /// classification, the directory is only a hint (per
+    /// `docs/dev/agent_kinds.md`).
     static func firstPartyPersonaURLs() -> [URL] {
-        Bundle.module.urls(
+        let personas = Bundle.module.urls(
+            forResourcesWithExtension: "json",
+            subdirectory: "personas"
+        ) ?? []
+        let agents = Bundle.module.urls(
             forResourcesWithExtension: "json",
             subdirectory: "agents"
         ) ?? []
+        return personas + agents
     }
 
     /// Called from `ChatViewModel.init`. Seeds cached decoding params
@@ -96,13 +117,21 @@ extension ChatViewModel {
             await registry.register([
                 ClockNowTool(),
                 WordCountTool(),
+                // Synthetic dispatch primitive for orchestrator agents
+                // (M5c). The router emits a tool call; the
+                // composition driver reads it from the trace
+                // post-segment and dispatches to the chosen candidate.
+                AgentsInvokeTool(),
             ])
             let specs = await registry.allSpecs()
             let catalog = ToolCatalog(tools: specs)
             await controller.bootstrap(
                 settings: settings,
                 firstPartyPersonas: firstParty,
-                personasDirectory: Self.userAgentsDirectory(),
+                personasDirectories: [
+                    Self.userPersonasDirectory(),
+                    Self.userAgentsDirectory(),
+                ],
                 toolCatalog: catalog
             )
             // Surface per-file parse failures into the Console so they
@@ -216,15 +245,19 @@ extension ChatViewModel {
 
     // MARK: - Agents-tab actions
 
-    /// Open the user agents folder in Finder, creating it if missing.
-    /// Used by the Reveal-folder button in the Agents tab.
+    /// Open the user agents root folder in Finder, creating both the
+    /// `personas/` and `agents/` subdirectories if missing. Used by the
+    /// Reveal-folder button in the Agents tab; the root view shows both
+    /// subdirs so users discover the split.
     func revealUserAgentsFolder() {
-        let url = Self.userAgentsDirectory()
+        let root = Self.userAgentsRootDirectory()
         let fm = FileManager.default
-        if !fm.fileExists(atPath: url.path) {
-            try? fm.createDirectory(at: url, withIntermediateDirectories: true)
+        for sub in [Self.userPersonasDirectory(), Self.userAgentsDirectory()] {
+            if !fm.fileExists(atPath: sub.path) {
+                try? fm.createDirectory(at: sub, withIntermediateDirectories: true)
+            }
         }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        NSWorkspace.shared.activateFileViewerSelecting([root])
     }
 
     /// Read-only snapshot of an agent's configuration, resolved on
@@ -301,24 +334,25 @@ extension ChatViewModel {
         )
     }
 
-    /// Locate the on-disk JSON backing a user persona by scanning the
-    /// user agents directory and decoding each file's id. Returns nil
-    /// when the id is not a user persona, when no file matches, or when
-    /// the directory cannot be read. Used by Reveal/Delete actions.
+    /// Locate the on-disk JSON backing a user persona/agent by scanning
+    /// both user subdirectories (`personas/`, `agents/`) and decoding
+    /// each file's id. Returns nil when the id is not user-authored,
+    /// when no file matches, or when the directories cannot be read.
+    /// Used by Reveal/Delete actions.
     func userPersonaURL(for id: AgentID) -> URL? {
-        let dir = Self.userAgentsDirectory()
+        let dirs = [Self.userPersonasDirectory(), Self.userAgentsDirectory()]
         let fm = FileManager.default
-        guard let urls = try? fm.contentsOfDirectory(
-            at: dir,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else { return nil }
-        let decoder = JSONDecoder()
-        for url in urls where url.pathExtension.lowercased() == "json" {
-            guard let data = try? Data(contentsOf: url),
-                  let agent = try? decoder.decode(PromptAgent.self, from: data)
-            else { continue }
-            if agent.id == id { return url }
+        for dir in dirs {
+            guard let urls = try? fm.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for url in urls where url.pathExtension.lowercased() == "json" {
+                guard let agent = try? AgentRegistry.decodePersona(at: url)
+                else { continue }
+                if agent.id == id { return url }
+            }
         }
         return nil
     }
@@ -377,6 +411,7 @@ extension ChatViewModel {
         if let prompt = agent as? PromptAgent {
             payload = PromptAgent(
                 id: copyId,
+                kind: prompt.kind,
                 metadata: AgentMetadata(
                     name: copyName,
                     description: prompt.metadata.description,
@@ -385,11 +420,15 @@ extension ChatViewModel {
                 ),
                 requirements: prompt.requirements,
                 decodingParams: prompt.defaultDecodingParams,
-                systemPrompt: prompt.promptText
+                systemPrompt: prompt.authoredSystemPrompt,
+                contextPath: prompt.contextPath,
+                chain: prompt.chain,
+                orchestrator: prompt.orchestrator
             )
         } else if let def = agent as? DefaultAgent {
             payload = PromptAgent(
                 id: copyId,
+                kind: .persona,
                 metadata: AgentMetadata(
                     name: copyName,
                     description: "Copy of the live Default agent at duplicate time.",
@@ -404,7 +443,9 @@ extension ChatViewModel {
             return
         }
 
-        let dir = Self.userAgentsDirectory()
+        let dir = (payload.kind == .agent)
+            ? Self.userAgentsDirectory()
+            : Self.userPersonasDirectory()
         let fileName = copyId.replacingOccurrences(of: "/", with: "_")
         let fileURL = dir.appendingPathComponent("\(fileName).json")
         do {

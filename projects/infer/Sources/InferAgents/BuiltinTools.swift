@@ -30,6 +30,46 @@ public struct ClockNowTool: BuiltinTool {
     }
 }
 
+/// Synthetic dispatch tool used by orchestrator agents (M5c).
+///
+/// The router agent emits a tool call to `agents.invoke` whose arguments
+/// name the candidate to dispatch to and the input to hand it. The tool
+/// itself is **inert** — it returns a short acknowledgement so the
+/// runtime tool loop has something to feed back as ipython/tool input
+/// and the router can produce a closing turn. The actual cross-agent
+/// dispatch happens *after* the router's segment completes:
+/// `CompositionController.runOrchestrator` reads the trace, sees this
+/// tool call (via `OrchestratorDispatch.parse`), and runs the chosen
+/// candidate as a follow-on segment.
+///
+/// The two-step design (call here, dispatch in the controller) keeps
+/// the tool stateless and stateless-tool-registerable — `BuiltinTool`
+/// has no per-call composition context, and we don't want one. Routers
+/// must include `agents.invoke` in their `toolsAllow`; the candidate
+/// list itself is enumerated in the router agent's authored system
+/// prompt so the model knows which targets are valid.
+public struct AgentsInvokeTool: BuiltinTool {
+    public let name: ToolName = "agents.invoke"
+
+    public var spec: ToolSpec {
+        ToolSpec(
+            name: name,
+            description: "Dispatch a follow-up turn to one of the candidate agents listed in your system prompt. Arguments: {\"agentID\": \"<candidate id>\", \"input\": \"<the message to send the candidate>\"}. The candidate's reply replaces yours as the user-visible answer."
+        )
+    }
+
+    public init() {}
+
+    public func invoke(arguments: String) async throws -> ToolResult {
+        // Inert: composition driver reads the call from the trace
+        // post-segment and follows through with the actual dispatch.
+        // The ack here is what the router sees as feedback so it can
+        // close the turn cleanly; the user never sees this string
+        // because the candidate's reply replaces the router's output.
+        ToolResult(output: "dispatch acknowledged")
+    }
+}
+
 /// Counts whitespace-separated tokens in a string passed as
 /// `{"text": "..."}`. No network, no I/O. Useful as the second demo
 /// tool because it exercises argument decoding (unlike `clock.now`).

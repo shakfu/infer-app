@@ -36,9 +36,19 @@ struct AgentInspectorView: View {
                     if let snap = snapshot {
                         metadataSection(snap)
                         systemPromptSection(snap)
-                        toolsSection(snap)
+                        // Personas can never expose tools (runtime guarantee
+                        // in `PromptAgent.toolsAvailable`), and their
+                        // backend compatibility is meaningful only via the
+                        // template-family check that lands in M4 — until
+                        // then, hiding both sections keeps the inspector
+                        // honest about what a persona actually controls.
+                        if listing.kind == .agent {
+                            toolsSection(snap)
+                        }
                         decodingSection(snap)
-                        compatibilitySection
+                        if listing.kind == .agent {
+                            compatibilitySection
+                        }
                         if showPreview, let active = activeSnapshot, !isActive {
                             previewSection(from: active, to: snap)
                         }

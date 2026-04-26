@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 3,
+  "kind": "agent",
+  "id": "infer.refine-prose",
+  "metadata": {
+    "name": "Refine prose",
+    "description": "M5b refine demo. Producer-critic loop: Writing editor drafts; Prose critic reviews. Loop terminates when the critic emits 'approve' or after 2 iterations. Final answer is the producer's last draft.",
+    "author": "Infer"
+  },
+  "requirements": {
+    "backend": "any"
+  },
+  "decodingParams": { "temperature": 0.5, "topP": 0.95, "maxTokens": 1024 },
+  "systemPrompt": "(unused — refine dispatches directly to producer/critic without running this agent)",
+  "refine": {
+    "producer": "infer.writing-editor",
+    "critic": "infer.prose-critic",
+    "maxIterations": 2,
+    "acceptWhen": {
+      "kind": "regex",
+      "pattern": "(?i)^\\s*approve"
+    }
+  }
+}

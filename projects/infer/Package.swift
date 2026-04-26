@@ -119,8 +119,12 @@ let package = Package(
             path: "Sources/Infer",
             exclude: ["Info.plist"],
             resources: [
-                // First-party personas (`.firstParty` source). Loaded at
-                // AgentController bootstrap via Bundle.module.
+                // First-party personas and agents (`.firstParty` source).
+                // Loaded at AgentController bootstrap via Bundle.module.
+                // Split per `docs/dev/agent_kinds.md`: persona JSONs (no
+                // tools) live under `personas/`, tool-using agent JSONs
+                // under `agents/`. Loader globs both directories.
+                .copy("Resources/personas"),
                 .copy("Resources/agents"),
             ],
             linkerSettings: [

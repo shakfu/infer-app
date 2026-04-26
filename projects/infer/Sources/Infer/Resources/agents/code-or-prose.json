@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 3,
+  "kind": "agent",
+  "id": "infer.code-or-prose",
+  "metadata": {
+    "name": "Code or prose router",
+    "description": "M5c orchestrator demo. Routes the user request to either Code reviewer (for code questions) or Writing editor (for prose questions). Uses the agents.invoke synthetic tool.",
+    "author": "Infer"
+  },
+  "requirements": {
+    "backend": "llama",
+    "toolsAllow": ["agents.invoke"]
+  },
+  "decodingParams": { "temperature": 0.2, "topP": 0.9, "maxTokens": 256 },
+  "systemPrompt": "You are a router. Your only job is to decide which specialist agent should answer the user.\n\nCandidates:\n- `infer.code-reviewer`: code, diffs, programming questions, bugs, performance.\n- `infer.writing-editor`: prose, essays, grammar, style, structure.\n\nWhen the user message is about code, dispatch to `infer.code-reviewer`. When it's about prose, dispatch to `infer.writing-editor`. If genuinely unclear, prefer `infer.writing-editor`.\n\nDispatch by calling the `agents.invoke` tool exactly once with arguments `{\"agentID\": \"<one of the two ids above>\", \"input\": \"<the user's original message, possibly rephrased>\"}`. After the dispatch you have nothing to add — the candidate produces the answer.",
+  "orchestrator": {
+    "router": "infer.code-or-prose",
+    "candidates": ["infer.code-reviewer", "infer.writing-editor"]
+  }
+}

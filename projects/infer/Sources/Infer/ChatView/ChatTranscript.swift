@@ -3,6 +3,7 @@ import AppKit
 import MarkdownUI
 import Splash
 import InferAgents
+import InferCore
 
 extension ChatView {
     var transcript: some View {
@@ -281,6 +282,11 @@ struct MessageRow: View {
 struct StepTraceDisclosure: View {
     let trace: StepTrace
     @State private var userOverride: Bool?
+    /// Default true — matches the pre-M3 always-auto-expand behaviour.
+    /// `UserDefaults.bool(forKey:)` returns false for unset keys, so
+    /// `AppDelegate.applicationDidFinishLaunching` registers the default
+    /// once at launch.
+    @AppStorage(PersistKey.autoExpandAgentTraces) private var autoExpand: Bool = true
 
     private var isStreaming: Bool { trace.terminator == nil }
 
@@ -290,13 +296,33 @@ struct StepTraceDisclosure: View {
         }
         if callCount == 0 { EmptyView() } else {
             let expanded = Binding<Bool>(
-                get: { userOverride ?? isStreaming },
+                get: { userOverride ?? (isStreaming && autoExpand) },
                 set: { userOverride = $0 }
             )
             DisclosureGroup(isExpanded: expanded) {
                 VStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(trace.steps.enumerated()), id: \.offset) { _, step in
-                        StepRow(step: step)
+                    ForEach(Array(trace.steps.enumerated()), id: \.offset) { offset, step in
+                        HStack(alignment: .top, spacing: 6) {
+                            // Multi-agent gutter (M5a-foundation
+                            // SegmentSpan). When the trace was emitted
+                            // by a composition, every step belongs to
+                            // some segment; show that agent's id as a
+                            // small chip so the user can attribute the
+                            // row. Single-segment traces fall through
+                            // to nil and render as before.
+                            if let agentId = Self.agentId(forStep: offset, in: trace) {
+                                Text(agentId)
+                                    .font(.caption2.monospaced())
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(
+                                        Capsule().fill(Color.secondary.opacity(0.12))
+                                    )
+                                    .fixedSize()
+                            }
+                            StepRow(step: step)
+                        }
                     }
                     pendingRow
                 }
@@ -327,6 +353,18 @@ struct StepTraceDisclosure: View {
                     .stroke(Color.secondary.opacity(0.2))
             )
         }
+    }
+
+    /// Find the agent id whose `SegmentSpan` covers `stepIndex`, or
+    /// nil when the trace has no segments (single-agent turn). Spans
+    /// tile with no overlap; linear scan is fine — composition turns
+    /// rarely exceed a handful of segments.
+    static func agentId(forStep stepIndex: Int, in trace: StepTrace) -> AgentID? {
+        guard !trace.segments.isEmpty else { return nil }
+        for span in trace.segments where stepIndex >= span.startStep && stepIndex < span.endStep {
+            return span.agentId
+        }
+        return nil
     }
 
     /// Trailing row shown while the trace is in-flight. Signals to the

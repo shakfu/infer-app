@@ -39,6 +39,20 @@ public enum PersistKey {
     public static let voiceSendSilenceSeconds = "infer.voiceSendSilenceSeconds"
     public static let bargeInEnabled = "infer.bargeInEnabled"
     public static let ggufDirectory = "infer.ggufDirectory"
+
+    /// Whether `StepTraceDisclosure` auto-expands while a tool loop is
+    /// in flight. Default true (matches pre-M3 behaviour). Users who
+    /// find the expanding row noisy can flip it off; the disclosure
+    /// then stays collapsed and the user clicks to peek.
+    public static let autoExpandAgentTraces = "infer.autoExpandAgentTraces"
+
+    /// Cap on the total number of agent loop steps a single user turn
+    /// may consume across an entire composition (M5). Each tool call,
+    /// each chain segment, each refine iteration counts. Hitting the
+    /// cap terminates with `.budgetExceeded` regardless of which
+    /// composition primitive is active. Tuned to be high enough that
+    /// normal use never trips it, low enough to bound runaway loops.
+    public static let maxAgentSteps = "infer.maxAgentSteps"
 }
 
 public struct InferSettings: Equatable, Sendable {
@@ -55,6 +69,12 @@ public struct InferSettings: Equatable, Sendable {
     /// Bump if reasoning gets truncated mid-thinking on hard
     /// questions; lower to save decode time on simple ones.
     public var thinkingBudget: Int
+    /// Total agent loop steps allowed per user turn across an entire
+    /// composition. Default 8 — high enough for chain + a couple of
+    /// tool calls, low enough that an infinite-loop bug terminates
+    /// quickly with `.budgetExceeded`. M5 composition driver decrements
+    /// this counter as each segment / step runs.
+    public var maxAgentSteps: Int
     /// Optional sampling seed. `nil` means use a random seed (non-deterministic
     /// output). When set, identical prompt + params + seed produces identical
     /// output on a given backend. Stored as a string in UserDefaults since
@@ -67,6 +87,7 @@ public struct InferSettings: Equatable, Sendable {
         topP: Double,
         maxTokens: Int,
         thinkingBudget: Int = 4096,
+        maxAgentSteps: Int = 8,
         seed: UInt64? = nil
     ) {
         self.systemPrompt = systemPrompt
@@ -74,6 +95,7 @@ public struct InferSettings: Equatable, Sendable {
         self.topP = topP
         self.maxTokens = maxTokens
         self.thinkingBudget = thinkingBudget
+        self.maxAgentSteps = maxAgentSteps
         self.seed = seed
     }
 
@@ -83,6 +105,7 @@ public struct InferSettings: Equatable, Sendable {
         topP: 0.95,
         maxTokens: 512,
         thinkingBudget: 4096,
+        maxAgentSteps: 8,
         seed: nil
     )
 
@@ -95,6 +118,7 @@ public struct InferSettings: Equatable, Sendable {
             topP: defaults.object(forKey: PersistKey.topP) as? Double ?? Self.defaults.topP,
             maxTokens: defaults.object(forKey: PersistKey.maxTokens) as? Int ?? Self.defaults.maxTokens,
             thinkingBudget: defaults.object(forKey: PersistKey.thinkingBudget) as? Int ?? Self.defaults.thinkingBudget,
+            maxAgentSteps: defaults.object(forKey: PersistKey.maxAgentSteps) as? Int ?? Self.defaults.maxAgentSteps,
             seed: seed
         )
     }
@@ -105,6 +129,7 @@ public struct InferSettings: Equatable, Sendable {
         defaults.set(topP, forKey: PersistKey.topP)
         defaults.set(maxTokens, forKey: PersistKey.maxTokens)
         defaults.set(thinkingBudget, forKey: PersistKey.thinkingBudget)
+        defaults.set(maxAgentSteps, forKey: PersistKey.maxAgentSteps)
         if let seed {
             defaults.set(String(seed), forKey: PersistKey.seed)
         } else {

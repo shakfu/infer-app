@@ -25,10 +25,24 @@ struct AgentPickerMenu: View {
             let listings = vm.availableAgents
             let compatible = listings.filter { vm.isCompatible($0) }
             let incompatible = listings.filter { !vm.isCompatible($0) }
+            // Default row is a persona-shaped synthetic; pin it to the
+            // top of the Personas section.
+            let personas = compatible.filter { $0.kind == .persona }
+            let agents = compatible.filter { $0.kind == .agent }
 
-            Section {
-                ForEach(compatible) { listing in
-                    menuItem(for: listing, compatible: true)
+            if !personas.isEmpty {
+                Section("Personas") {
+                    ForEach(personas) { listing in
+                        menuItem(for: listing, compatible: true)
+                    }
+                }
+            }
+
+            if !agents.isEmpty {
+                Section("Agents") {
+                    ForEach(agents) { listing in
+                        menuItem(for: listing, compatible: true)
+                    }
                 }
             }
 

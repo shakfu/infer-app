@@ -256,12 +256,18 @@ extension ChatViewModel {
                     seed: s.seed
                 )
                 try Task.checkCancellation()
+                let detected = await runner.detectedTemplateFamily()
                 await MainActor.run {
                     self.modelLoaded = true
                     self.modelStatus = "llama: \((path as NSString).lastPathComponent)"
                     self.isLoadingModel = false
                     self.loadTask = nil
                     self.currentModelId = path
+                    // Tell the agent layer what tool-call template the
+                    // newly-loaded GGUF speaks. Drives the picker's
+                    // template-family compatibility check + per-family
+                    // tool-prompt composition (M4).
+                    self.agentController.setDetectedTemplateFamily(detected)
                     UserDefaults.standard.set(Backend.llama.rawValue, forKey: PersistKey.backend)
                     self.refreshTokenUsage()
                 }
@@ -336,6 +342,11 @@ extension ChatViewModel {
                     self.downloadProgress = nil
                     self.loadTask = nil
                     self.currentModelId = shown
+                    // MLX has no GGUF template metadata path; clear the
+                    // agent layer's cached fingerprint so a previously-
+                    // loaded llama family doesn't gate MLX-targeted
+                    // agents incorrectly.
+                    self.agentController.setDetectedTemplateFamily(nil)
                     UserDefaults.standard.set(Backend.mlx.rawValue, forKey: PersistKey.backend)
                     self.refreshTokenUsage()
                 }

@@ -91,4 +91,74 @@ final class ToolCallParserTests: XCTestCase {
         let match = parser.findFirstCall(in: stream)
         XCTAssertEqual(match?.call.name, "first")
     }
+
+    // MARK: - Qwen / Hermes (M4)
+
+    func testQwenBasicCall() {
+        let p = ToolCallParser(family: .qwen)
+        let stream = #"Let me check.<tool_call>{"name": "builtin.clock.now", "arguments": {}}</tool_call>"#
+        let match = p.findFirstCall(in: stream)
+        XCTAssertEqual(match?.prefix, "Let me check.")
+        XCTAssertEqual(match?.call.name, "builtin.clock.now")
+        XCTAssertEqual(match?.call.arguments, "{}")
+    }
+
+    func testQwenArgumentsKeyAccepted() {
+        let p = ToolCallParser(family: .qwen)
+        let stream = #"<tool_call>{"name": "builtin.text.wordcount", "arguments": {"text": "hi there"}}</tool_call>"#
+        let match = p.findFirstCall(in: stream)
+        // Keys re-serialised sorted for determinism.
+        XCTAssertEqual(match?.call.arguments, #"{"text":"hi there"}"#)
+    }
+
+    func testQwenStringifiedArgumentsNormalised() {
+        // Some Hermes variants emit `arguments` as a stringified JSON.
+        // Parser unwraps it and re-serialises so the rest of the loop
+        // sees the same compact form regardless of source shape.
+        let p = ToolCallParser(family: .hermes)
+        let stream = #"<tool_call>{"name": "x", "arguments": "{\"a\":1}"}</tool_call>"#
+        let match = p.findFirstCall(in: stream)
+        XCTAssertEqual(match?.call.arguments, #"{"a":1}"#)
+    }
+
+    func testQwenFallsBackToParametersKey() {
+        // A model that emits the Llama-style `parameters` wrapper inside
+        // `<tool_call>` should still parse — the loop tolerates the
+        // wrong wrapper choice rather than dropping the call.
+        let p = ToolCallParser(family: .qwen)
+        let stream = #"<tool_call>{"name": "x", "parameters": {"k": 1}}</tool_call>"#
+        let match = p.findFirstCall(in: stream)
+        XCTAssertEqual(match?.call.arguments, #"{"k":1}"#)
+    }
+
+    func testQwenIncompleteTagReturnsNil() {
+        // Open tag + body, no close yet — caller waits for more tokens.
+        let p = ToolCallParser(family: .qwen)
+        let stream = #"<tool_call>{"name": "x", "arguments":"#
+        XCTAssertNil(p.findFirstCall(in: stream))
+    }
+
+    func testQwenNoTagReturnsNil() {
+        let p = ToolCallParser(family: .qwen)
+        XCTAssertNil(p.findFirstCall(in: "Just a plain reply, no tool."))
+    }
+
+    func testHermesUsesSameParser() {
+        // Hermes-3 emits the same `<tool_call>` shape; verify the family
+        // routes to the same handler. (If they diverge later, this test
+        // fails first.)
+        let p = ToolCallParser(family: .hermes)
+        let stream = #"<tool_call>{"name": "h", "arguments": {}}</tool_call>"#
+        XCTAssertEqual(p.findFirstCall(in: stream)?.call.name, "h")
+    }
+
+    // MARK: - Family bridge
+
+    func testFamilyBridgeFromTemplateFamily() {
+        XCTAssertEqual(ToolCallParser.Family(.llama3), .llama3)
+        XCTAssertEqual(ToolCallParser.Family(.qwen), .qwen)
+        XCTAssertEqual(ToolCallParser.Family(.hermes), .hermes)
+        // OpenAI has no in-stream syntax; bridge to Llama 3.
+        XCTAssertEqual(ToolCallParser.Family(.openai), .llama3)
+    }
 }

@@ -13,12 +13,40 @@ import Foundation
 public struct ToolCallParser: Sendable {
     public enum Family: String, Sendable, CaseIterable {
         case llama3
+        case qwen
+        case hermes
+
+        /// Bridge from `TemplateFamily` (the broader classification used
+        /// for compatibility checks and prompt composition) to the
+        /// parser-relevant subset. `.openai` falls through to `.llama3`
+        /// since OpenAI tool-calling has no in-stream syntax — the
+        /// closest local-decode shape is Llama 3's `<|python_tag|>`.
+        public init(_ template: TemplateFamily) {
+            switch template {
+            case .llama3, .openai: self = .llama3
+            case .qwen: self = .qwen
+            case .hermes: self = .hermes
+            }
+        }
     }
 
     public let family: Family
 
     public init(family: Family) {
         self.family = family
+    }
+
+    /// Opening tag this parser looks for. Used by the chat view-model
+    /// to trim the tool-call portion out of the visible message body
+    /// after parsing — `messages[i].text` is the think-filtered stream
+    /// already, so we just slice from this tag onwards rather than
+    /// re-stamping with `match.prefix` (which is the *raw* prefix and
+    /// would re-introduce any filtered `<think>` content).
+    public var openTag: String {
+        switch family {
+        case .llama3: return "<|python_tag|>"
+        case .qwen, .hermes: return "<tool_call>"
+        }
     }
 
     /// A located tool call inside a stream of assistant text.
@@ -47,6 +75,14 @@ public struct ToolCallParser: Sendable {
         switch family {
         case .llama3:
             return Self.findLlama3Call(in: text)
+        case .qwen, .hermes:
+            // Qwen-2.5/3 and Hermes-3 converged on the same in-stream
+            // tool-call shape: `<tool_call>{JSON}</tool_call>`. Kept as
+            // separate `Family` cases anyway so the picker's
+            // compatibility check distinguishes "agent wants Qwen" from
+            // "agent wants Hermes" — useful when fingerprinting later
+            // grows finer-grained, and free at parse time.
+            return Self.findToolCallTag(in: text)
         }
     }
 
@@ -107,5 +143,83 @@ public struct ToolCallParser: Sendable {
             prefix: prefix,
             call: ToolCall(name: name, arguments: argsString)
         )
+    }
+
+    // MARK: Qwen / Hermes
+
+    /// `<tool_call>{JSON}</tool_call>` with the JSON containing
+    /// `name` and either `arguments` (Qwen / Hermes) or `parameters`
+    /// (Llama-style fallback). The JSON's `arguments` value can be
+    /// either an object (the canonical case) or a stringified object
+    /// (some Hermes variants); both round-trip into the parser's
+    /// `arguments: String` field.
+    static func findToolCallTag(in text: String) -> Match? {
+        guard let openRange = text.range(of: "<tool_call>") else {
+            return nil
+        }
+        let prefix = String(text[..<openRange.lowerBound])
+        let afterOpen = text[openRange.upperBound...]
+
+        // Locate the closing tag, if any. Without it we can still try
+        // to parse what's there — the runner may have stopped on EOS.
+        var jsonEnd: String.Index = afterOpen.endIndex
+        var sawClose = false
+        if let closeRange = afterOpen.range(of: "</tool_call>") {
+            jsonEnd = closeRange.lowerBound
+            sawClose = true
+        }
+        let jsonText = afterOpen[..<jsonEnd]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if jsonText.isEmpty && !sawClose { return nil }
+
+        guard
+            let data = jsonText.data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let name = obj["name"] as? String,
+            !name.isEmpty
+        else {
+            return nil
+        }
+
+        // `arguments` (Qwen/Hermes) preferred, fall back to `parameters`
+        // (Llama-shaped) so a model that emits the wrong wrapper still
+        // round-trips. Both can be either an object or a JSON string;
+        // normalise to the string form the rest of the loop expects.
+        let argsValue: Any = obj["arguments"]
+            ?? obj["parameters"]
+            ?? [String: Any]()
+        let argsString = Self.normaliseArgs(argsValue)
+
+        return Match(
+            prefix: prefix,
+            call: ToolCall(name: name, arguments: argsString)
+        )
+    }
+
+    /// Convert an `arguments`/`parameters` value — either a JSON object
+    /// or an already-stringified one — into the canonical compact JSON
+    /// string the rest of the agent layer treats as `ToolCall.arguments`.
+    private static func normaliseArgs(_ value: Any) -> String {
+        if let s = value as? String {
+            // Stringified JSON — validate by re-parsing then
+            // re-serialise so the parser's output is sort-stable.
+            if let data = s.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data),
+               let out = try? JSONSerialization.data(
+                   withJSONObject: obj, options: [.sortedKeys]
+               ),
+               let normalised = String(data: out, encoding: .utf8) {
+                return normalised
+            }
+            // Not parseable as JSON — return it raw rather than lose it.
+            return s
+        }
+        if let data = try? JSONSerialization.data(
+            withJSONObject: value, options: [.sortedKeys]
+        ), let s = String(data: data, encoding: .utf8) {
+            return s
+        }
+        return "{}"
     }
 }

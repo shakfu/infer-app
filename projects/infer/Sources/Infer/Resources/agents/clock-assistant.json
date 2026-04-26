@@ -1,14 +1,14 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "kind": "agent",
   "id": "infer.clock-assistant",
   "metadata": {
     "name": "Clock assistant",
-    "description": "Demo of the one-step tool loop. When the user asks about time, calls clock.now and answers from the result. Llama.cpp + Llama 3.1 template only.",
+    "description": "Demo of the one-step tool loop. When the user asks about time, calls clock.now and answers from the result. Works on llama.cpp models whose template advertises tool calling (Llama 3.x, Qwen 2.5+, Hermes-3).",
     "author": "Infer"
   },
   "requirements": {
     "backend": "llama",
-    "templateFamily": "llama3",
     "toolsAllow": ["builtin.clock.now", "builtin.text.wordcount"]
   },
   "decodingParams": { "temperature": 0.3, "topP": 0.9, "maxTokens": 1024 },

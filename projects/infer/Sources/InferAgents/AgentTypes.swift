@@ -41,11 +41,63 @@ public struct AgentMetadata: Codable, Equatable, Sendable {
     }
 }
 
+/// User-facing classification for an agent. See `docs/dev/agent_kinds.md`.
+///
+/// `persona` = role + context, no tool execution. Safe-by-construction:
+/// even if a persona's JSON declares `toolsAllow`, the runtime guarantees
+/// no tools are exposed to it (`PromptAgent.toolsAvailable` returns `[]`).
+///
+/// `agent` = persona + tool use and/or composition. Can run code on the
+/// user's behalf via the tool registry.
+public enum AgentKind: String, Codable, Sendable, CaseIterable {
+    case persona
+    case agent
+}
+
 public enum TemplateFamily: String, Codable, Sendable, CaseIterable {
     case llama3
     case qwen
     case hermes
     case openai
+
+    /// Best-effort classification of a loaded GGUF's Jinja chat template
+    /// into one of the known families. Returns nil for unknown templates
+    /// and for nil/empty input.
+    ///
+    /// Heuristics, in priority order:
+    /// 1. `<|python_tag|>` — unambiguously Llama 3.1 tool-calling.
+    /// 2. Llama 3.x header tokens (`<|start_header_id|>` + `<|eot_id|>`)
+    ///    without the python tag — Llama 3 base/instruct chat shape.
+    /// 3. ChatML (`<|im_start|>` / `<|im_end|>`) with `<tool_call>`
+    ///    references — Qwen-2.5/3 (Hermes-3 also uses this shape but
+    ///    is rarer in GGUF metadata; we err toward Qwen).
+    /// 4. ChatML alone, no `<tool_call>` — return nil. The model may
+    ///    chat fine but its tool-calling syntax is unspecified, so a
+    ///    tool-using agent should fail loud rather than silently emit
+    ///    Llama 3.1 tags into a Qwen template.
+    ///
+    /// Conservative on purpose: a wrong positive here means the picker
+    /// allows an incompatible agent and the user gets garbled output.
+    /// A nil return surfaces in the UI as "template family unknown,"
+    /// which is recoverable — the user can override or pick a tool-
+    /// less persona instead.
+    public static func fingerprint(template: String?) -> TemplateFamily? {
+        guard let template, !template.isEmpty else { return nil }
+        if template.contains("<|python_tag|>") {
+            return .llama3
+        }
+        if template.contains("<|start_header_id|>")
+            && template.contains("<|eot_id|>") {
+            return .llama3
+        }
+        let isChatML = template.contains("<|im_start|>")
+        let hasToolCall = template.contains("<tool_call>")
+            || template.contains("tool_call")
+        if isChatML && hasToolCall {
+            return .qwen
+        }
+        return nil
+    }
 }
 
 public enum BackendPreference: String, Codable, Sendable, CaseIterable {
@@ -77,6 +129,28 @@ public struct AgentRequirements: Codable, Equatable, Sendable {
         self.toolsDeny = toolsDeny
         self.autoApprove = autoApprove
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case backend, templateFamily, minContext, toolsAllow, toolsDeny, autoApprove
+    }
+
+    /// Tolerant decoding: every field is optional in JSON, so partial
+    /// `requirements` blocks (e.g. `{"toolsAllow": ["..."]}` with no
+    /// `backend`) decode cleanly with the omitted fields taking their
+    /// init defaults. Synthesized `Codable` would reject this because
+    /// `backend` is non-optional in Swift; the bug is that the previous
+    /// `try? c.decode(AgentRequirements.self, ...)` in `PromptAgent`
+    /// silently swallowed the error and produced a fully-defaulted
+    /// requirements block, dropping the user's declared tools.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.backend = (try? c.decodeIfPresent(BackendPreference.self, forKey: .backend)) ?? .any
+        self.templateFamily = try c.decodeIfPresent(TemplateFamily.self, forKey: .templateFamily)
+        self.minContext = try c.decodeIfPresent(Int.self, forKey: .minContext)
+        self.toolsAllow = try c.decodeIfPresent([ToolName].self, forKey: .toolsAllow) ?? []
+        self.toolsDeny = try c.decodeIfPresent([ToolName].self, forKey: .toolsDeny) ?? []
+        self.autoApprove = try c.decodeIfPresent([ToolName].self, forKey: .autoApprove) ?? []
+    }
 }
 
 public struct DecodingParams: Codable, Equatable, Sendable {
@@ -95,6 +169,30 @@ public struct DecodingParams: Codable, Equatable, Sendable {
         self.topP = settings.topP
         self.maxTokens = settings.maxTokens
     }
+}
+
+/// Result of a single agent's `run` (or, equivalently, of one segment
+/// inside a composition). Composition drivers (`CompositionController`,
+/// landing in M5a-runtime) consume this to decide whether to continue
+/// down a chain, take a fallback branch, or settle on a final answer.
+///
+/// The four cases map to `agent_composition.md`:
+/// - `.completed`: agent produced a final answer normally. The trace's
+///   terminator is `.finalAnswer(text)`. For a `chain`, the next agent
+///   sees this text as its user turn (after sentinel-stripping).
+/// - `.handoff`: the agent emitted a `<<HANDOFF>>` envelope asking the
+///   composition driver to dispatch to a specific peer. Visible text
+///   is what the user sees; `payload` is the unstructured-for-v1
+///   instruction the next agent receives.
+/// - `.abandoned`: the agent decided not to answer (e.g. branch
+///   predicate failed). No trace terminator was emitted.
+/// - `.failed`: the agent errored out. Composition drivers may try a
+///   fallback chain depending on `PromptAgent.fallback`.
+public enum AgentOutcome: Sendable, Equatable {
+    case completed(text: String, trace: StepTrace)
+    case handoff(target: AgentID, payload: String, trace: StepTrace)
+    case abandoned(reason: String, trace: StepTrace)
+    case failed(message: String, trace: StepTrace)
 }
 
 public enum LoopDecision: Sendable, Equatable {

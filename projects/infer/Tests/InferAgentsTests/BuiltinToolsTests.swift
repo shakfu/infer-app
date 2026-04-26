@@ -65,4 +65,35 @@ final class BuiltinToolsTests: XCTestCase {
         XCTAssertEqual(result.output, "")
         XCTAssertNotNil(result.error)
     }
+
+    // MARK: AgentsInvokeTool (M5c)
+
+    func testAgentsInvokeNameAndSpec() {
+        let tool = AgentsInvokeTool()
+        XCTAssertEqual(tool.name, "agents.invoke")
+        XCTAssertEqual(tool.spec.name, OrchestratorDispatch.invokeToolName)
+        XCTAssertTrue(tool.spec.description.contains("agentID"))
+    }
+
+    func testAgentsInvokeReturnsAck() async throws {
+        // The tool is inert — actual dispatch happens in
+        // CompositionController.runOrchestrator after the segment
+        // completes. Tool just returns an ack the runner can feed
+        // back so the router closes its turn cleanly.
+        let tool = AgentsInvokeTool()
+        let result = try await tool.invoke(
+            arguments: #"{"agentID":"x","input":"y"}"#
+        )
+        XCTAssertEqual(result.output, "dispatch acknowledged")
+        XCTAssertNil(result.error)
+    }
+
+    func testAgentsInvokeAckRegardlessOfArgs() async throws {
+        // Inert means inert — even malformed arguments produce an ack.
+        // Validation of the dispatch payload happens downstream in
+        // `OrchestratorDispatch.parse`.
+        let tool = AgentsInvokeTool()
+        let result = try await tool.invoke(arguments: "garbage")
+        XCTAssertEqual(result.output, "dispatch acknowledged")
+    }
 }
