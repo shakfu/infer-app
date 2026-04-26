@@ -289,10 +289,10 @@ final class CompositionControllerTests: XCTestCase {
             userText: "start",
             budget: 2,  // a + b run; c blocked.
             runOne: { id, _ in
-                .completed(text: id, trace: StepTrace.finalAnswer(id))
+                .completed(text: id.rawValue, trace: StepTrace.finalAnswer(id.rawValue))
             }
         )
-        XCTAssertEqual(result.segments.map(\.agentId), ["a", "b"])
+        XCTAssertEqual(result.segments.map { $0.agentId.rawValue }, ["a", "b"])
         if case .failed(let msg, _) = result.outcome {
             XCTAssertTrue(msg.contains("budget"))
         } else {

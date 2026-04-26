@@ -48,6 +48,37 @@ public struct ClockNowTool: BuiltinTool {
 /// must include `agents.invoke` in their `toolsAllow`; the candidate
 /// list itself is enumerated in the router agent's authored system
 /// prompt so the model knows which targets are valid.
+/// Structured handoff dispatch tool. Replaces the free-text
+/// `<<HANDOFF target="…">>` … `<<END_HANDOFF>>` envelope with a real
+/// tool call: an agent that wants to delegate emits
+/// `agents.handoff` with `{"target": "<peer id>", "payload": "<message>"}`,
+/// and the composition driver follows it the same way it follows the
+/// envelope today. Like `agents.invoke`, this tool is **inert** — it
+/// only acks so the runtime tool loop has something to feed back; the
+/// actual cross-agent dispatch is done by the loop driver after the
+/// segment completes by inspecting the trace for this call (see
+/// `HandoffDispatch.parse`).
+///
+/// The free-text envelope (`HandoffEnvelope.parse`) remains a fallback
+/// path so older agent configs keep working; the structured route wins
+/// when both are present in the same turn.
+public struct AgentsHandoffTool: BuiltinTool {
+    public let name: ToolName = "agents.handoff"
+
+    public var spec: ToolSpec {
+        ToolSpec(
+            name: name,
+            description: "Hand off the current turn to a peer agent. Arguments: {\"target\": \"<peer agent id>\", \"payload\": \"<message to pass\"}. The composition driver dispatches the named target with the payload as its user turn; the target's reply replaces yours as the user-visible answer."
+        )
+    }
+
+    public init() {}
+
+    public func invoke(arguments: String) async throws -> ToolResult {
+        ToolResult(output: "handoff acknowledged")
+    }
+}
+
 public struct AgentsInvokeTool: BuiltinTool {
     public let name: ToolName = "agents.invoke"
 

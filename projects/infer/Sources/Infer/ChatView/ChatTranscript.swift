@@ -311,7 +311,7 @@ struct StepTraceDisclosure: View {
                             // row. Single-segment traces fall through
                             // to nil and render as before.
                             if let agentId = Self.agentId(forStep: offset, in: trace) {
-                                Text(agentId)
+                                Text(verbatim: agentId.rawValue)
                                     .font(.caption2.monospaced())
                                     .foregroundStyle(.secondary)
                                     .padding(.horizontal, 4)
@@ -340,6 +340,9 @@ struct StepTraceDisclosure: View {
                     Text("\(callCount) tool call\(callCount == 1 ? "" : "s")")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    if let telemetry = trace.telemetry {
+                        TelemetryBadge(telemetry: telemetry)
+                    }
                 }
             }
             .padding(.horizontal, 8)
@@ -392,6 +395,65 @@ struct StepTraceDisclosure: View {
                 EmptyView()
             }
         }
+    }
+}
+
+/// Compact summary chip rendered next to the trace disclosure label
+/// (item 8 telemetry). Shows token count, segment duration, summed
+/// tool latency, and a failure count when non-zero. Hidden values
+/// (e.g. `durationMillis == nil` from a custom-loop agent) are
+/// silently omitted so the badge stays narrow when the loop driver
+/// didn't measure them.
+private struct TelemetryBadge: View {
+    let telemetry: StepTrace.TurnTelemetry
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if telemetry.tokens > 0 {
+                Text("\(telemetry.tokens) tok")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+            if let ms = telemetry.durationMillis {
+                Text(formatMillis(ms))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+            let toolMillis = telemetry.toolLatencyMillisByName.values.reduce(0, +)
+            if toolMillis > 0 {
+                Text("\(formatMillis(toolMillis)) tool")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+            if telemetry.toolFailureCount > 0 {
+                Text("\(telemetry.toolFailureCount) fail")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.red)
+            }
+        }
+        .help(tooltip)
+    }
+
+    private func formatMillis(_ ms: Int) -> String {
+        // Sub-second precision matters for tool calls; multi-second
+        // numbers compress to one decimal so the badge doesn't grow.
+        if ms < 1000 { return "\(ms) ms" }
+        return String(format: "%.1f s", Double(ms) / 1000.0)
+    }
+
+    private var tooltip: String {
+        var lines: [String] = []
+        lines.append("Tokens decoded (net): \(telemetry.tokens)")
+        if let ms = telemetry.durationMillis {
+            lines.append("Segment duration: \(ms) ms")
+        }
+        if telemetry.toolCallCount > 0 {
+            lines.append("Tool calls: \(telemetry.toolCallCount) (\(telemetry.toolFailureCount) failed)")
+        }
+        for (name, ms) in telemetry.toolLatencyMillisByName.sorted(by: { $0.key < $1.key }) {
+            lines.append("  \(name): \(ms) ms")
+        }
+        return lines.joined(separator: "\n")
     }
 }
 

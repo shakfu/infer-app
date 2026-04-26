@@ -94,12 +94,12 @@ public enum OrchestratorDispatch {
         guard let data = arguments.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
-        let target = (obj["agentID"] as? String)
+        let rawTarget = (obj["agentID"] as? String)
             ?? (obj["agent"] as? String)
             ?? (obj["agent_id"] as? String)
-        guard let target, !target.isEmpty, candidates.contains(target) else {
-            return nil
-        }
+        guard let rawTarget, !rawTarget.isEmpty else { return nil }
+        let target = AgentID(rawTarget)
+        guard candidates.contains(target) else { return nil }
         let input = (obj["input"] as? String) ?? ""
         return Resolved(target: target, input: input)
     }

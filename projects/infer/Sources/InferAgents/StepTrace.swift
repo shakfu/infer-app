@@ -42,26 +42,104 @@ public struct StepTrace: Codable, Equatable, Sendable {
         }
     }
 
+    /// Per-turn measurements stamped by the loop driver: net tokens
+    /// decoded, wall-clock duration, and per-tool elapsed times. Counts
+    /// derivable from `steps` (call count, failure count) are also
+    /// surfaced precomputed so the UI doesn't re-walk the step list on
+    /// every render. Optional and omitted from the encoded form when
+    /// nil so traces written before telemetry was tracked round-trip
+    /// unchanged.
+    public struct TurnTelemetry: Codable, Equatable, Sendable {
+        /// Net (post-think-filter) tokens decoded across all decode
+        /// passes for this turn. Zero when the segment was driven by a
+        /// `customLoop` agent that never decoded.
+        public var tokens: Int
+        /// Wall-clock from segment start to terminator, in milliseconds.
+        /// Nil when the loop driver didn't measure (legacy traces, or
+        /// custom-loop agents that bypass the timing instrumentation).
+        public var durationMillis: Int?
+        /// Per-tool elapsed time in milliseconds, summed across calls
+        /// to the same tool inside a single turn. Empty when the turn
+        /// invoked no tools.
+        public var toolLatencyMillisByName: [ToolName: Int]
+        /// Tool calls emitted this turn (incl. failures). Equivalent
+        /// to `steps.filter { case .toolCall }.count` precomputed.
+        public var toolCallCount: Int
+        /// Tool calls whose result carried an `error` field. Subset of
+        /// `toolCallCount`. Useful as a quick "did anything go wrong"
+        /// signal in the UI.
+        public var toolFailureCount: Int
+
+        public init(
+            tokens: Int = 0,
+            durationMillis: Int? = nil,
+            toolLatencyMillisByName: [ToolName: Int] = [:],
+            toolCallCount: Int = 0,
+            toolFailureCount: Int = 0
+        ) {
+            self.tokens = tokens
+            self.durationMillis = durationMillis
+            self.toolLatencyMillisByName = toolLatencyMillisByName
+            self.toolCallCount = toolCallCount
+            self.toolFailureCount = toolFailureCount
+        }
+
+        /// Add (or merge with summation) one tool's elapsed time. Same
+        /// tool called twice in a turn accumulates; the UI surfaces the
+        /// total because per-call breakdowns are already visible inside
+        /// the trace's step rows.
+        public mutating func recordToolLatency(_ name: ToolName, millis: Int) {
+            toolLatencyMillisByName[name, default: 0] += millis
+        }
+
+        /// Recompute `toolCallCount` and `toolFailureCount` from
+        /// `steps`. Called by the loop driver at terminator time so
+        /// the precomputed counts always agree with the step list.
+        public mutating func refreshCounts(from steps: [Step]) {
+            var calls = 0
+            var failures = 0
+            for step in steps {
+                switch step {
+                case .toolCall: calls += 1
+                case .toolResult(let result): if result.error != nil { failures += 1 }
+                default: break
+                }
+            }
+            self.toolCallCount = calls
+            self.toolFailureCount = failures
+        }
+    }
+
     public var steps: [Step]
     /// Multi-agent attribution, empty for single-agent turns. Decoded
     /// with a default-empty fallback so traces written before this
     /// field existed (M2 era) still round-trip cleanly.
     public var segments: [SegmentSpan]
+    /// Per-turn measurements (item 8). Nil when the loop driver didn't
+    /// stamp telemetry; the UI degrades gracefully (no chip rendered).
+    public var telemetry: TurnTelemetry?
 
-    public init(steps: [Step] = [], segments: [SegmentSpan] = []) {
+    public init(
+        steps: [Step] = [],
+        segments: [SegmentSpan] = [],
+        telemetry: TurnTelemetry? = nil
+    ) {
         self.steps = steps
         self.segments = segments
+        self.telemetry = telemetry
     }
 
     private enum CodingKeys: String, CodingKey {
         case steps
         case segments
+        case telemetry
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.steps = try c.decode([Step].self, forKey: .steps)
         self.segments = try c.decodeIfPresent([SegmentSpan].self, forKey: .segments) ?? []
+        self.telemetry = try c.decodeIfPresent(TurnTelemetry.self, forKey: .telemetry)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -71,6 +149,9 @@ public struct StepTrace: Codable, Equatable, Sendable {
         // traces stay byte-identical to their pre-M5 representation.
         if !segments.isEmpty {
             try c.encode(segments, forKey: .segments)
+        }
+        if let telemetry {
+            try c.encode(telemetry, forKey: .telemetry)
         }
     }
 

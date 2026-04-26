@@ -69,7 +69,7 @@ public struct AgentListing: Identifiable, Equatable, Sendable {
             }
         }
         if !current.isEmpty { tokens.append(current) }
-        guard !tokens.isEmpty else { return fallbackId }
+        guard !tokens.isEmpty else { return fallbackId.rawValue }
         return tokens.joined(separator: "-")
     }
 }
@@ -382,7 +382,7 @@ public final class AgentController {
 
     public func activeAgentName() -> String {
         if activeAgentId == DefaultAgent.id { return "Default" }
-        return availableAgents.first { $0.id == activeAgentId }?.name ?? activeAgentId
+        return availableAgents.first { $0.id == activeAgentId }?.name ?? activeAgentId.rawValue
     }
 
     /// Switch the active agent. Returns the effects the adapter should

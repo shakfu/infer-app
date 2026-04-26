@@ -3,7 +3,46 @@ import InferCore
 
 /// Stable, URL-safe identifier for an agent. Used as the registry key,
 /// for transcript attribution, and for consent scoping.
-public typealias AgentID = String
+///
+/// A struct over `String` rather than a `typealias` so the type system
+/// keeps `AgentID` and free-form `String` distinct. The wire format is a
+/// bare JSON string (custom `Codable` below), so existing on-disk persona
+/// files and persisted traces round-trip unchanged. `ExpressibleByStringLiteral`
+/// keeps the in-source ergonomics of the old typealias for tests and
+/// constants (`let id: AgentID = "writing.editor"`).
+public struct AgentID: RawRepresentable, Hashable, Sendable, Codable, Comparable, ExpressibleByStringLiteral, CustomStringConvertible {
+    public let rawValue: String
+
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public init(_ rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public init(stringLiteral value: String) {
+        self.rawValue = value
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        self.rawValue = try c.decode(String.self)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(rawValue)
+    }
+
+    public static func < (lhs: AgentID, rhs: AgentID) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+
+    public var description: String { rawValue }
+
+    public var isEmpty: Bool { rawValue.isEmpty }
+}
 
 /// Tool name as exposed by the tool registry. A plain string today; could
 /// become a newtype later without source-breaking call sites that construct

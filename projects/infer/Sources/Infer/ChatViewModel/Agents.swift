@@ -164,6 +164,12 @@ extension ChatViewModel {
                 // composition driver reads it from the trace
                 // post-segment and dispatches to the chosen candidate.
                 AgentsInvokeTool(),
+                // Structured handoff dispatch (replaces the free-text
+                // `<<HANDOFF>>` envelope). The composition driver reads
+                // the call from the trace and follows the handoff;
+                // the envelope parser stays as a fallback for older
+                // configs.
+                AgentsHandoffTool(),
                 // Real tools. The fs.read sandbox is restricted to the
                 // user's Documents directory + the Infer Application
                 // Support root so agents can read user-authored notes
@@ -466,7 +472,7 @@ extension ChatViewModel {
         guard let agent else { return }
 
         let timestamp = Int(Date().timeIntervalSince1970)
-        let copyId = "\(listing.id).copy.\(timestamp)"
+        let copyId = AgentID("\(listing.id).copy.\(timestamp)")
         let copyName = "\(listing.name) (copy)"
 
         let payload: PromptAgent
@@ -508,7 +514,7 @@ extension ChatViewModel {
         let dir = (payload.kind == .agent)
             ? Self.userAgentsDirectory()
             : Self.userPersonasDirectory()
-        let fileName = copyId.replacingOccurrences(of: "/", with: "_")
+        let fileName = copyId.rawValue.replacingOccurrences(of: "/", with: "_")
         let fileURL = dir.appendingPathComponent("\(fileName).json")
         do {
             try FileManager.default.createDirectory(

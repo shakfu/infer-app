@@ -298,5 +298,6 @@ final class CompositionAdvancedTests: XCTestCase {
 /// across an `@Sendable` runOne closure.
 private final class CallLog: @unchecked Sendable {
     nonisolated(unsafe) var entries: [String] = []
+    func append(_ id: AgentID) { entries.append(id.rawValue) }
     func append(_ s: String) { entries.append(s) }
 }

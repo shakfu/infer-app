@@ -100,6 +100,6 @@ public enum HandoffEnvelope {
         }
         let afterQuote = afterEq.dropFirst()
         guard let closeQuote = afterQuote.firstIndex(of: quote) else { return nil }
-        return String(afterQuote[..<closeQuote])
+        return AgentID(String(afterQuote[..<closeQuote]))
     }
 }

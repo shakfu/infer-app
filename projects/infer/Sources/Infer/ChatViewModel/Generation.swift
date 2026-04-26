@@ -252,7 +252,7 @@ extension ChatViewModel {
             if segmentIndex < self.messages.count,
                self.messages[segmentIndex].agentId != agentId {
                 let listing = self.availableAgents.first { $0.id == agentId }
-                let nameSnapshot = agentId == DefaultAgent.id ? nil : (listing?.name ?? agentId)
+                let nameSnapshot = agentId == DefaultAgent.id ? nil : (listing?.name ?? agentId.rawValue)
                 let labelSnapshot: String? = nameSnapshot.map { name in
                     listing?.displayLabel
                         ?? AgentListing.makeDisplayLabel(from: name, fallbackId: agentId)
@@ -375,6 +375,15 @@ extension ChatViewModel {
         let toolSpecs = self.agentController.activeToolSpecs
         let engageToolLoop = backend == .llama && !toolSpecs.isEmpty
 
+        // Per-turn telemetry (item 8). Captured locally here so the
+        // segment-level numbers are independent of the VM's running
+        // totals (which span the whole user turn, including segments
+        // before this one). Stamped onto the message's trace right
+        // before the function returns so all return paths see it —
+        // success, cancellation, error.
+        let segmentStart = Date()
+        let baselineNetTokens = self.netTokenCount
+
         do {
             let stream: AsyncThrowingStream<String, Error>
             switch backend {
@@ -457,15 +466,39 @@ extension ChatViewModel {
             let finalText = assistantIndex < self.messages.count
                 ? self.messages[assistantIndex].text
                 : ""
-            let trace = self.messages[assistantIndex].steps
+            var trace = self.messages[assistantIndex].steps
                 ?? StepTrace.finalAnswer(finalText)
+            self.stampSegmentTelemetry(
+                trace: &trace,
+                at: assistantIndex,
+                segmentStart: segmentStart,
+                baselineNetTokens: baselineNetTokens
+            )
 
-            // Handoff envelope: if the agent embedded `<<HANDOFF>>`
-            // in its visible body, strip the envelope and return a
-            // `.handoff` outcome the composition driver will follow.
-            // Single-agent dispatch ignores the envelope; chain/
-            // fallback consume it. (Phase A: not exercised by any
-            // shipping agent.)
+            // Structured handoff (preferred): the agent emitted an
+            // `agents.handoff` tool call. The call lands in the trace
+            // via the standard tool-loop path; the inert ack is what
+            // the model sees as feedback. We extract the target +
+            // payload here and return a `.handoff` outcome the
+            // composition driver will follow. The visible body is left
+            // untouched — the tool tokens were already stripped during
+            // the tool-loop's stage-1 pass.
+            if let dispatch = HandoffDispatch.parse(
+                outcome: .completed(text: finalText, trace: trace)
+            ) {
+                return .handoff(
+                    target: dispatch.target,
+                    payload: dispatch.payload,
+                    trace: trace
+                )
+            }
+
+            // Free-text envelope (fallback): older agent configs that
+            // emit `<<HANDOFF target="…">>` … `<<END_HANDOFF>>` in
+            // their visible body. Stripped from the rendered reply
+            // and converted to a `.handoff` outcome the same way the
+            // structured route is. Will be removed once no shipping
+            // agent relies on it.
             let parsed = HandoffEnvelope.parse(finalText)
             if let handoff = parsed.handoff {
                 if assistantIndex < self.messages.count {
@@ -479,29 +512,106 @@ extension ChatViewModel {
             self.finalizeIncompleteTrace(at: assistantIndex, with: .cancelled)
             return .abandoned(
                 reason: "cancelled",
-                trace: self.messages[assistantIndex].steps ?? StepTrace(steps: [.cancelled])
+                trace: self.stampedTraceForAbnormalExit(
+                    at: assistantIndex,
+                    fallback: StepTrace(steps: [.cancelled]),
+                    segmentStart: segmentStart,
+                    baselineNetTokens: baselineNetTokens
+                )
             )
         } catch LlamaError.cancelled {
             self.finalizeIncompleteTrace(at: assistantIndex, with: .cancelled)
             return .abandoned(
                 reason: "cancelled",
-                trace: self.messages[assistantIndex].steps ?? StepTrace(steps: [.cancelled])
+                trace: self.stampedTraceForAbnormalExit(
+                    at: assistantIndex,
+                    fallback: StepTrace(steps: [.cancelled]),
+                    segmentStart: segmentStart,
+                    baselineNetTokens: baselineNetTokens
+                )
             )
         } catch MLXRunnerError.cancelled {
             self.finalizeIncompleteTrace(at: assistantIndex, with: .cancelled)
             return .abandoned(
                 reason: "cancelled",
-                trace: self.messages[assistantIndex].steps ?? StepTrace(steps: [.cancelled])
+                trace: self.stampedTraceForAbnormalExit(
+                    at: assistantIndex,
+                    fallback: StepTrace(steps: [.cancelled]),
+                    segmentStart: segmentStart,
+                    baselineNetTokens: baselineNetTokens
+                )
             )
         } catch {
             let message = String(describing: error)
             self.finalizeIncompleteTrace(at: assistantIndex, with: .error(message))
             return .failed(
                 message: message,
-                trace: self.messages[assistantIndex].steps
-                    ?? StepTrace(steps: [.error(message)])
+                trace: self.stampedTraceForAbnormalExit(
+                    at: assistantIndex,
+                    fallback: StepTrace(steps: [.error(message)]),
+                    segmentStart: segmentStart,
+                    baselineNetTokens: baselineNetTokens
+                )
             )
         }
+    }
+
+    /// Populate `trace.telemetry` with this segment's measurements and
+    /// write it back to the assistant message at `index`. The token
+    /// count is the delta of `netTokenCount` since segment start so
+    /// composition turns attribute decode work to the right segment.
+    /// Tool latencies are merged from any prior `recordToolLatency`
+    /// call inside this segment (the tool loop stamps directly onto
+    /// `messages[index].steps?.telemetry` mid-flight).
+    @MainActor
+    func stampSegmentTelemetry(
+        trace: inout StepTrace,
+        at index: Int,
+        segmentStart: Date,
+        baselineNetTokens: Int
+    ) {
+        var telemetry = trace.telemetry ?? StepTrace.TurnTelemetry()
+        // Carry forward any per-tool latency the tool loop already
+        // recorded against the message's stored trace — that value is
+        // authoritative because the loop wrote it during invocation,
+        // before the trace snapshot we're stamping was even read.
+        if index < self.messages.count,
+           let stored = self.messages[index].steps?.telemetry {
+            for (name, ms) in stored.toolLatencyMillisByName {
+                telemetry.toolLatencyMillisByName[name, default: 0] = max(
+                    telemetry.toolLatencyMillisByName[name] ?? 0, ms
+                )
+            }
+        }
+        telemetry.tokens = max(0, self.netTokenCount - baselineNetTokens)
+        telemetry.durationMillis = Int(Date().timeIntervalSince(segmentStart) * 1000)
+        telemetry.refreshCounts(from: trace.steps)
+        trace.telemetry = telemetry
+        if index < self.messages.count {
+            self.messages[index].steps = trace
+        }
+    }
+
+    /// Cancellation / error paths reach for whatever trace the message
+    /// currently holds, fall back to a minimal terminator-only trace if
+    /// none exists, then stamp telemetry the same way the success path
+    /// does. Mirrors `stampSegmentTelemetry` but works against a value
+    /// (vs `inout`) so the caller can inline it into the catch arms.
+    @MainActor
+    func stampedTraceForAbnormalExit(
+        at index: Int,
+        fallback: StepTrace,
+        segmentStart: Date,
+        baselineNetTokens: Int
+    ) -> StepTrace {
+        var trace = self.messages[index].steps ?? fallback
+        self.stampSegmentTelemetry(
+            trace: &trace,
+            at: index,
+            segmentStart: segmentStart,
+            baselineNetTokens: baselineNetTokens
+        )
+        return trace
     }
 
     /// Signal whichever backend is currently running to stop at the
@@ -634,7 +744,13 @@ extension ChatViewModel {
 
         // Stage 2: invoke the tool. Registry errors surface into
         // `ToolResult` with an `error` field; the model sees them as
-        // ipython content and can recover.
+        // ipython content and can recover. Wall-clock around the
+        // invoke goes into the trace's per-tool latency map (item 8
+        // telemetry); the ack is fast for the synthetic tools but real
+        // ones (http.fetch, fs.read on large files) can dominate the
+        // turn so this number is what the user is asking about when
+        // they look at the disclosure.
+        let toolStart = Date()
         let toolResult: ToolResult
         do {
             toolResult = try await self.toolRegistry.invoke(
@@ -647,7 +763,13 @@ extension ChatViewModel {
                 error: "tool invocation failed: \(error)"
             )
         }
+        let toolMillis = Int(Date().timeIntervalSince(toolStart) * 1000)
         if assistantIndex < self.messages.count {
+            var trace = self.messages[assistantIndex].steps ?? StepTrace()
+            var telemetry = trace.telemetry ?? StepTrace.TurnTelemetry()
+            telemetry.recordToolLatency(match.call.name, millis: toolMillis)
+            trace.telemetry = telemetry
+            self.messages[assistantIndex].steps = trace
             self.emitToolLoopEvent(.toolResulted(toolResult), at: assistantIndex)
         }
 
