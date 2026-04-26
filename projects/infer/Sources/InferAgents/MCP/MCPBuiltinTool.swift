@@ -149,6 +149,61 @@ public struct MCPLoadDiagnostic: Sendable, Equatable {
     }
 }
 
+/// Snapshot of one MCP server's state for the in-app config UI.
+/// Captures both the static config (so disabled / pending-approval
+/// servers are still visible to the user) and the runtime state
+/// (advertised roots, discovered tools) when the server actually
+/// launched. Cheap to copy across the actor boundary into the
+/// `@MainActor` view-model mirror.
+public struct MCPServerSummary: Sendable, Equatable, Identifiable {
+    public enum Status: Sendable, Equatable {
+        /// Subprocess running, tools registered.
+        case running
+        /// Skipped because the user hasn't approved this server.
+        /// `MCPApprovalStore.approve(serverID:)` + reload activates it.
+        case denied
+        /// Skipped because `enabled: false` in the config file. Edit
+        /// the JSON to flip and reload.
+        case disabled
+        /// Config file failed to decode, subprocess failed to launch,
+        /// or the initialize handshake errored. Message carries the
+        /// upstream cause.
+        case failed(String)
+    }
+
+    public let id: String
+    public let displayName: String
+    public let command: String
+    public let autoApprove: Bool
+    public let configRoots: [String]
+    public let isApproved: Bool
+    public let status: Status
+    public let advertisedRoots: [MCP.Root]
+    public let tools: [MCP.Tool]
+
+    public init(
+        id: String,
+        displayName: String,
+        command: String,
+        autoApprove: Bool,
+        configRoots: [String],
+        isApproved: Bool,
+        status: Status,
+        advertisedRoots: [MCP.Root] = [],
+        tools: [MCP.Tool] = []
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.command = command
+        self.autoApprove = autoApprove
+        self.configRoots = configRoots
+        self.isApproved = isApproved
+        self.status = status
+        self.advertisedRoots = advertisedRoots
+        self.tools = tools
+    }
+}
+
 /// Owns the running `MCPClient`s, registers their tools into a
 /// `ToolRegistry`, and drives lifecycle (bootstrap on app start,
 /// shutdown on app terminate). One `MCPHost` per app.
@@ -163,8 +218,17 @@ public actor MCPHost {
 
     public private(set) var clients: [String: MCPClient] = [:]
     public private(set) var diagnostics: [MCPLoadDiagnostic] = []
+    public private(set) var summaries: [MCPServerSummary] = []
+    /// Backing store for per-server consent decisions. Held here so
+    /// the host's `approve` / `revoke` methods land in the same place
+    /// the default approval provider reads, and so a fresh `MCPHost`
+    /// instance constructed for tests can inject a per-test store
+    /// without touching `UserDefaults.standard`.
+    public let approvalStore: MCPApprovalStore
 
-    public init() {}
+    public init(approvalStore: MCPApprovalStore = MCPApprovalStore()) {
+        self.approvalStore = approvalStore
+    }
 
     /// Discover and launch servers from `directory`, register their
     /// tools into `registry`. Returns the per-server diagnostics so
@@ -186,8 +250,10 @@ public actor MCPHost {
         stderrSink: StdioMCPTransport.StderrSink? = nil,
         approvalProvider: MCPApprovalProvider? = nil
     ) async -> [MCPLoadDiagnostic] {
-        let provider = approvalProvider ?? defaultMCPApprovalProvider()
+        let provider = approvalProvider
+            ?? defaultMCPApprovalProvider(store: approvalStore)
         var collected: [MCPLoadDiagnostic] = []
+        var summaries: [MCPServerSummary] = []
         let fm = FileManager.default
         guard let urls = try? fm.contentsOfDirectory(
             at: directory,
@@ -195,6 +261,8 @@ public actor MCPHost {
         ) else {
             // Missing directory is fine — the user just hasn't
             // configured any servers. No diagnostic.
+            self.summaries = []
+            self.diagnostics = []
             return []
         }
         let jsons = urls.filter { $0.pathExtension.lowercased() == "json" }
@@ -203,11 +271,21 @@ public actor MCPHost {
             do {
                 let data = try Data(contentsOf: url)
                 let config = try JSONDecoder().decode(MCPServerConfig.self, from: data)
+                let approved = approvalStore.isApproved(serverID: config.id)
                 guard config.enabled else {
                     collected.append(MCPLoadDiagnostic(
                         serverID: config.id,
                         severity: .skipped,
                         message: "disabled in config"
+                    ))
+                    summaries.append(MCPServerSummary(
+                        id: config.id,
+                        displayName: config.displayName ?? config.id,
+                        command: config.command,
+                        autoApprove: config.autoApprove,
+                        configRoots: config.roots,
+                        isApproved: approved,
+                        status: .disabled
                     ))
                     continue
                 }
@@ -216,42 +294,111 @@ public actor MCPHost {
                     collected.append(MCPLoadDiagnostic(
                         serverID: config.id,
                         severity: .skipped,
-                        message: "consent required — call MCPApprovalStore.approve(serverID:) or set autoApprove:true in the config"
+                        message: "consent required — approve in the Agents tab, or set autoApprove:true in the config"
+                    ))
+                    summaries.append(MCPServerSummary(
+                        id: config.id,
+                        displayName: config.displayName ?? config.id,
+                        command: config.command,
+                        autoApprove: config.autoApprove,
+                        configRoots: config.roots,
+                        isApproved: approved,
+                        status: .denied
                     ))
                     continue
                 }
-                try await launch(
+                let summary = await launch(
                     config: config,
                     into: registry,
                     clientName: clientName,
                     clientVersion: clientVersion,
                     stderrSink: stderrSink,
+                    isApproved: approved,
                     collected: &collected
                 )
+                summaries.append(summary)
             } catch {
                 collected.append(MCPLoadDiagnostic(
                     serverID: id,
                     severity: .error,
                     message: "config load failed: \(error)"
                 ))
+                summaries.append(MCPServerSummary(
+                    id: id,
+                    displayName: id,
+                    command: "(unparseable)",
+                    autoApprove: false,
+                    configRoots: [],
+                    isApproved: approvalStore.isApproved(serverID: id),
+                    status: .failed("config load failed: \(error.localizedDescription)")
+                ))
             }
         }
         diagnostics = collected
+        self.summaries = summaries.sorted { $0.id < $1.id }
         return collected
+    }
+
+    /// Approve a server through the host's store. The change persists
+    /// via `MCPApprovalStore`; call `reload(...)` afterward to actually
+    /// (re)launch the now-approved server. Splitting approval from
+    /// reload lets a UI batch multiple approvals before re-running
+    /// bootstrap once.
+    public func approve(serverID: String) {
+        approvalStore.approve(serverID: serverID)
+    }
+
+    /// Revoke approval. Call `reload(...)` afterward to shut down the
+    /// running client and unregister its tools. Like `approve`, a
+    /// no-op on the registry until reload.
+    public func revoke(serverID: String) {
+        approvalStore.revoke(serverID: serverID)
+    }
+
+    /// Tear down all running clients, unregister their tools from
+    /// `registry`, then re-run `bootstrap`. Used by the in-app UI
+    /// after the user toggles approvals or edits a config file.
+    /// Per-server tool unregistration is by `mcp.<id>.` prefix so a
+    /// previously-launched-now-revoked server's tools disappear from
+    /// the agent layer instead of lingering until app restart.
+    @discardableResult
+    public func reload(
+        directory: URL,
+        into registry: ToolRegistry,
+        clientName: String = "infer",
+        clientVersion: String = "0.0.0",
+        stderrSink: StdioMCPTransport.StderrSink? = nil,
+        approvalProvider: MCPApprovalProvider? = nil
+    ) async -> [MCPLoadDiagnostic] {
+        for (serverID, client) in clients {
+            await client.shutdown()
+            await registry.unregister(prefixed: "mcp.\(serverID).")
+        }
+        clients.removeAll()
+        return await bootstrap(
+            directory: directory,
+            into: registry,
+            clientName: clientName,
+            clientVersion: clientVersion,
+            stderrSink: stderrSink,
+            approvalProvider: approvalProvider
+        )
     }
 
     /// Launch a single configured server. Public so a host can wire
     /// servers from a non-file source (e.g. an in-memory list for
     /// tests, or a UI-driven add). Same diagnostic protocol as
     /// `bootstrap`.
+    @discardableResult
     public func launch(
         config: MCPServerConfig,
         into registry: ToolRegistry,
         clientName: String = "infer",
         clientVersion: String = "0.0.0",
         stderrSink: StdioMCPTransport.StderrSink? = nil,
+        isApproved: Bool = false,
         collected: inout [MCPLoadDiagnostic]
-    ) async throws {
+    ) async -> MCPServerSummary {
         let executable = MCPHost.resolveExecutable(config.command)
         let transport: StdioMCPTransport
         do {
@@ -262,12 +409,11 @@ public actor MCPHost {
                 stderrSink: stderrSink
             )
         } catch {
+            let msg = "launch failed: \(error)"
             collected.append(MCPLoadDiagnostic(
-                serverID: config.id,
-                severity: .error,
-                message: "launch failed: \(error)"
+                serverID: config.id, severity: .error, message: msg
             ))
-            return
+            return summary(for: config, isApproved: isApproved, status: .failed(msg))
         }
         let client = MCPClient(
             serverID: config.id,
@@ -279,12 +425,11 @@ public actor MCPHost {
             try await client.start(clientName: clientName, clientVersion: clientVersion)
         } catch {
             await client.shutdown()
+            let msg = "initialize failed: \(error)"
             collected.append(MCPLoadDiagnostic(
-                serverID: config.id,
-                severity: .error,
-                message: "initialize failed: \(error)"
+                serverID: config.id, severity: .error, message: msg
             ))
-            return
+            return summary(for: config, isApproved: isApproved, status: .failed(msg))
         }
         let tools = await client.tools()
         if tools.isEmpty {
@@ -313,6 +458,33 @@ public actor MCPHost {
             MCPBuiltinTool(serverID: config.id, tool: $0, client: client)
         }
         await registry.register(adapters)
+        return MCPServerSummary(
+            id: config.id,
+            displayName: config.displayName ?? config.id,
+            command: config.command,
+            autoApprove: config.autoApprove,
+            configRoots: config.roots,
+            isApproved: isApproved,
+            status: .running,
+            advertisedRoots: resolvedRoots,
+            tools: tools
+        )
+    }
+
+    private func summary(
+        for config: MCPServerConfig,
+        isApproved: Bool,
+        status: MCPServerSummary.Status
+    ) -> MCPServerSummary {
+        MCPServerSummary(
+            id: config.id,
+            displayName: config.displayName ?? config.id,
+            command: config.command,
+            autoApprove: config.autoApprove,
+            configRoots: config.roots,
+            isApproved: isApproved,
+            status: status
+        )
     }
 
     /// Tear down every running server. Called from app shutdown.

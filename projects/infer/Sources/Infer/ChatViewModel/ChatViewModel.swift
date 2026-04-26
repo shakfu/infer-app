@@ -141,6 +141,22 @@ final class ChatViewModel {
     /// tab is active. Setting to nil dismisses.
     var inspectorListing: AgentListing? = nil
 
+    /// Mirror of `mcpHost.summaries` for the Agents tab UI. Refreshed
+    /// after every bootstrap / reload by the host wiring code in
+    /// `bootstrapAgents`. Sorted by id (the host already returns it
+    /// sorted) so the list view doesn't shuffle on refresh. Empty
+    /// when the user has no MCP configs in their app-support dir.
+    var mcpServers: [MCPServerSummary] = []
+    /// Mirror of the most recent `MCPLoadDiagnostic` batch — surfaced
+    /// in the Agents tab as a banner above the server list. Reset on
+    /// every reload so the user sees only currently-broken servers.
+    var mcpDiagnostics: [MCPLoadDiagnostic] = []
+    /// True while a reload is in flight so the UI can disable the
+    /// reload button and show a spinner. Set on the MainActor by the
+    /// VM before kicking off the reload task; cleared after the host
+    /// finishes.
+    var mcpReloading: Bool = false
+
     /// Registry of locally-implemented Swift tools. Populated at init
     /// with the PR 2 built-ins (`clock.now`, `text.wordcount`). Grows
     /// as more tools ship. MCP-backed tools land here too via

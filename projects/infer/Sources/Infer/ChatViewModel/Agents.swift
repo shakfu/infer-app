@@ -161,7 +161,7 @@ extension ChatViewModel {
     func bootstrapAgents() {
         let firstParty = Self.firstPartyPersonaURLs()
         let retriever = self.makeAgentRetriever()
-        Task { [controller = self.agentController, registry = self.toolRegistry, settings = self.settings, logs = self.logs, mcpHost = self.mcpHost, retriever] in
+        Task { [weak self, controller = self.agentController, registry = self.toolRegistry, settings = self.settings, logs = self.logs, mcpHost = self.mcpHost, retriever] in
             // Register the PR 2 built-ins. Tool registrations and the
             // controller bootstrap happen in the same task so the
             // first switchAgent after launch sees a populated catalog.
@@ -232,6 +232,15 @@ extension ChatViewModel {
                     source: "mcp",
                     message: "\(diag.serverID): \(diag.message)"
                 )
+            }
+            // Mirror the host's per-server summary into an
+            // @Observable property the Agents-tab UI binds to.
+            // Capturing `self` weakly is overkill — bootstrap runs
+            // once at app start and the VM lives the whole session.
+            let summaries = await mcpHost.summaries
+            await MainActor.run { [weak self] in
+                self?.mcpServers = summaries
+                self?.mcpDiagnostics = mcpDiagnostics
             }
             let specs = await registry.allSpecs()
             let catalog = ToolCatalog(tools: specs)
@@ -498,6 +507,73 @@ extension ChatViewModel {
     /// because registration is idempotent by name).
     func reloadAgents() {
         bootstrapAgents()
+    }
+
+    // MARK: - MCP server actions (Agents tab)
+
+    /// Open the user MCP config folder in Finder, creating it if
+    /// missing so the user lands on a real directory rather than a
+    /// "no such folder" dialog.
+    func revealMCPFolder() {
+        let dir = Self.userMCPDirectory()
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: dir.path) {
+            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([dir])
+    }
+
+    /// Approve a server through the host's store and trigger a
+    /// reload so the now-approved server actually launches. Both
+    /// halves matter: persistence so the answer survives restart;
+    /// reload so the user sees the consequence immediately.
+    func approveMCPServer(id: String) {
+        Task { [weak self, mcpHost = self.mcpHost] in
+            await mcpHost.approve(serverID: id)
+            await self?.reloadMCPServers()
+        }
+    }
+
+    /// Revoke approval and reload — the running client (if any) gets
+    /// shut down, its tools unregister from the registry, and the
+    /// summary flips to `.denied`.
+    func revokeMCPServer(id: String) {
+        Task { [weak self, mcpHost = self.mcpHost] in
+            await mcpHost.revoke(serverID: id)
+            await self?.reloadMCPServers()
+        }
+    }
+
+    /// Re-scan the MCP config directory and re-launch the approved
+    /// servers. Disables the reload button while in flight so the
+    /// user can't double-trigger a torrent of subprocess churn.
+    func reloadMCPServers() async {
+        await MainActor.run { self.mcpReloading = true }
+        let logs = self.logs
+        let diagnostics = await self.mcpHost.reload(
+            directory: Self.userMCPDirectory(),
+            into: self.toolRegistry,
+            clientName: "infer",
+            clientVersion: "0.1.6",
+            stderrSink: { line in
+                logs.logFromBackground(.info, source: "mcp.stderr", message: line)
+            }
+        )
+        for diag in diagnostics {
+            let level: LogLevel
+            switch diag.severity {
+            case .error: level = .error
+            case .warning: level = .warning
+            case .skipped: level = .info
+            }
+            logs.log(level, source: "mcp", message: "\(diag.serverID): \(diag.message)")
+        }
+        let summaries = await self.mcpHost.summaries
+        await MainActor.run {
+            self.mcpServers = summaries
+            self.mcpDiagnostics = diagnostics
+            self.mcpReloading = false
+        }
     }
 
     /// Write a copy of `listing` to the user agents folder as a

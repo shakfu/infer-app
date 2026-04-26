@@ -119,6 +119,14 @@ private struct AgentsLibraryBody: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
+
+            // MCP servers section. Sits underneath the agents library
+            // because MCP-backed tools land in the same registry the
+            // agents draw from — keeping both surfaces in the Agents
+            // tab gives the user one place to manage everything that
+            // could be exposed to a model on their behalf.
+            Divider().padding(.vertical, 4)
+            MCPServersSection(vm: vm)
         }
     }
 

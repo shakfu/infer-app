@@ -47,6 +47,26 @@ public actor ToolRegistry {
         for tool in tools { register(tool) }
     }
 
+    /// Remove one tool by exact name. No-op when the tool isn't
+    /// registered. Used by the MCP host on reload / revocation so a
+    /// previously-launched server's tools don't linger after the
+    /// user removes its approval.
+    public func unregister(name: ToolName) {
+        tools.removeValue(forKey: name)
+    }
+
+    /// Remove every tool whose name starts with `prefix`. Convenience
+    /// for the MCP layer, which namespaces all of one server's tools
+    /// under `mcp.<serverID>.` — one call sweeps a whole server's
+    /// surface in a single mutation. Returns the names that were
+    /// removed so callers can log / surface them.
+    @discardableResult
+    public func unregister(prefixed prefix: String) -> [ToolName] {
+        let removed = tools.keys.filter { $0.hasPrefix(prefix) }
+        for name in removed { tools.removeValue(forKey: name) }
+        return removed
+    }
+
     public func tool(named name: ToolName) -> (any BuiltinTool)? {
         tools[name]
     }

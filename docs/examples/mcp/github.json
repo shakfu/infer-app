@@ -1,0 +1,11 @@
+{
+  "id": "github",
+  "displayName": "GitHub",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-github"],
+  "env": {
+    "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_REPLACE_ME"
+  },
+  "enabled": true,
+  "autoApprove": false
+}

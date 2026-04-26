@@ -1,0 +1,13 @@
+{
+  "id": "filesystem",
+  "displayName": "Filesystem",
+  "command": "npx",
+  "args": [
+    "-y",
+    "@modelcontextprotocol/server-filesystem",
+    "/Users/CHANGE_ME/Documents"
+  ],
+  "enabled": true,
+  "autoApprove": false,
+  "roots": ["~/Documents"]
+}

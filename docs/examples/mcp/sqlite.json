@@ -1,0 +1,12 @@
+{
+  "id": "sqlite",
+  "displayName": "SQLite",
+  "command": "uvx",
+  "args": [
+    "mcp-server-sqlite",
+    "--db-path",
+    "/Users/CHANGE_ME/data/notes.sqlite"
+  ],
+  "enabled": false,
+  "autoApprove": false
+}
