@@ -1,0 +1,35 @@
+--- Sources/SQLiteVec/Database.swift
++++ Sources/SQLiteVec/Database.swift
+@@ -272,8 +272,18 @@
+                 result = sqlite3_bind_int(stmt, Int32(index + 1), value ? 1 : 0)
+             case let value as Double:
+                 result = sqlite3_bind_double(stmt, Int32(index + 1), value)
++            // Patched: upstream only handled `Int` and narrowed to
++            // `Int32`. `Int64` fell into `default` and bound as NULL,
++            // silently losing rowids, timestamps, and auto-increment
++            // ids at every call site. And narrowing `Int` to `Int32`
++            // truncates values > 2^31. Both cases now go through
++            // `bind_int64`, which is what SQLite uses internally
++            // anyway. Order matters: `Int64` first so the `Int` case
++            // doesn't shadow it on platforms where they're distinct.
++            case let value as Int64:
++                result = sqlite3_bind_int64(stmt, Int32(index + 1), value)
+             case let value as Int:
+-                result = sqlite3_bind_int(stmt, Int32(index + 1), Int32(value))
++                result = sqlite3_bind_int64(stmt, Int32(index + 1), Int64(value))
+             case let value as [Float]:
+                 result = sqlite3_bind_blob(
+                     stmt, Int32(index + 1), value, Int32(MemoryLayout<Float>.stride * value.count),
+@@ -296,7 +306,11 @@
+ 
+     private func execute(_ stmt: OpaquePointer) throws {
+         defer { sqlite3_finalize(stmt) }
+-        try SQLiteVecError.check(sqlite3_step(stmt))
++        // Pass the db handle so `check` can read the real error
++        // message via `sqlite3_errmsg` — upstream omitted this, which
++        // turns every statement-level failure into a bare "Error N"
++        // with no context.
++        try SQLiteVecError.check(sqlite3_step(stmt), handler.handle)
+     }
+ 
+     private func query(_ stmt: OpaquePointer) throws -> [[String: any Sendable]] {

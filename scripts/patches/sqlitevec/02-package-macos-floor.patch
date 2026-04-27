@@ -1,0 +1,19 @@
+--- Package.swift
++++ Package.swift
+@@ -6,10 +6,15 @@
+ let package = Package(
+     name: "SQLiteVec",
+     platforms: [
++        // Upstream declares macOS 10.15, but `sqlite3_changes64` (used in
++        // Database.modifiedRowsCount) requires 12.3. Bumped here to 14 to
++        // match the Infer app's own minimum. The bundled SQLite
++        // amalgamation has the symbol unconditionally — Swift just needs
++        // a matching availability floor.
+         .iOS(.v13),
+         .watchOS(.v6),
+         .tvOS(.v13),
+-        .macOS(.v10_15),
++        .macOS(.v14),
+     ],
+     products: [
+         .executable(

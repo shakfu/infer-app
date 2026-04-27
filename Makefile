@@ -7,6 +7,9 @@ WHISPER_FRAMEWORK := $(WHISPER_XCFRAMEWORK)/macos-arm64_x86_64/whisper.framework
 WHISPER_TAG := v1.8.4
 WEBASSETS_DIR := thirdparty/webassets
 WEBASSETS_MARKER := $(WEBASSETS_DIR)/katex/katex.min.js
+SQLITEVEC_DIR := thirdparty/SQLiteVec
+SQLITEVEC_MARKER := $(SQLITEVEC_DIR)/Package.swift
+SQLITEVEC_TAG := 0.0.14
 INFER_DIR := projects/infer
 INFER_BUILD_DIR := $(BUILD_DIR)/infer-xcode
 
@@ -31,7 +34,7 @@ INFER_PRODUCT_DIR := $(INFER_BUILD_DIR)/Build/Products/$(INFER_CONFIG)
 INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 
 .PHONY: all build bundle run clean clean-infer clean-mlx-cache test
-.PHONY: fetch-llama fetch-whisper fetch-webassets generate-icon
+.PHONY: fetch-llama fetch-whisper fetch-webassets fetch-sqlitevec generate-icon
 .PHONY: build-release bundle-release run-release
 
 all: build
@@ -102,7 +105,17 @@ $(WEBASSETS_MARKER):
 
 fetch-webassets: $(WEBASSETS_MARKER)
 
-build: $(LLAMA_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK)
+# Vendored SwiftPM dependency with local patches. Unlike the llama and
+# whisper xcframeworks (prebuilt binaries), SQLiteVec is source we
+# clone from upstream and patch — see docs/patches/sqlitevec.md for
+# the full rationale on why each patch exists. Bump $(SQLITEVEC_TAG)
+# to upgrade; rerun this target to re-clone and re-apply.
+$(SQLITEVEC_MARKER):
+	./scripts/fetch_sqlitevec.sh $(SQLITEVEC_TAG)
+
+fetch-sqlitevec: $(SQLITEVEC_MARKER)
+
+build: $(LLAMA_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SQLITEVEC_MARKER)
 	xcodebuild $(INFER_XCODE_FLAGS) build
 
 bundle: build $(INFER_DIR)/Resources/AppIcon.icns $(WEBASSETS_MARKER)

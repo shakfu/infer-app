@@ -4,7 +4,9 @@ We vendor [jkrukowski/SQLiteVec](https://github.com/jkrukowski/SQLiteVec) at `th
 
 **Upstream version at time of vendoring**: tagged `0.0.14` (cloned from `main` shortly after that tag; no local modifications to the tag itself).
 
-If upstream fixes any of these, remove the corresponding patch here and update the "Upstream version" line above.
+The vendored copy at `thirdparty/SQLiteVec/` is **not** checked into git (gitignored under `thirdparty/*`). It's reproduced on a fresh checkout by running `make fetch-sqlitevec`, which calls `scripts/fetch_sqlitevec.sh` to clone upstream at `$(SQLITEVEC_TAG)` and apply the patches below — patch 1 inline in the script (a file move), patches 2 and 3 as unified diffs in `scripts/patches/sqlitevec/`. Bumping the tag is the same workflow as `LLAMA_TAG` / `WHISPER_TAG`: edit the value in the `Makefile`, `rm -rf thirdparty/SQLiteVec`, then `make fetch-sqlitevec`. If the patch hunks no longer apply against the new upstream, regenerate them from the corresponding section below.
+
+If upstream fixes any of these, remove the corresponding patch (and its `.patch` file under `scripts/patches/sqlitevec/`) and update the "Upstream version" line above.
 
 ---
 
