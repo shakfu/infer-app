@@ -209,7 +209,10 @@ struct MessageRow: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let trace = message.steps, !trace.steps.isEmpty {
-                StepTraceDisclosure(trace: trace)
+                StepTraceDisclosure(
+                    trace: trace,
+                    progress: message.latestToolProgress
+                )
             }
             if let refs = message.retrievedChunks, !refs.isEmpty {
                 SourcesDisclosure(chunks: refs)
@@ -281,6 +284,12 @@ struct MessageRow: View {
 /// auto-behaviour for the remainder of the row's lifetime.
 struct StepTraceDisclosure: View {
     let trace: StepTrace
+    /// Latest `ToolEvent.log` line from an in-flight streaming tool, if
+    /// any. Surfaces in `pendingRow` so a long-running tool (Quarto
+    /// render, large http fetch) shows live progress instead of a
+    /// silent spinner. Cleared by the loop driver once the tool
+    /// resolves.
+    var progress: String? = nil
     @State private var userOverride: Bool?
     /// Default true — matches the pre-M3 always-auto-expand behaviour.
     /// `UserDefaults.bool(forKey:)` returns false for unset keys, so
@@ -378,11 +387,20 @@ struct StepTraceDisclosure: View {
         if isStreaming, let last = trace.steps.last {
             switch last {
             case .toolCall(let call):
-                HStack(spacing: 6) {
+                HStack(alignment: .top, spacing: 6) {
                     ProgressView().controlSize(.mini)
-                    Text("running \(call.name)…")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("running \(call.name)…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if let progress, !progress.isEmpty {
+                            Text(progress)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(2)
+                                .truncationMode(.tail)
+                        }
+                    }
                 }
             case .toolResult:
                 HStack(spacing: 6) {
@@ -460,6 +478,39 @@ private struct TelemetryBadge: View {
 private struct StepRow: View {
     let step: StepTrace.Step
 
+    /// Treat a tool-result string as a clickable file URL when it is an
+    /// absolute path (or `file://` URL) to a file that currently exists
+    /// on disk. The existence check is deliberate — some tools return
+    /// strings that *look* like paths but aren't (e.g. "/error: ..."),
+    /// and rendering those as broken links would be worse than just
+    /// showing the raw text.
+    ///
+    /// Multi-line output (e.g. a JSON blob whose first line happens to
+    /// be path-shaped) doesn't qualify; the output must be a single
+    /// trimmed line.
+    static func openableURL(for raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.contains(where: { $0.isNewline }) else {
+            return nil
+        }
+        let url: URL
+        if trimmed.hasPrefix("file://") {
+            guard let parsed = URL(string: trimmed) else { return nil }
+            url = parsed
+        } else if trimmed.hasPrefix("/") {
+            url = URL(fileURLWithPath: trimmed)
+        } else {
+            return nil
+        }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+              !isDir.boolValue else {
+            return nil
+        }
+        return url
+    }
+
     var body: some View {
         switch step {
         case .assistantText(let text) where !text.isEmpty:
@@ -491,10 +542,34 @@ private struct StepRow: View {
                 Image(systemName: "arrow.down.left.circle")
                     .font(.caption2)
                     .foregroundStyle(result.error == nil ? Color.green : Color.red)
-                Text(result.error ?? result.output)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(result.error == nil ? Color.primary : Color.red)
+                if result.error == nil, let openable = StepRow.openableURL(for: result.output) {
+                    // Tool output is an absolute path or file:// URL
+                    // pointing at an existing file. Render as a button
+                    // that opens via Launch Services (NSWorkspace) so
+                    // PDFs go to Preview, HTML to the default browser,
+                    // etc. — matches what `open <path>` does in a shell.
+                    Button {
+                        NSWorkspace.shared.open(openable)
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(openable.lastPathComponent)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(Color.accentColor)
+                                .underline()
+                            Image(systemName: "arrow.up.forward.app")
+                                .font(.caption2)
+                                .foregroundStyle(Color.accentColor)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help(openable.path)
                     .textSelection(.enabled)
+                } else {
+                    Text(result.error ?? result.output)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(result.error == nil ? Color.primary : Color.red)
+                        .textSelection(.enabled)
+                }
             }
         case .finalAnswer:
             // Final answer is rendered as the main message body; no need

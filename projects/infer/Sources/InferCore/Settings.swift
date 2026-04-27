@@ -53,6 +53,13 @@ public enum PersistKey {
     /// composition primitive is active. Tuned to be high enough that
     /// normal use never trips it, low enough to bound runaway loops.
     public static let maxAgentSteps = "infer.maxAgentSteps"
+
+    /// Optional explicit path to a `quarto` executable. Empty string /
+    /// missing key means "auto-detect" — `QuartoLocator` falls back to
+    /// the login-shell PATH and a list of common install locations.
+    /// Set this when Quarto is installed somewhere unusual or the user
+    /// wants to pin a specific install (e.g. a pre-release).
+    public static let quartoPath = "infer.quartoPath"
 }
 
 public struct InferSettings: Equatable, Sendable {
@@ -80,6 +87,11 @@ public struct InferSettings: Equatable, Sendable {
     /// output on a given backend. Stored as a string in UserDefaults since
     /// `UserDefaults` has no native `UInt64` path.
     public var seed: UInt64?
+    /// Optional override for the `quarto` executable used by the Quarto
+    /// render tool. `nil` (or empty) means "auto-detect" via PATH and
+    /// common install locations. Stored as a String so the field can
+    /// be edited as text in the UI without nil-aware Bindings.
+    public var quartoPath: String?
 
     public init(
         systemPrompt: String,
@@ -88,7 +100,8 @@ public struct InferSettings: Equatable, Sendable {
         maxTokens: Int,
         thinkingBudget: Int = 4096,
         maxAgentSteps: Int = 8,
-        seed: UInt64? = nil
+        seed: UInt64? = nil,
+        quartoPath: String? = nil
     ) {
         self.systemPrompt = systemPrompt
         self.temperature = temperature
@@ -97,6 +110,7 @@ public struct InferSettings: Equatable, Sendable {
         self.thinkingBudget = thinkingBudget
         self.maxAgentSteps = maxAgentSteps
         self.seed = seed
+        self.quartoPath = quartoPath
     }
 
     public static let defaults = InferSettings(
@@ -106,12 +120,15 @@ public struct InferSettings: Equatable, Sendable {
         maxTokens: 512,
         thinkingBudget: 4096,
         maxAgentSteps: 8,
-        seed: nil
+        seed: nil,
+        quartoPath: nil
     )
 
     public static func load(from defaults: UserDefaults = .standard) -> InferSettings {
         let seedString = defaults.string(forKey: PersistKey.seed)
         let seed: UInt64? = seedString.flatMap { UInt64($0) }
+        let quartoRaw = defaults.string(forKey: PersistKey.quartoPath)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return InferSettings(
             systemPrompt: defaults.string(forKey: PersistKey.systemPrompt) ?? "",
             temperature: defaults.object(forKey: PersistKey.temperature) as? Double ?? Self.defaults.temperature,
@@ -119,7 +136,8 @@ public struct InferSettings: Equatable, Sendable {
             maxTokens: defaults.object(forKey: PersistKey.maxTokens) as? Int ?? Self.defaults.maxTokens,
             thinkingBudget: defaults.object(forKey: PersistKey.thinkingBudget) as? Int ?? Self.defaults.thinkingBudget,
             maxAgentSteps: defaults.object(forKey: PersistKey.maxAgentSteps) as? Int ?? Self.defaults.maxAgentSteps,
-            seed: seed
+            seed: seed,
+            quartoPath: (quartoRaw?.isEmpty == false) ? quartoRaw : nil
         )
     }
 
@@ -134,6 +152,11 @@ public struct InferSettings: Equatable, Sendable {
             defaults.set(String(seed), forKey: PersistKey.seed)
         } else {
             defaults.removeObject(forKey: PersistKey.seed)
+        }
+        if let quartoPath, !quartoPath.isEmpty {
+            defaults.set(quartoPath, forKey: PersistKey.quartoPath)
+        } else {
+            defaults.removeObject(forKey: PersistKey.quartoPath)
         }
     }
 }

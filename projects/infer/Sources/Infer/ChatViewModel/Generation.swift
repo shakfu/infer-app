@@ -751,18 +751,36 @@ extension ChatViewModel {
         // turn so this number is what the user is asking about when
         // they look at the disclosure.
         let toolStart = Date()
-        let toolResult: ToolResult
-        do {
-            toolResult = try await self.toolRegistry.invoke(
-                name: match.call.name,
-                arguments: match.call.arguments
-            )
-        } catch {
-            toolResult = ToolResult(
-                output: "",
-                error: "tool invocation failed: \(error)"
-            )
-        }
+        // Drains the streaming tool invocation through `ToolStreamConsumer`.
+        // Per-line `.log` events from the tool become both a transient
+        // `latestToolProgress` on the assistant message (drives the
+        // disclosure's pendingRow) and an `AgentEvent.toolProgress`
+        // (drives the controller's event stream). Plain (non-streaming)
+        // tools come through the consumer as a single `.result` event;
+        // `latestToolProgress` simply never gets set for them.
+        let toolName = match.call.name
+        // Callbacks are declared `@MainActor` so each `await` inside
+        // `ToolStreamConsumer.consume` hops to the main actor in the
+        // same order the events arrive on the stream. Ordering matters:
+        // the post-loop `latestToolProgress = nil` (below the consume
+        // call) must land *after* every progress update — using a
+        // detached `Task { @MainActor in }` here would queue updates
+        // that could race past the nil clear and leave a stale line
+        // visible after the tool resolves.
+        let toolResult = await ToolStreamConsumer.consume(
+            registry: self.toolRegistry,
+            name: toolName,
+            arguments: match.call.arguments,
+            onProgress: { @MainActor [weak self] line in
+                guard let self else { return }
+                if assistantIndex < self.messages.count {
+                    self.messages[assistantIndex].latestToolProgress = line
+                }
+            },
+            onEvent: { @MainActor [weak self] event in
+                self?.emitToolLoopEvent(event, at: assistantIndex)
+            }
+        )
         let toolMillis = Int(Date().timeIntervalSince(toolStart) * 1000)
         if assistantIndex < self.messages.count {
             var trace = self.messages[assistantIndex].steps ?? StepTrace()
@@ -770,6 +788,10 @@ extension ChatViewModel {
             telemetry.recordToolLatency(match.call.name, millis: toolMillis)
             trace.telemetry = telemetry
             self.messages[assistantIndex].steps = trace
+            // Clear the transient progress string once the tool has
+            // resolved — the disclosure's pendingRow falls back to
+            // "awaiting final answer..." for the second-decode pause.
+            self.messages[assistantIndex].latestToolProgress = nil
             self.emitToolLoopEvent(.toolResulted(toolResult), at: assistantIndex)
         }
 

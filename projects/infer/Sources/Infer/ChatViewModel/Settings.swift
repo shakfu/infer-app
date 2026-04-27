@@ -21,6 +21,22 @@ extension ChatViewModel {
 
         let effects = agentController.applySettings(new, previous: previous)
         apply(effects)
+
+        // Re-register the Quarto tool against the new override path so
+        // the next render uses the right binary. Cheap (no process is
+        // spawned at registration time) and safe to do unconditionally,
+        // but we gate on a real change to avoid churning the registry
+        // on every parameter slider tick.
+        if previous.quartoPath != new.quartoPath {
+            let registry = self.toolRegistry
+            let path = new.quartoPath
+            Task {
+                await registry.unregister(name: "builtin.quarto.render")
+                await registry.register(
+                    QuartoRenderTool(locator: QuartoLocator(override: path))
+                )
+            }
+        }
     }
 
     /// Recompute context-window usage for the active backend. llama reports

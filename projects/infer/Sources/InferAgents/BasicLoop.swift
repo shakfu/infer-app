@@ -92,7 +92,8 @@ public enum BasicLoop {
             stepCount: context.stepCount,
             retrieve: context.retrieve,
             invokeTool: context.invokeTool,
-            decode: context.decode ?? decoder
+            decode: context.decode ?? decoder,
+            invokeToolStreaming: context.invokeToolStreaming
         )
         if let custom = try await agent.customLoop(turn: turn, context: customCtx) {
             // Even though the loop didn't decode, replay the trace's
@@ -166,19 +167,49 @@ public enum BasicLoop {
                 events?(.toolRequested(prefix: trimmedPrefix, call: match.call))
 
                 // Invoke. A missing invoker on a tool-calling agent is
-                // a host configuration error — fail loud.
-                guard let invoke = context.invokeTool else {
+                // a host configuration error — fail loud. The streaming
+                // hook is preferred when both are wired, so per-line
+                // progress can surface as `toolProgress` events.
+                guard context.invokeTool != nil || context.invokeToolStreaming != nil else {
                     throw AgentError.toolInvokerMissing
                 }
                 events?(.toolRunning(name: match.call.name))
                 let raw: ToolResult
-                do {
-                    raw = try await invoke(match.call.name, match.call.arguments)
-                } catch {
-                    raw = ToolResult(
-                        output: "",
-                        error: "tool dispatch failed: \(error.localizedDescription)"
-                    )
+                if let streaming = context.invokeToolStreaming {
+                    var collected: ToolResult?
+                    do {
+                        for try await toolEvent in streaming(match.call.name, match.call.arguments) {
+                            switch toolEvent {
+                            case .log(let line):
+                                events?(.toolProgress(name: match.call.name, message: line))
+                            case .progress:
+                                break
+                            case .result(let r):
+                                collected = r
+                            }
+                        }
+                        raw = collected ?? ToolResult(
+                            output: "",
+                            error: "tool stream ended without a result"
+                        )
+                    } catch {
+                        raw = ToolResult(
+                            output: "",
+                            error: "tool dispatch failed: \(error.localizedDescription)"
+                        )
+                    }
+                } else if let invoke = context.invokeTool {
+                    do {
+                        raw = try await invoke(match.call.name, match.call.arguments)
+                    } catch {
+                        raw = ToolResult(
+                            output: "",
+                            error: "tool dispatch failed: \(error.localizedDescription)"
+                        )
+                    }
+                } else {
+                    // Unreachable due to the guard above.
+                    raw = ToolResult(output: "", error: "no invoker")
                 }
                 let transformed = try await agent.transformToolResult(
                     raw, call: match.call, context: context

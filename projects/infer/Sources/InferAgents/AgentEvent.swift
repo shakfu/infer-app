@@ -40,6 +40,15 @@ public enum AgentEvent: Sendable, Equatable {
     /// trace shape.
     case toolRunning(name: ToolName)
 
+    /// Streaming progress line from a tool invocation in flight. UI-only
+    /// — drives a live log row in the disclosure between `toolRunning`
+    /// and `toolResulted`. NO trace effect: `applyToTrace` ignores it,
+    /// preserving bytewise compatibility with the pre-streaming trace
+    /// shape (see `AgentEventTests.bytewiseFinalTrace`). Only emitted
+    /// when the loop driver is wired with a `StreamingToolInvoker` and
+    /// the active tool conforms to `StreamingBuiltinTool`.
+    case toolProgress(name: ToolName, message: String)
+
     /// Tool invocation produced a `ToolResult` (success or error).
     /// Consumer appends `.toolResult(result)` to the trace.
     case toolResulted(ToolResult)
@@ -64,7 +73,7 @@ public enum AgentEvent: Sendable, Equatable {
     /// without driving the runner.
     public func applyToTrace(_ trace: inout StepTrace) {
         switch self {
-        case .assistantChunk, .toolRunning, .finalChunk:
+        case .assistantChunk, .toolRunning, .toolProgress, .finalChunk:
             break
         case .toolRequested(let prefix, let call):
             if !prefix.isEmpty {

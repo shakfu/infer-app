@@ -6,7 +6,7 @@ A macOS SwiftUI chat app with two local inference backends selectable at runtime
 
 - **MLX** via `mlx-swift-lm`
 
-Plus, local speech-to-text via `whisper.cpp` (file drop and in-app recording), on-device dictation via `SFSpeechRecognizer`, TTS, a searchable SQLite vault of all conversations, and Markdown/PDF/HTML transcript export.
+Plus, local speech-to-text via `whisper.cpp` (file drop and in-app recording), on-device dictation via `SFSpeechRecognizer`, TTS, a searchable SQLite vault of all conversations, Markdown/PDF/HTML transcript export, and document rendering via an external Quarto installation.
 
 Built with Swift Package Manager and `xcodebuild`.
 
@@ -77,6 +77,51 @@ Hover over the latest turn of either role to reveal inline actions:
 - **Edit + resend** (user row, pencil) — pop the last user/assistant pair back into the composer for editing before resending.
 
 Both rewind the backend's KV cache and re-prefill from the truncated transcript. Available only when the VM is idle and the last two messages are a user→assistant pair.
+
+## Quarto rendering
+
+The bundled **Quarto renderer** agent generates Quarto (`.qmd`) source from a description and renders it to HTML, PDF, DOCX, PowerPoint, Reveal.js slides, Typst, LaTeX, EPUB, etc. — via your local Quarto installation. Quarto itself isn't bundled; the app finds it on `PATH` (or a path you pin in settings), so upgrades are independent of the app and there's no signing/notarization burden.
+
+**Setup (one-time)**
+
+1. Install Quarto: `brew install quarto` (or download from [quarto.org](https://quarto.org/docs/get-started/)).
+2. Open the **Tools** tab in the sidebar (wrench icon). The Quarto card shows a live status badge — `Quarto 1.9.37` in green when found, `not found` in orange otherwise. If the app's GUI environment doesn't see your shell's `PATH` (common on macOS), use **Browse…** to point at `/usr/local/bin/quarto` or `/opt/homebrew/bin/quarto` and click **Apply**.
+
+**Use**
+
+1. Sidebar → **Agents** tab → activate **Quarto renderer**. Requires a llama.cpp model with a tool-calling template (Llama 3.x, Qwen 2.5+/3, Hermes-3); MLX is not supported by the agent today.
+2. In chat, ask for the format you want:
+
+   ```
+   Create a powerpoint presentation on how to write a short story.
+   ```
+
+   ```
+   Convert the following to PDF:
+
+   ---
+   title: "Quarterly Report"
+   ---
+
+   ## Summary
+
+   Body text.
+   ```
+
+3. Watch the disclosure: a streaming-progress sub-line under "running builtin.quarto.render…" surfaces Quarto's stderr (typst startup, pandoc invocation) so a 5–30 s render isn't silent.
+4. Click the rendered filename in the disclosure to open the result via Launch Services (PDF → Preview, HTML → default browser, PPTX → Keynote / PowerPoint).
+
+**Render cache**
+
+Renders stage under `~/Library/Caches/quarto-renders/`. macOS does not auto-clean app caches; the **Tools** tab's "Render cache" row shows the file count + total size, with **Show in Finder** and **Clear…** buttons. Clearing removes every staged render — links from past chat messages stop working.
+
+**Format conventions the agent knows**
+
+- `pptx` / `revealjs` / `beamer`: `#` for section/title slide, `##` for content slide with bullets, 3–6 bullets per slide.
+- `pdf` / `html` / `docx` / `epub`: ordinary `#` for chapter, `##` for section, prose body.
+- `typst` / `latex`: Quarto-flavored markdown (the agent does *not* emit raw Typst/LaTeX); Quarto compiles to those targets from markdown.
+
+The agent's system prompt teaches these conventions and includes a worked pptx example. Smaller models (1B-3B params) can drift back to prose; if that happens, either prompt explicitly ("as slides with one bullet per point") or load a larger model.
 
 ## Reproducibility (seed)
 

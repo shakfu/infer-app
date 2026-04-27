@@ -55,6 +55,13 @@ struct ChatMessage: Identifiable, Equatable {
     /// header — switches off when the model emits `</think>` and
     /// the visible answer starts arriving.
     var isThinking: Bool = false
+    /// Most recent `ToolEvent.log` line from a streaming tool whose
+    /// invocation is currently in flight. Cleared when the tool
+    /// resolves. Surfaces in `StepTraceDisclosure.pendingRow` so the
+    /// user sees what a long-running tool (Quarto render, big http
+    /// fetch) is doing instead of a silent spinner. Ephemeral —
+    /// not persisted.
+    var latestToolProgress: String? = nil
 }
 
 enum Backend: String, CaseIterable, Identifiable {

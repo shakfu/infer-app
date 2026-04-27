@@ -2,12 +2,13 @@ import SwiftUI
 import InferCore
 
 enum SidebarTab: String, CaseIterable, Identifiable {
-    case model, agents, history, voice, appearance, console
+    case model, agents, tools, history, voice, appearance, console
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .model: return "cube.box"
         case .agents: return "person.crop.circle.badge.questionmark"
+        case .tools: return "wrench.and.screwdriver"
         case .history: return "clock.arrow.circlepath"
         case .console: return "terminal"
         case .voice: return "waveform"
@@ -18,6 +19,7 @@ enum SidebarTab: String, CaseIterable, Identifiable {
         switch self {
         case .model: return "Model"
         case .agents: return "Agents"
+        case .tools: return "Tools"
         case .history: return "History"
         case .console: return "Console"
         case .voice: return "Voice"
@@ -53,6 +55,8 @@ struct SidebarView: View {
                         parametersSection
                     case .agents:
                         agentsLibrarySection
+                    case .tools:
+                        toolsSection
                     case .history:
                         historySection
                     case .console:

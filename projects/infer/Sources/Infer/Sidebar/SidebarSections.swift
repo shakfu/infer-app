@@ -1,5 +1,7 @@
 import SwiftUI
 import AppKit
+import InferAgents
+import InferCore
 
 extension SidebarView {
     // MARK: History
@@ -193,6 +195,68 @@ extension SidebarView {
             && s.maxTokens == draft.maxTokens
             && s.thinkingBudget == draft.thinkingBudget
             && s.seed == draft.seed
+            && (s.quartoPath ?? "") == (draft.quartoPath ?? "")
+    }
+
+    // MARK: Tools
+
+    /// Tool-specific configuration. Distinct from Parameters (which
+    /// holds sampling / prompt knobs that affect the next decode) and
+    /// from Agents (which scopes which tools an agent may call). This
+    /// tab is where per-tool dependencies and credentials live —
+    /// today just Quarto's executable path; future additions
+    /// (`http.fetch` host allowlist, `fs.read` allowed roots, MCP
+    /// server config) belong here too.
+    var toolsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(icon: "wrench.and.screwdriver", title: "Tools")
+
+            quartoToolGroup
+
+            HStack {
+                Button("Reset") {
+                    draft.quartoPath = InferSettings.defaults.quartoPath
+                }
+                .controlSize(.small)
+                Spacer()
+                Button("Apply") { vm.applySettings(draft) }
+                    .controlSize(.small)
+                    .disabled(draftMatchesCurrent)
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    /// Quarto subgroup. Wrapped in a small titled VStack so future
+    /// per-tool groups (HTTP allowlist, FS sandbox) can sit alongside
+    /// without all the controls running together.
+    @ViewBuilder
+    private var quartoToolGroup: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Quarto").font(.caption.weight(.semibold))
+            Text("Used by the **Quarto renderer** agent (`builtin.quarto.render`) to convert markdown to HTML, PDF, DOCX, slides, etc. Renders use the executable found below — leave the field empty to auto-detect.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            QuartoSettingsRow(
+                path: Binding(
+                    get: { draft.quartoPath ?? "" },
+                    set: { s in
+                        let trimmed = s.trimmingCharacters(in: .whitespaces)
+                        draft.quartoPath = trimmed.isEmpty ? nil : trimmed
+                    }
+                )
+            )
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.secondary.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.15))
+        )
     }
 
     /// Seed editor. Empty field = random (non-deterministic). A numeric

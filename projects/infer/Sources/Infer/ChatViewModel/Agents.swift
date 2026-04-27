@@ -168,6 +168,13 @@ extension ChatViewModel {
             await registry.register([
                 ClockNowTool(),
                 WordCountTool(),
+                // Quarto render tool. Locator picks up the user's
+                // `quartoPath` override from settings; nil falls back
+                // to PATH and common install locations. Re-registered
+                // on settings change via `reregisterQuartoTool`.
+                QuartoRenderTool(
+                    locator: QuartoLocator(override: settings.quartoPath)
+                ),
                 // Synthetic dispatch primitive for orchestrator agents
                 // (M5c). The router emits a tool call; the
                 // composition driver reads it from the trace

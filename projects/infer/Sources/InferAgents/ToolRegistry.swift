@@ -88,4 +88,49 @@ public actor ToolRegistry {
         guard let tool = tools[name] else { throw ToolError.unknown(name) }
         return try await tool.invoke(arguments: arguments)
     }
+
+    /// Streaming counterpart to `invoke`. If the named tool conforms to
+    /// `StreamingBuiltinTool`, its native streaming path is used. For
+    /// plain `BuiltinTool` adopters, the simple `invoke` is wrapped in a
+    /// single-event stream so the caller's drain logic is uniform.
+    ///
+    /// Unknown tool names yield a stream that terminates immediately
+    /// with `ToolError.unknown` — symmetric with `invoke(name:)`'s throw,
+    /// surfaced as a stream error rather than a synchronous throw because
+    /// the function returns a (non-throwing) stream value.
+    public func invokeStreaming(name: ToolName, arguments: String) -> AsyncThrowingStream<ToolEvent, Error> {
+        let tool = tools[name]
+        return AsyncThrowingStream { continuation in
+            guard let tool else {
+                continuation.finish(throwing: ToolError.unknown(name))
+                return
+            }
+            if let streaming = tool as? any StreamingBuiltinTool {
+                let inner = streaming.invokeStreaming(arguments: arguments)
+                let task = Task {
+                    do {
+                        for try await event in inner {
+                            continuation.yield(event)
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { _ in task.cancel() }
+                return
+            }
+            // Plain BuiltinTool — adapt to a single-event stream.
+            let task = Task {
+                do {
+                    let result = try await tool.invoke(arguments: arguments)
+                    continuation.yield(.result(result))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 }

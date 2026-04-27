@@ -183,6 +183,14 @@ public struct AgentContext: Sendable {
     /// decode tokens treats nil as a hard error rather than a
     /// degradation, since there's nothing to fall back to.
     public let invokeTool: ToolInvoker?
+    /// Optional streaming tool invocation hook. When set, the loop
+    /// driver prefers this path for tools that conform to
+    /// `StreamingBuiltinTool`, surfacing intermediate `.log` events as
+    /// `AgentEvent.toolProgress` in real time. Loop drivers fall back
+    /// to `invokeTool` when this is nil. The two hooks are separate so
+    /// hosts that don't care about progress (CLI, tests, batch
+    /// evaluation) keep their existing one-shot wiring; hosts that do
+    /// care (chat UI, future progress disclosure) wire both.
     /// Optional LLM decode hook. Set by the loop driver before
     /// calling into agent hooks. `customLoop` agents that need to
     /// talk to an LLM (e.g. `PlannerAgent`, which generates a plan,
@@ -195,6 +203,7 @@ public struct AgentContext: Sendable {
     /// owns its own loop but still wants to decode against the host's
     /// runner.
     public let decode: AgentDecoder?
+    public let invokeToolStreaming: StreamingToolInvoker?
 
     public init(
         runner: RunnerHandle,
@@ -203,7 +212,8 @@ public struct AgentContext: Sendable {
         stepCount: Int = 0,
         retrieve: Retriever? = nil,
         invokeTool: ToolInvoker? = nil,
-        decode: AgentDecoder? = nil
+        decode: AgentDecoder? = nil,
+        invokeToolStreaming: StreamingToolInvoker? = nil
     ) {
         self.runner = runner
         self.tools = tools
@@ -212,6 +222,7 @@ public struct AgentContext: Sendable {
         self.retrieve = retrieve
         self.invokeTool = invokeTool
         self.decode = decode
+        self.invokeToolStreaming = invokeToolStreaming
     }
 }
 
