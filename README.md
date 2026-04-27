@@ -6,7 +6,7 @@ A macOS SwiftUI chat app with two local inference backends selectable at runtime
 
 - **MLX** via `mlx-swift-lm`
 
-Plus, local speech-to-text via `whisper.cpp` (file drop and in-app recording), on-device dictation via `SFSpeechRecognizer`, TTS, a searchable SQLite vault of all conversations, Markdown/PDF/HTML transcript export, and document rendering via an external Quarto installation.
+Plus, local speech-to-text via `whisper.cpp` (file drop and in-app recording), on-device dictation via `SFSpeechRecognizer`, TTS, a searchable SQLite vault of all conversations, Markdown/PDF/HTML transcript export, document rendering via an external Quarto installation, and a sandboxed [tool runtime](#built-in-agent-tools) (filesystem read/write/list, PDF text extraction, XLSX read + write, CSV/TSV writing, clipboard, math, vault + Wikipedia + web search, HTTP fetch with allowlist, plus MCP-server tools).
 
 Built with Swift Package Manager and `xcodebuild`.
 
@@ -35,6 +35,8 @@ make run-release
 Debug is the default because it's what active development wants (fast incremental rebuilds, full debug symbols). Release turns on `-O` and strips symbols; the two bundles coexist under `build/Debug/` and `build/Release/` so switching configs doesn't force a rebuild of the other side.
 
 `make build` uses `xcodebuild` (not `swift build`) because mlx-swift's Metal kernels can only be compiled by Xcode's Metal toolchain. The `llama.xcframework` is fetched by `scripts/fetch_llama_framework.sh` from the [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases); override the tag with `make build LLAMA_TAG=bXXXX`. The `whisper.xcframework` is fetched by `scripts/fetch_whisper_framework.sh` from the [whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases); override with `WHISPER_TAG=vX.Y.Z`. `KaTeX` + `highlight.js` are fetched by `scripts/fetch_webassets.sh` (override versions via `KATEX_VERSION` / `HLJS_VERSION`) into `thirdparty/webassets/` and bundled into `Infer.app/Contents/Resources/WebAssets/` — no CDNs at runtime.
+
+Other native deps come in via SPM and compile from source on first build: `libxlsxwriter` (BSD-2-Clause, used by `xlsx.write` — adds `-lz` link, no fetch script, no binary blob), `CoreXLSX` (Apache-2.0, used by `xlsx.read`; pulls XMLCoder + ZIPFoundation transitively), and `SQLiteVec` (MIT, vendored at `thirdparty/SQLiteVec/`, used by the RAG vector store).
 
 At runtime the app offers two backends via a header picker:
 
@@ -123,6 +125,39 @@ Renders stage under `~/Library/Caches/quarto-renders/`. macOS does not auto-clea
 
 The agent's system prompt teaches these conventions and includes a worked pptx example. Smaller models (1B-3B params) can drift back to prose; if that happens, either prompt explicitly ("as slides with one bullet per point") or load a larger model.
 
+## Built-in agent tools
+
+Agents can opt into a per-agent allowlist of these tools through their JSON config (`requirements.toolsAllow`). Sandbox roots and HTTP allowlists are configured at registration time in `ChatViewModel.bootstrapAgents`.
+
+| Tool | What it does | Sandbox / safety |
+|---|---|---|
+| `fs.read` | Read a UTF-8 text file | `~/Documents` + agents root; symlink-resolved before allowlist check; 64 KB cap with truncation marker |
+| `fs.write` | Write a UTF-8 text file (atomic) | Same roots; refuses overwrite unless `overwrite: true`; refuses to create parent dirs; 1 MB cap |
+| `fs.list` | List a directory (optionally recursive) | Same roots; 200-entry cap, depth-4 cap; hides dotfiles by default |
+| `pdf.extract` | Extract text from a local PDF (page-range supported) | Same roots; 256 KB cap; image-only PDFs surface an explicit "OCR required" error |
+| `csv.write` | Write a CSV file (RFC 4180 quoting, optional UTF-8 BOM) | Same roots; 4 MB cap; rectangular rows enforced; atomic write |
+| `tsv.write` | Write a TSV file (paste-into-spreadsheet shape) | Same roots; 4 MB cap; embedded tabs/newlines sanitised to spaces; atomic write |
+| `xlsx.write` | Write a real Excel `.xlsx` workbook (multi-sheet, formulas, bold headers, freeze) via libxlsxwriter | Same roots; native Excel formulas via `=` prefix; sheet-name validation; atomic temp-then-rename |
+| `xlsx.read` | Read tabular data out of a local `.xlsx` (TSV or JSON output, sheet + slice selection) via CoreXLSX | Same roots; 256 KB cap with truncation marker; missing sheet errors list available sheet names; resolves shared strings; booleans rendered as TRUE/FALSE for write↔read symmetry |
+| `vault.search` | Vector + FTS retrieval over the active workspace's corpus | `topK` clamped 1-20; nil-safe when no corpus is configured |
+| `wikipedia.search` | Search Wikipedia titles + bodies via the MediaWiki Action API | Returns `[{title, url, snippet, wordcount}]`; per-request `lang` arg with hostname-safety normalisation; `User-Agent` set per Wikipedia's API policy |
+| `wikipedia.article` | Fetch chrome-stripped plain-text body of a Wikipedia article (`extracts` API) | 256 KB cap; missing-title surfaces a recoverable error pointing at `wikipedia.search`; optional `lead: true` for just the intro |
+| `web.search` | Web search via DuckDuckGo HTML scrape (default) or SearXNG JSON (opt-in via Tools settings) | DDG parser pinned by unit tests + an external test that hits real DDG; SearXNG endpoint validated; result URLs aren't fetched (use `http.fetch` with its own allowlist) |
+| `http.fetch` | HTTPS GET with strict host allowlist | Default allowlist: `en.wikipedia.org`, `raw.githubusercontent.com`; 256 KB body cap; 60 s timeout; redirects re-checked against allowlist |
+| `clipboard.get` / `clipboard.set` | Read / replace the macOS clipboard | 64 KB cap on writes; `set` clears prior representations |
+| `math.compute` | Arithmetic via `NSExpression` (digits, `+ - * / ( )`, scientific notation) | Whitelist regex blocks `FUNCTION:` / variable references; integer literals coerced to doubles so `1/3` returns `0.333…` not `0` |
+| `builtin.quarto.render` | Render `.qmd` source to HTML/PDF/DOCX/PPTX/etc. via an external Quarto install | Streaming-tool — emits per-line stderr as live progress; output staged under `~/Library/Caches/quarto-renders/` |
+| `agents.handoff` / `agents.invoke` | Composition primitives — let one agent delegate to another | Inert tools; the composition driver follows the call from the trace post-segment |
+| `mcp.<server>.<tool>` | Tools surfaced from external MCP servers under `~/Library/Application Support/Infer/mcp/` | Per-server consent gate (default deny); roots advertised on the server's `initialize` handshake |
+
+Bundled agents that demonstrate these:
+
+- **Quarto renderer** — `builtin.quarto.render`. Generates `.qmd` source from a description and renders to a chosen format. See the [Quarto rendering](#quarto-rendering) section above.
+- **Research assistant** — `vault.search`, `wikipedia.search`, `wikipedia.article`, `web.search`. Decision policy in the persona's system prompt: vault-first for personal-corpus questions, Wikipedia-first for encyclopedic / definitional / biographical / historical, web-search for current events / public docs. Caps at 3 tool calls per turn, cites sources inline.
+- **Clock assistant** — `builtin.clock.now`, `builtin.text.wordcount`. Demo for verifying tool-call plumbing on a freshly loaded model.
+
+Authoring custom agents: drop a `*.json` file into `~/Library/Application Support/Infer/agents/`. Format mirrors the bundled agents at `projects/infer/Sources/Infer/Resources/agents/*.json` — keys: `id`, `metadata`, `requirements.toolsAllow`, `decodingParams`, `systemPrompt`.
+
 ## Reproducibility (seed)
 
 The Parameters sidebar section has a **Seed** row. Leave the field empty (or press Clear) for a fresh random seed per generation (default). Enter a number or press Random to pin a fixed `UInt64` seed: identical prompt + params + seed produces identical output on a given backend. Useful for A/B-ing sampler settings or debugging model behavior. Persisted across launches.
@@ -141,7 +176,9 @@ make clean              # Remove build/
 | `bundle` | Bundle as `build/$(INFER_CONFIG)/Infer.app` (embeds `llama.framework`, `whisper.framework`, MLX resource bundles including `default.metallib`, `AppIcon.icns`, and `WebAssets/` with KaTeX + highlight.js) |
 | `run` | Bundle and open |
 | `build-release` / `bundle-release` / `run-release` | Same as above but with `INFER_CONFIG=Release` — optimized bundle at `build/Release/Infer.app` |
-| `test` | Run the `InferCore` + `InferRAG` unit suites via `swift test` |
+| `test` | Fast test path — `swift test --skip ExternalTests`. Runs every suite whose name does NOT end in `ExternalTests`. Sub-3-second run; suitable for tight inner loops. |
+| `test-integration` | External-system tests — `swift test --filter ExternalTests`. Runs only suites whose name ends in `ExternalTests` (e.g. `QuartoExternalTests`, which shells out to a real `quarto` binary). Each suite auto-skips per-test when its external dependency is missing, so CI hosts without Quarto / models / network stay green. |
+| `test-all` | Fast + external in one pass. Useful pre-commit / pre-release. |
 | `clean` | Remove `build/` |
 | `clean-infer` | Remove only `build/infer-xcode` (xcodebuild derived data) |
 | `clean-mlx-cache` | Remove `$HF_HOME/hub` (MLX model cache) after confirmation |

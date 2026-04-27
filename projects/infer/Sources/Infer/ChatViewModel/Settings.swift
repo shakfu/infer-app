@@ -37,6 +37,20 @@ extension ChatViewModel {
                 )
             }
         }
+
+        // Same pattern for the web-search backend: when the SearXNG
+        // endpoint changes (set, cleared, or edited), swap the
+        // registered tool out so the next `web.search` call uses the
+        // new backend. The tool's `Backend` enum is captured at init,
+        // so re-construction is the cheapest correct path.
+        if previous.searxngEndpoint != new.searxngEndpoint {
+            let registry = self.toolRegistry
+            let endpoint = new.searxngEndpoint
+            Task {
+                await registry.unregister(name: "web.search")
+                await registry.register(WebSearchTool(searxngEndpoint: endpoint))
+            }
+        }
     }
 
     /// Recompute context-window usage for the active backend. llama reports

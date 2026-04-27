@@ -200,10 +200,88 @@ extension ChatViewModel {
                         .appendingPathComponent("Documents", isDirectory: true),
                     Self.userAgentsRootDirectory(),
                 ]),
+                // Filesystem write + listing share fs.read's sandbox
+                // so any file an agent can read it can also list /
+                // write a sibling of. Tools are otherwise independent
+                // — fs.write doesn't depend on fs.read having been
+                // called, etc.
+                FilesystemWriteTool(allowedRoots: [
+                    URL(fileURLWithPath: NSHomeDirectory())
+                        .appendingPathComponent("Documents", isDirectory: true),
+                    Self.userAgentsRootDirectory(),
+                ]),
+                FilesystemListTool(allowedRoots: [
+                    URL(fileURLWithPath: NSHomeDirectory())
+                        .appendingPathComponent("Documents", isDirectory: true),
+                    Self.userAgentsRootDirectory(),
+                ]),
+                // Spreadsheet writers — same sandbox as fs.write.
+                // csv.write covers the broad "any spreadsheet program"
+                // workflow; tsv.write is the right shape for paste-
+                // into-cells flows; xlsx.write produces a real Excel
+                // workbook with multi-sheet, formulas, and bold-header
+                // formatting via libxlsxwriter.
+                CSVWriteTool(allowedRoots: [
+                    URL(fileURLWithPath: NSHomeDirectory())
+                        .appendingPathComponent("Documents", isDirectory: true),
+                    Self.userAgentsRootDirectory(),
+                ]),
+                TSVWriteTool(allowedRoots: [
+                    URL(fileURLWithPath: NSHomeDirectory())
+                        .appendingPathComponent("Documents", isDirectory: true),
+                    Self.userAgentsRootDirectory(),
+                ]),
+                XlsxWriteTool(allowedRoots: [
+                    URL(fileURLWithPath: NSHomeDirectory())
+                        .appendingPathComponent("Documents", isDirectory: true),
+                    Self.userAgentsRootDirectory(),
+                ]),
+                // Pure-Swift xlsx reader (CoreXLSX). Pairs with
+                // xlsx.write for the round-trip — libxlsxwriter is
+                // write-only, CoreXLSX is read-only, so we use both.
+                XlsxReadTool(allowedRoots: [
+                    URL(fileURLWithPath: NSHomeDirectory())
+                        .appendingPathComponent("Documents", isDirectory: true),
+                    Self.userAgentsRootDirectory(),
+                ]),
+                // PDF text extraction. Same sandbox as `fs.read` —
+                // PDFs the user wants the agent to read live in
+                // ~/Documents most of the time; persona-bundled PDFs
+                // (rare) live under the agents root.
+                PDFExtractTool(allowedRoots: [
+                    URL(fileURLWithPath: NSHomeDirectory())
+                        .appendingPathComponent("Documents", isDirectory: true),
+                    Self.userAgentsRootDirectory(),
+                ]),
+                // Clipboard read/write. Wired to the system pasteboard
+                // (`NSPasteboard.general`); tests use a private
+                // pasteboard so they don't trample the user's clipboard.
+                ClipboardGetTool(),
+                ClipboardSetTool(),
+                // Deterministic calculator. Models — especially small
+                // ones — silently miscompute multi-step arithmetic;
+                // exposing this as a tool eliminates that failure mode
+                // for any agent that opts into it.
+                MathComputeTool(),
                 URLFetchTool(allowedHosts: [
                     "en.wikipedia.org",
                     "raw.githubusercontent.com",
                 ]),
+                // Web search. Backend chosen by `searxngEndpoint`
+                // setting — empty/nil = DDG fallback (no setup),
+                // non-empty = SearXNG JSON. Re-registered on settings
+                // change in `applySettings` so flipping the endpoint
+                // takes effect on the next call without an app restart.
+                WebSearchTool(searxngEndpoint: settings.searxngEndpoint),
+                // Wikipedia tools — search + clean-text article fetch
+                // via the MediaWiki Action API. Distinct from
+                // `web.search` + `http.fetch` because: (a) Wikipedia's
+                // search API is more direct than scraping a SERP for
+                // wiki hits, and (b) the `extracts` endpoint returns
+                // chrome-stripped article text where `http.fetch`
+                // returns the full HTML and truncates at 256 KB.
+                WikipediaSearchTool(),
+                WikipediaArticleTool(),
                 VaultSearchTool(retriever: retriever),
             ])
             // MCP servers (item 11). Each `*.json` under the user's

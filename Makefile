@@ -62,10 +62,27 @@ clean-mlx-cache:
 		*) echo "Aborted.";; \
 	esac
 
-# Runs the pure-Swift InferCore test suite under swift-test. Does not require
-# the Metal Toolchain or the fetched llama/whisper xcframeworks — the Infer
-# executable target is not built here, only InferCore + its tests.
+# Fast test path. Skips suites whose name ends in `ExternalTests` —
+# those hit real binaries / network / models and are run via
+# `make test-integration` instead. Does not require the Metal Toolchain
+# or the fetched llama/whisper xcframeworks — the Infer executable
+# target is not built here, only the library targets and their tests.
 test:
+	cd $(INFER_DIR) && swift test --skip ExternalTests
+
+# External-system tests. Runs only suites whose name ends in
+# `ExternalTests` — `QuartoExternalTests` today, more as they're added
+# (real LLM / model-loading tests, real-network http tests, etc.).
+# These auto-skip per-test when the external dependency is missing
+# (e.g. Quarto not on PATH), so this target is safe to run on CI
+# machines that don't install every external dep.
+test-integration:
+	cd $(INFER_DIR) && swift test --filter ExternalTests
+
+# Run everything — fast suites + external suites in one pass. Useful
+# pre-commit / pre-release. Slower than `make test` by however long
+# the external suites take.
+test-all:
 	cd $(INFER_DIR) && swift test
 
 # --- Infer app (SwiftPM + llama.framework + MLX) ---

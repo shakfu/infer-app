@@ -196,6 +196,65 @@ extension SidebarView {
             && s.thinkingBudget == draft.thinkingBudget
             && s.seed == draft.seed
             && (s.quartoPath ?? "") == (draft.quartoPath ?? "")
+            && (s.searxngEndpoint ?? "") == (draft.searxngEndpoint ?? "")
+    }
+
+    /// Web-search backend group. The `web.search` tool runs against
+    /// DuckDuckGo's HTML endpoint by default — works without setup but
+    /// fragile to DDG layout changes. Power users with a SearXNG
+    /// instance (self-hosted or trusted public) can paste its base URL
+    /// here for a stable JSON-API backend.
+    @ViewBuilder
+    private var webSearchToolGroup: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Web search").font(.caption.weight(.semibold))
+                Spacer()
+                Text(currentBackendLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Text("Used by `web.search`. Default is **DuckDuckGo** HTML scraping (no setup; fragile to DDG layout changes). Optionally point at a **SearXNG** instance below for a robust JSON-API backend.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                TextField("https://searx.example.org", text: Binding(
+                    get: { draft.searxngEndpoint ?? "" },
+                    set: { s in
+                        let trimmed = s.trimmingCharacters(in: .whitespaces)
+                        draft.searxngEndpoint = trimmed.isEmpty ? nil : trimmed
+                    }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                .font(.caption.monospaced())
+
+                Button("Clear") {
+                    draft.searxngEndpoint = nil
+                }
+                .controlSize(.small)
+                .disabled((draft.searxngEndpoint ?? "").isEmpty)
+            }
+            Text("Empty = use DuckDuckGo. The endpoint should be the SearXNG instance's base URL (the tool appends `/search?format=json`).")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.secondary.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.15))
+        )
+    }
+
+    private var currentBackendLabel: String {
+        let raw = (draft.searxngEndpoint ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.isEmpty ? "DuckDuckGo" : "SearXNG"
     }
 
     // MARK: Tools
@@ -212,10 +271,12 @@ extension SidebarView {
             SectionHeader(icon: "wrench.and.screwdriver", title: "Tools")
 
             quartoToolGroup
+            webSearchToolGroup
 
             HStack {
                 Button("Reset") {
                     draft.quartoPath = InferSettings.defaults.quartoPath
+                    draft.searxngEndpoint = InferSettings.defaults.searxngEndpoint
                 }
                 .controlSize(.small)
                 Spacer()

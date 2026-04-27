@@ -60,6 +60,13 @@ public enum PersistKey {
     /// Set this when Quarto is installed somewhere unusual or the user
     /// wants to pin a specific install (e.g. a pre-release).
     public static let quartoPath = "infer.quartoPath"
+
+    /// Optional SearXNG endpoint URL for the `web.search` tool. Empty /
+    /// missing key means the tool falls back to DuckDuckGo HTML
+    /// scraping (works without setup but fragile to DDG layout
+    /// changes). Set this to point at a self-hosted or trusted-public
+    /// SearXNG instance for robust JSON-API search.
+    public static let searxngEndpoint = "infer.searxngEndpoint"
 }
 
 public struct InferSettings: Equatable, Sendable {
@@ -92,6 +99,10 @@ public struct InferSettings: Equatable, Sendable {
     /// common install locations. Stored as a String so the field can
     /// be edited as text in the UI without nil-aware Bindings.
     public var quartoPath: String?
+    /// Optional SearXNG endpoint URL for `web.search`. `nil` (or
+    /// empty) means fall back to DuckDuckGo HTML scraping. Same
+    /// String-not-URL rationale as `quartoPath`.
+    public var searxngEndpoint: String?
 
     public init(
         systemPrompt: String,
@@ -101,7 +112,8 @@ public struct InferSettings: Equatable, Sendable {
         thinkingBudget: Int = 4096,
         maxAgentSteps: Int = 8,
         seed: UInt64? = nil,
-        quartoPath: String? = nil
+        quartoPath: String? = nil,
+        searxngEndpoint: String? = nil
     ) {
         self.systemPrompt = systemPrompt
         self.temperature = temperature
@@ -111,6 +123,7 @@ public struct InferSettings: Equatable, Sendable {
         self.maxAgentSteps = maxAgentSteps
         self.seed = seed
         self.quartoPath = quartoPath
+        self.searxngEndpoint = searxngEndpoint
     }
 
     public static let defaults = InferSettings(
@@ -121,13 +134,16 @@ public struct InferSettings: Equatable, Sendable {
         thinkingBudget: 4096,
         maxAgentSteps: 8,
         seed: nil,
-        quartoPath: nil
+        quartoPath: nil,
+        searxngEndpoint: nil
     )
 
     public static func load(from defaults: UserDefaults = .standard) -> InferSettings {
         let seedString = defaults.string(forKey: PersistKey.seed)
         let seed: UInt64? = seedString.flatMap { UInt64($0) }
         let quartoRaw = defaults.string(forKey: PersistKey.quartoPath)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let searxngRaw = defaults.string(forKey: PersistKey.searxngEndpoint)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return InferSettings(
             systemPrompt: defaults.string(forKey: PersistKey.systemPrompt) ?? "",
@@ -137,7 +153,8 @@ public struct InferSettings: Equatable, Sendable {
             thinkingBudget: defaults.object(forKey: PersistKey.thinkingBudget) as? Int ?? Self.defaults.thinkingBudget,
             maxAgentSteps: defaults.object(forKey: PersistKey.maxAgentSteps) as? Int ?? Self.defaults.maxAgentSteps,
             seed: seed,
-            quartoPath: (quartoRaw?.isEmpty == false) ? quartoRaw : nil
+            quartoPath: (quartoRaw?.isEmpty == false) ? quartoRaw : nil,
+            searxngEndpoint: (searxngRaw?.isEmpty == false) ? searxngRaw : nil
         )
     }
 
@@ -157,6 +174,11 @@ public struct InferSettings: Equatable, Sendable {
             defaults.set(quartoPath, forKey: PersistKey.quartoPath)
         } else {
             defaults.removeObject(forKey: PersistKey.quartoPath)
+        }
+        if let searxngEndpoint, !searxngEndpoint.isEmpty {
+            defaults.set(searxngEndpoint, forKey: PersistKey.searxngEndpoint)
+        } else {
+            defaults.removeObject(forKey: PersistKey.searxngEndpoint)
         }
     }
 }

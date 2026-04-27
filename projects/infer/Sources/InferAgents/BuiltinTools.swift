@@ -388,3 +388,420 @@ public struct URLFetchTool: BuiltinTool, @unchecked Sendable {
         }
     }
 }
+
+/// Sandboxed file write. Mirror of `FilesystemReadTool`: refuses paths
+/// outside `allowedRoots`, refuses to overwrite existing files unless
+/// `overwrite: true` is passed (defensive default — accidental clobbers
+/// of a user's notes are exactly the failure mode worth one extra arg
+/// to avoid), and refuses to create parent directories. Atomic write
+/// via `Data.write(to:options:.atomic)` — content lands in a sibling
+/// temp file first and is renamed onto the target, so a partial write
+/// can't leave a half-written file under the user's eyes.
+///
+/// Argument schema:
+/// ```
+/// {
+///   "path":      "/absolute/or/~-relative/path.txt",
+///   "content":   "<UTF-8 string>",
+///   "overwrite": false   // optional, default false
+/// }
+/// ```
+///
+/// Caps content at `maxBytes`. Returns "wrote N bytes to <path>" on
+/// success so the model can confirm the operation completed and cite
+/// the path back to the user.
+public struct FilesystemWriteTool: BuiltinTool {
+    public let name: ToolName = "fs.write"
+
+    /// Hard cap on bytes written per call. 1 MB is generous for the
+    /// "save the .qmd source the agent just generated" / "save an
+    /// analysis" use cases without letting one stray tool call fill a
+    /// disk. Tune up if a real workflow demands it.
+    public static let maxBytes = 1024 * 1024
+
+    public var spec: ToolSpec {
+        ToolSpec(
+            name: name,
+            description: "Write a UTF-8 text file. Arguments: {\"path\": \"<absolute or ~/-relative path>\", \"content\": \"<text>\", \"overwrite\": false}. The path must live under an allowed root; writes outside the sandbox return an error. Refuses to overwrite an existing file unless `overwrite: true` is passed. Will not create parent directories — the parent must already exist. Maximum content size: \(Self.maxBytes) bytes."
+        )
+    }
+
+    public let allowedRoots: [URL]
+
+    public init(allowedRoots: [URL]) {
+        self.allowedRoots = allowedRoots.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
+    }
+
+    private struct Args: Decodable {
+        let path: String
+        let content: String
+        let overwrite: Bool?
+    }
+
+    public func invoke(arguments: String) async throws -> ToolResult {
+        guard let data = arguments.data(using: .utf8) else {
+            return ToolResult(output: "", error: "arguments not UTF-8")
+        }
+        let parsed: Args
+        do {
+            parsed = try JSONDecoder().decode(Args.self, from: data)
+        } catch {
+            return ToolResult(output: "", error: "could not parse arguments: \(error.localizedDescription)")
+        }
+        guard let payload = parsed.content.data(using: .utf8) else {
+            return ToolResult(output: "", error: "content is not valid UTF-8")
+        }
+        guard payload.count <= Self.maxBytes else {
+            return ToolResult(output: "", error: "content exceeds \(Self.maxBytes)-byte cap (\(payload.count) bytes provided)")
+        }
+
+        // Resolution must happen before the allowlist check so a symlink
+        // inside an allowed root can't escape it. Mirror of fs.read.
+        let expanded = (parsed.path as NSString).expandingTildeInPath
+        // Don't `resolvingSymlinksInPath()` on a path that doesn't exist
+        // yet — that returns the input unchanged, which is fine, but
+        // resolving the parent first lets us check the real parent
+        // directory against the sandbox.
+        let candidate = URL(fileURLWithPath: expanded).standardizedFileURL
+        let resolvedParent = candidate
+            .deletingLastPathComponent()
+            .resolvingSymlinksInPath()
+        let resolvedTarget = resolvedParent.appendingPathComponent(candidate.lastPathComponent)
+
+        guard !allowedRoots.isEmpty else {
+            return ToolResult(output: "", error: "fs.write is not configured: no allowed roots")
+        }
+        let allowed = allowedRoots.contains { root in
+            resolvedTarget.path == root.path || resolvedTarget.path.hasPrefix(root.path + "/")
+        }
+        guard allowed else {
+            return ToolResult(output: "", error: "path is outside the allowed sandbox")
+        }
+
+        // Refuse to write to a path that's currently a directory.
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: resolvedTarget.path, isDirectory: &isDirectory)
+        if exists && isDirectory.boolValue {
+            return ToolResult(output: "", error: "path is a directory, not a file")
+        }
+        if exists && !(parsed.overwrite ?? false) {
+            return ToolResult(output: "", error: "file exists; pass `\"overwrite\": true` to replace it")
+        }
+        // Parent directory must exist — we don't auto-mkdir because
+        // typo'd subdirs ("Documents/notes/draft.qmd" vs "documents/...")
+        // would silently create a wrong-cased path.
+        var parentIsDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolvedParent.path, isDirectory: &parentIsDir),
+              parentIsDir.boolValue else {
+            return ToolResult(output: "", error: "parent directory does not exist: \(resolvedParent.path)")
+        }
+
+        do {
+            try payload.write(to: resolvedTarget, options: [.atomic])
+        } catch {
+            return ToolResult(output: "", error: "write failed: \(error.localizedDescription)")
+        }
+        return ToolResult(output: "wrote \(payload.count) bytes to \(resolvedTarget.path)")
+    }
+}
+
+/// Sandboxed directory listing. Returns a JSON array of entries, each
+/// `{path, name, isDirectory, size}`. Bounded by `maxEntries` and
+/// `maxDepth` to keep one tool call from dumping a million-file
+/// directory into the model's context. Hides dotfiles by default —
+/// `.git`, `.DS_Store`, etc. are noise for the typical "list the
+/// markdown notes" prompt.
+///
+/// Argument schema:
+/// ```
+/// {
+///   "path":          "/absolute/or/~-relative/dir",
+///   "recursive":     false,           // optional, default false
+///   "extensions":    ["md", "qmd"],   // optional, case-insensitive,
+///                                     //   leading "." optional;
+///                                     //   filters files only — dirs
+///                                     //   pass through regardless
+///   "includeHidden": false            // optional, default false
+/// }
+/// ```
+public struct FilesystemListTool: BuiltinTool {
+    public let name: ToolName = "fs.list"
+
+    public static let maxEntries = 200
+    public static let maxDepth = 4
+
+    public var spec: ToolSpec {
+        ToolSpec(
+            name: name,
+            description: "List the contents of a directory. Arguments: {\"path\": \"<absolute or ~/-relative dir>\", \"recursive\": false, \"extensions\": [\"md\", \"qmd\"], \"includeHidden\": false}. Returns a JSON array of entries `{path, name, isDirectory, size}`. The directory must live under an allowed root. Capped at \(Self.maxEntries) entries (when truncated, the array ends with a single `{\"truncated\": true}` element); recursion is bounded at depth \(Self.maxDepth). The `extensions` filter applies to files only and accepts forms with or without a leading dot."
+        )
+    }
+
+    public let allowedRoots: [URL]
+
+    public init(allowedRoots: [URL]) {
+        self.allowedRoots = allowedRoots.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
+    }
+
+    private struct Args: Decodable {
+        let path: String
+        let recursive: Bool?
+        let extensions: [String]?
+        let includeHidden: Bool?
+    }
+
+    public func invoke(arguments: String) async throws -> ToolResult {
+        guard let data = arguments.data(using: .utf8) else {
+            return ToolResult(output: "", error: "arguments not UTF-8")
+        }
+        let parsed: Args
+        do {
+            parsed = try JSONDecoder().decode(Args.self, from: data)
+        } catch {
+            return ToolResult(output: "", error: "could not parse arguments: \(error.localizedDescription)")
+        }
+        let expanded = (parsed.path as NSString).expandingTildeInPath
+        let root = URL(fileURLWithPath: expanded)
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
+        guard !allowedRoots.isEmpty else {
+            return ToolResult(output: "", error: "fs.list is not configured: no allowed roots")
+        }
+        let allowed = allowedRoots.contains { allowedRoot in
+            root.path == allowedRoot.path || root.path.hasPrefix(allowedRoot.path + "/")
+        }
+        guard allowed else {
+            return ToolResult(output: "", error: "path is outside the allowed sandbox")
+        }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir) else {
+            return ToolResult(output: "", error: "no such directory: \(parsed.path)")
+        }
+        guard isDir.boolValue else {
+            return ToolResult(output: "", error: "path is a file, not a directory")
+        }
+
+        let filter = (parsed.extensions ?? []).map {
+            $0.hasPrefix(".") ? String($0.dropFirst()).lowercased() : $0.lowercased()
+        }
+        let includeHidden = parsed.includeHidden ?? false
+        let recursive = parsed.recursive ?? false
+
+        var entries: [[String: Any]] = []
+        var truncated = false
+        Self.walk(
+            root: root,
+            recursive: recursive,
+            currentDepth: 0,
+            includeHidden: includeHidden,
+            extensions: filter,
+            entries: &entries,
+            truncated: &truncated
+        )
+
+        if truncated {
+            entries.append(["truncated": true])
+        }
+
+        do {
+            let out = try JSONSerialization.data(withJSONObject: entries, options: [.sortedKeys])
+            return ToolResult(output: String(decoding: out, as: UTF8.self))
+        } catch {
+            return ToolResult(output: "", error: "could not encode listing: \(error.localizedDescription)")
+        }
+    }
+
+    /// Recursive walk shared with the unit tests. Static + nonisolated
+    /// so tests can call it directly to assert the depth / cap rules
+    /// without spinning up a tool instance.
+    static func walk(
+        root: URL,
+        recursive: Bool,
+        currentDepth: Int,
+        includeHidden: Bool,
+        extensions: [String],
+        entries: inout [[String: Any]],
+        truncated: inout Bool
+    ) {
+        guard !truncated else { return }
+        let fm = FileManager.default
+        guard let kids = try? fm.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+            options: [.skipsSubdirectoryDescendants]
+        ) else { return }
+        // Stable order: name-sorted. `contentsOfDirectory` is FS-order
+        // by default, which is unstable across runs and would make the
+        // tool's output non-deterministic.
+        let sorted = kids.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        for url in sorted {
+            if entries.count >= Self.maxEntries {
+                truncated = true
+                return
+            }
+            let name = url.lastPathComponent
+            if !includeHidden, name.hasPrefix(".") { continue }
+            let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+            let isDir = values?.isDirectory ?? false
+            // Extension filter applies to files only. Directories pass
+            // through so a recursive walk can descend into them.
+            if !isDir, !extensions.isEmpty {
+                let ext = url.pathExtension.lowercased()
+                if !extensions.contains(ext) { continue }
+            }
+            var entry: [String: Any] = [
+                "path": url.path,
+                "name": name,
+                "isDirectory": isDir,
+            ]
+            if !isDir, let size = values?.fileSize {
+                entry["size"] = size
+            }
+            entries.append(entry)
+            if isDir, recursive, currentDepth + 1 < Self.maxDepth {
+                walk(
+                    root: url,
+                    recursive: true,
+                    currentDepth: currentDepth + 1,
+                    includeHidden: includeHidden,
+                    extensions: extensions,
+                    entries: &entries,
+                    truncated: &truncated
+                )
+                if truncated { return }
+            }
+        }
+    }
+}
+
+/// Pure arithmetic evaluation backed by `NSExpression`. Models —
+/// especially small ones — silently miscompute multi-step arithmetic
+/// (`0.0825 * 12 * 30` is a common failure mode). One tool call gives
+/// them a deterministic calculator.
+///
+/// `NSExpression` exposes a `FUNCTION:` form that can invoke arbitrary
+/// Objective-C selectors at evaluation time — a real risk if the input
+/// is attacker-controlled. We mitigate by validating the input against
+/// a strict whitelist (digits, arithmetic operators, parens, dot, `e`/`E`
+/// for scientific notation, whitespace) BEFORE handing it to
+/// `NSExpression`. Anything outside the whitelist is rejected with a
+/// descriptive error. The whitelist deliberately excludes letters, so
+/// `FUNCTION` / `SELF` / variable references can't appear.
+///
+/// Argument schema: `{"expression": "0.0825 * 12 * 30"}`. Returns the
+/// numeric result as a string (`Double` description, so `1234567.0` and
+/// `2.5e-3` both round-trip readably).
+public struct MathComputeTool: BuiltinTool {
+    public let name: ToolName = "math.compute"
+
+    /// Inputs are bounded — no realistic arithmetic prompt needs more
+    /// than a few hundred characters, and the cap is what makes the
+    /// regex check cheap to reason about. `NSExpression` itself has no
+    /// upper bound; this is a defensive belt for the model.
+    public static let maxLength = 256
+
+    public var spec: ToolSpec {
+        ToolSpec(
+            name: name,
+            description: "Evaluate an arithmetic expression. Arguments: {\"expression\": \"<expression>\"}. Supports `+`, `-`, `*`, `/`, parentheses, decimal numbers, and scientific notation (`1.5e-3`). Does NOT support named functions (sqrt, log, etc.) — anything containing letters is rejected. Returns the numeric result as a string."
+        )
+    }
+
+    public init() {}
+
+    private struct Args: Decodable {
+        let expression: String
+    }
+
+    /// Whitelist used to reject anything that could trigger
+    /// `NSExpression`'s `FUNCTION:` evaluation path. `e` and `E` are
+    /// allowed for scientific-notation literals; the parser only treats
+    /// them as exponent markers when sandwiched between digits, and any
+    /// other use ("eat") would also be rejected as a syntax error by
+    /// `NSExpression` — but the regex check rejects the input before
+    /// `NSExpression` sees it, which is the load-bearing guarantee.
+    static let whitelistRegex = try! NSRegularExpression(
+        pattern: #"^[0-9eE+\-*/().,\s]+$"#
+    )
+
+    /// Matches a bare integer literal — a digit run with no decimal
+    /// point / exponent neighbour on either side. Used to coerce
+    /// integer literals to doubles before evaluation, so `1 / 3`
+    /// returns `0.333…` instead of integer-division `0`. Modern
+    /// calculators don't surprise users with integer division and
+    /// `NSExpression` has no flag to switch it off; pre-rewriting the
+    /// input is the simplest fix that keeps the rest of the tool
+    /// pure-`NSExpression`. Skips digit runs that are part of a
+    /// decimal (`1.5`) or scientific-notation literal (`1e3`).
+    static let bareIntegerRegex = try! NSRegularExpression(
+        pattern: #"(?<![\d.eE])(\d+)(?![\d.eE])"#
+    )
+
+    /// Append `.0` to every bare integer literal in `input`. Returns
+    /// the rewritten string. Pre-condition: `input` has already passed
+    /// the `whitelistRegex` guard, so it contains only safe characters.
+    static func coerceIntegersToDoubles(_ input: String) -> String {
+        let range = NSRange(input.startIndex..., in: input)
+        return bareIntegerRegex.stringByReplacingMatches(
+            in: input,
+            range: range,
+            withTemplate: "$1.0"
+        )
+    }
+
+    public func invoke(arguments: String) async throws -> ToolResult {
+        guard let data = arguments.data(using: .utf8) else {
+            return ToolResult(output: "", error: "arguments not UTF-8")
+        }
+        let parsed: Args
+        do {
+            parsed = try JSONDecoder().decode(Args.self, from: data)
+        } catch {
+            return ToolResult(output: "", error: "could not parse arguments: \(error.localizedDescription)")
+        }
+        let expr = parsed.expression.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !expr.isEmpty else {
+            return ToolResult(output: "", error: "expression is empty")
+        }
+        guard expr.count <= Self.maxLength else {
+            return ToolResult(output: "", error: "expression exceeds \(Self.maxLength) characters")
+        }
+        // Whitelist guard. Note: NOT a syntax check — that's
+        // NSExpression's job. This is the security guard that keeps
+        // FUNCTION: / SELF / variable references out of reach.
+        let range = NSRange(expr.startIndex..., in: expr)
+        guard Self.whitelistRegex.firstMatch(in: expr, range: range) != nil else {
+            return ToolResult(output: "", error: "expression contains disallowed characters; only digits, + - * / ( ) . and scientific notation (e/E) are accepted")
+        }
+        // Coerce bare integer literals to doubles so `1 / 3` returns
+        // 0.333… instead of integer-division 0. Models — and users
+        // typing into a calculator — do not expect C-style integer
+        // division here.
+        let coerced = Self.coerceIntegersToDoubles(expr)
+        // NSExpression's `format:` initialiser can throw at parse time
+        // (unbalanced parens, stray operator) — wrap in a try/catch.
+        // `expressionValue(with:context:)` evaluates the parsed AST;
+        // arithmetic errors (division by zero) come back as an NSNumber
+        // with a non-finite value, which we reject explicitly so the
+        // model sees a clear error.
+        let nsExpr: NSExpression
+        do {
+            nsExpr = NSExpression(format: coerced)
+        }
+        guard let value = nsExpr.expressionValue(with: nil, context: nil) as? NSNumber else {
+            return ToolResult(output: "", error: "expression did not evaluate to a number")
+        }
+        let d = value.doubleValue
+        guard d.isFinite else {
+            return ToolResult(output: "", error: "result is not finite (division by zero or overflow)")
+        }
+        // Print integers without a trailing ".0" so the model can quote
+        // results back to the user without unnecessary noise. Floats
+        // use Swift's default `description`, which preserves enough
+        // precision that round-tripping is lossless.
+        if d == d.rounded(), abs(d) < 1e15 {
+            return ToolResult(output: String(Int64(d)))
+        }
+        return ToolResult(output: String(d))
+    }
+}

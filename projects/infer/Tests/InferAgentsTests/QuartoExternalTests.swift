@@ -1,10 +1,19 @@
 import XCTest
 @testable import InferAgents
 
-/// Integration tests that exercise `QuartoLocator` and `QuartoRunner`
-/// against the **real** `quarto` binary on the host's PATH (or wherever
-/// the locator finds it). Auto-skip on machines without Quarto, so the
-/// suite stays green on CI runners that don't install it.
+/// External-system tests that exercise `QuartoLocator` and
+/// `QuartoRunner` against the **real** `quarto` binary on the host's
+/// PATH (or wherever the locator finds it). Auto-skip on machines
+/// without Quarto, so the suite stays green on CI runners that don't
+/// install it.
+///
+/// **Naming convention.** The `External` suffix is load-bearing: the
+/// `make test` target uses `--skip ExternalTests` to keep the fast
+/// path under three seconds, and `make test-integration` uses
+/// `--filter ExternalTests` to run *only* this sort of test. Suites
+/// that test cross-module *integration* in pure Swift should not use
+/// this suffix — they belong on the fast path. Use `External` only
+/// when the test hits a real binary, network endpoint, or model file.
 ///
 /// What these catch that the bash-shim tests can't:
 /// - The real CLI's `--version` output shape (currently a bare semver
@@ -18,11 +27,12 @@ import XCTest
 ///   the source). If Quarto ever moves to per-format subdirs or
 ///   timestamped names, this test fails loudly.
 ///
-/// Opt-out: set `INFER_SKIP_QUARTO_INTEGRATION=1` in the env to skip
-/// even when Quarto is installed (useful for fast local iteration).
-final class QuartoIntegrationTests: XCTestCase {
+/// Opt-out: set `INFER_SKIP_QUARTO_EXTERNAL=1` in the env to skip even
+/// when Quarto is installed (useful for fast local iteration without
+/// reaching for `make test`).
+final class QuartoExternalTests: XCTestCase {
 
-    private static let skipEnvKey = "INFER_SKIP_QUARTO_INTEGRATION"
+    private static let skipEnvKey = "INFER_SKIP_QUARTO_EXTERNAL"
 
     /// Resolves a real Quarto install or returns nil. The skip-check
     /// uses the production locator so this test also serves as a smoke
@@ -76,7 +86,7 @@ final class QuartoIntegrationTests: XCTestCase {
         // Diagnostic — surfaces the resolved install in the test log
         // so a CI failure caused by a Quarto upgrade is obvious without
         // needing to re-run locally.
-        print("[QuartoIntegration] resolved \(install.url.path) version \(version)")
+        print("[QuartoExternal] resolved \(install.url.path) version \(version)")
     }
 
     func testLocatorOverrideWithRealQuartoRoundTrips() async throws {
@@ -171,7 +181,7 @@ final class QuartoIntegrationTests: XCTestCase {
         // Diagnostic — the first / last lines tell us what the user
         // actually sees in the disclosure, so a flaky CI failure is
         // easier to debug from the test log alone.
-        print("[QuartoIntegration] progress lines: \(lines.count); first=\(lines.first ?? ""); last=\(lines.last ?? "")")
+        print("[QuartoExternal] progress lines: \(lines.count); first=\(lines.first ?? ""); last=\(lines.last ?? "")")
 
         try? FileManager.default.removeItem(atPath: result.output)
     }

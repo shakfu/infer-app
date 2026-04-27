@@ -33,6 +33,23 @@ let package = Package(
         // while still available to `sqlite-vec.c` via the local
         // quoted include.
         .package(path: "../../thirdparty/SQLiteVec"),
+        // libxlsxwriter (jmcnamara, FreeBSD/BSD-2-Clause). Mature C
+        // library for producing real `.xlsx` files — multi-sheet,
+        // formulas, cell formatting. Pinned to a tagged release for
+        // reproducibility (the upstream tags every release as `vX.Y.Z`
+        // and SPM accepts that form via `from:`). Builds from source
+        // via the upstream's own Package.swift; only external link is
+        // `-lz` (zlib, present on every macOS host). Used by the
+        // `xlsx.write` builtin tool — see Tools/XlsxWriter.swift for
+        // the Swift shim and Tools/SpreadsheetWriteTools.swift for
+        // the tool itself.
+        .package(url: "https://github.com/jmcnamara/libxlsxwriter", from: "1.2.4"),
+        // CoreXLSX (CoreOffice, Apache-2.0). Pure-Swift parse-only
+        // xlsx reader; complements libxlsxwriter (write-only) for the
+        // `xlsx.read` tool. Pulls XMLCoder + ZIPFoundation
+        // transitively — both pure Swift, both well-maintained.
+        // Pinned `from: "0.14.1"` per the upstream README's example.
+        .package(url: "https://github.com/CoreOffice/CoreXLSX", from: "0.14.1"),
     ],
     targets: [
         // Pure-Swift library for logic that does not depend on binary
@@ -47,12 +64,19 @@ let package = Package(
             dependencies: ["InferCore"],
             path: "Tests/InferCoreTests"
         ),
-        // Agent substrate. Pure Swift, depends only on InferCore (for
-        // InferSettings reuse in DefaultAgent). No MLX/llama/UI deps so
-        // the full surface is unit-testable under `swift test`.
+        // Agent substrate. Depends on InferCore (for `InferSettings`
+        // reuse in DefaultAgent) and libxlsxwriter (for the
+        // `xlsx.write` tool). No MLX/llama/UI deps — `libxlsxwriter`
+        // compiles from source via SPM and only links `-lz`, so the
+        // full surface stays unit-testable under `swift test` without
+        // the Metal Toolchain or any fetched xcframeworks.
         .target(
             name: "InferAgents",
-            dependencies: ["InferCore"],
+            dependencies: [
+                "InferCore",
+                .product(name: "libxlsxwriter", package: "libxlsxwriter"),
+                .product(name: "CoreXLSX", package: "CoreXLSX"),
+            ],
             path: "Sources/InferAgents"
         ),
         .testTarget(
