@@ -18,12 +18,28 @@ Built with Swift Package Manager and `xcodebuild`.
 
 - Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain` (~700 MB, one-time)
 
-## Build
+## Install
 
 ```sh
+# check if you have the metal tool chain install
+xcodebuild -showComponent MetalToolchain
+
+# if you confirm it not installed via something like this
+Build Version: 17E188
+Status: uninstalled
+
+# then
+xcodebuild -downloadComponent MetalToolchain
+
 # First run downloads llama.xcframework, whisper.xcframework, and
 # KaTeX + highlight.js (for offline math/syntax rendering in PDF/print)
 # into thirdparty/.
+make
+```
+
+## Build
+
+```sh
 make bundle               # -> build/Debug/Infer.app
 make run                  # Open Infer.app (Debug)
 

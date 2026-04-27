@@ -66,7 +66,7 @@ final class SpeechRecognizer {
         // mic button reflects recording state on the same runloop as the tap.
         let status = SFSpeechRecognizer.authorizationStatus()
         if status == .authorized {
-            beginRecording(recognizer: recognizer)
+            beginRecording()
             isStarting = false
             return
         }
@@ -81,7 +81,7 @@ final class SpeechRecognizer {
                 defer { self.isStarting = false }
                 switch status {
                 case .authorized:
-                    self.beginRecording(recognizer: recognizer)
+                    self.beginRecording()
                 case .denied, .restricted, .notDetermined:
                     self.state = .unauthorized
                 @unknown default:
@@ -91,7 +91,8 @@ final class SpeechRecognizer {
         }
     }
 
-    private func beginRecording(recognizer: SFSpeechRecognizer) {
+    private func beginRecording() {
+        guard let recognizer = self.recognizer else { return }
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
         // Prefer on-device, but fall back to the system path if the on-device

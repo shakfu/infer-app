@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_TAG="b8848"
+DEFAULT_TAG="b8951"
 
 if [ $# -gt 1 ]; then
     echo "Usage: $0 [tag]" >&2
-    echo "Example: $0 b8848 (default: $DEFAULT_TAG)" >&2
+    echo "Example: $0 b8951 (default: $DEFAULT_TAG)" >&2
     exit 1
 fi
 
