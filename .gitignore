@@ -42,7 +42,7 @@ playground.xcworkspace
 build/
 thirdparty/*
 projects/infer/.build/
-projects/infer/Package.resolved
+# projects/infer/Package.resolved
 
 # CocoaPods
 #

@@ -152,8 +152,10 @@ Agents can opt into a per-agent allowlist of these tools through their JSON conf
 
 Bundled agents that demonstrate these:
 
+- **Data analyst** — `pdf.extract`, `xlsx.read`, `xlsx.write`, `csv.write`, `tsv.write`, `fs.read`, `fs.write`, `fs.list`, `math.compute`. The heavyweight tabular-data persona. Reads tables out of PDFs and spreadsheets, computes summaries via `math.compute` (no in-head arithmetic — models silently miscompute), writes results back as CSV / TSV / real `.xlsx` with formulas. Sandboxed to `~/Documents`. Use for "pull the revenue tables out of `q1-report.pdf` and produce an xlsx that aggregates by quarter."
 - **Quarto renderer** — `builtin.quarto.render`. Generates `.qmd` source from a description and renders to a chosen format. See the [Quarto rendering](#quarto-rendering) section above.
 - **Research assistant** — `vault.search`, `wikipedia.search`, `wikipedia.article`, `web.search`. Decision policy in the persona's system prompt: vault-first for personal-corpus questions, Wikipedia-first for encyclopedic / definitional / biographical / historical, web-search for current events / public docs. Caps at 3 tool calls per turn, cites sources inline.
+- **Scratch** — `clipboard.get`, `clipboard.set`, `math.compute`, `wikipedia.search`, `wikipedia.article`, `builtin.clock.now`. Lightweight everyday assistant for short, well-scoped tasks. Caps at 1-2 tool calls per turn — the persona's value is speed. Use for "what's 0.0825 × 12 × 30?", "summarise what I just copied", "copy a polite decline email to my clipboard", "who designed the Eiffel Tower?".
 - **Clock assistant** — `builtin.clock.now`, `builtin.text.wordcount`. Demo for verifying tool-call plumbing on a freshly loaded model.
 
 Authoring custom agents: drop a `*.json` file into `~/Library/Application Support/Infer/agents/`. Format mirrors the bundled agents at `projects/infer/Sources/Infer/Resources/agents/*.json` — keys: `id`, `metadata`, `requirements.toolsAllow`, `decodingParams`, `systemPrompt`.
