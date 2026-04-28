@@ -9,6 +9,10 @@ struct ChatView: View {
     @State var composerExpanded: Bool = false
     @FocusState var composerFocused: Bool
     @State var pinnedToBottom: Bool = true
+    /// SwiftUI's macOS-14+ Settings opener. The `Settings { }` scene
+    /// in `InferApp` registers as the target; calling this from the
+    /// cog icon in the header surfaces the same window Cmd-, opens.
+    @Environment(\.openSettings) var openSettings
 
     var body: some View {
         HStack(spacing: 0) {

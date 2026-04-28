@@ -109,6 +109,15 @@ struct InferApp: App {
                     .disabled(!chatVM.speechSynthesizer.isSpeaking)
             }
         }
+        // Settings window — Cmd-, opens it from anywhere in the app,
+        // and the cog icon in `ChatHeader` invokes the same scene via
+        // `NSApplication.showSettingsWindow(_:)`. P1 (this PR) ships
+        // one tab (Plugins); P2/P3 add Tools / Voice / Appearance /
+        // Model as the corresponding sidebar tabs migrate over.
+        Settings {
+            SettingsView(vm: chatVM)
+                .preferredColorScheme((AppearanceMode(rawValue: appearanceRaw) ?? .light).colorScheme)
+        }
     }
 }
 

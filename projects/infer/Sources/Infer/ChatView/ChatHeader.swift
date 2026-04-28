@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 extension ChatView {
     var header: some View {
@@ -13,6 +14,21 @@ extension ChatView {
 
             Button("Reset") { vm.reset() }
                 .disabled(vm.messages.isEmpty && !vm.isGenerating)
+
+            Button {
+                // Same Settings window the menu's "Settings…" item
+                // (Cmd-,) opens — see the `Settings { SettingsView ... }`
+                // scene in `InferApp.swift`. The `\.openSettings`
+                // environment action is the macOS-14+ canonical entry
+                // point; sending `showSettingsWindow:` via the
+                // responder chain was unreliable in practice (the
+                // Settings scene's window controller isn't on the
+                // chain until first use).
+                openSettings()
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .help("Settings… (⌘,)")
 
             Button {
                 sidebarOpen.toggle()

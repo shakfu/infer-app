@@ -151,6 +151,13 @@ final class ChatViewModel {
     /// in the Agents tab as a banner above the server list. Reset on
     /// every reload so the user sees only currently-broken servers.
     var mcpDiagnostics: [MCPLoadDiagnostic] = []
+    /// Per-plugin status assembled at startup by `bootstrapAgents` from
+    /// `PluginLoader.loadAll`'s result. Drives the Plugins tab in the
+    /// Settings window — one row per compiled-in plugin, showing
+    /// either the tools it contributed (loaded path) or the failure
+    /// message (error path). Order matches `allPluginTypes` (which in
+    /// turn matches `plugins.json`).
+    var pluginStatus: [PluginStatusEntry] = []
     /// True while a reload is in flight so the UI can disable the
     /// reload button and show a spinner. Set on the MainActor by the
     /// VM before kicking off the reload task; cleared after the host

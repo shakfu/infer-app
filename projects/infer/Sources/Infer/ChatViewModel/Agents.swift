@@ -292,7 +292,8 @@ extension ChatViewModel {
             // section sees both. Each plugin's `register` returns the
             // tools it contributes; the host registers them. Per-plugin
             // failures are caught + logged; remaining plugins still
-            // load.
+            // load. The same data drives the Settings → Plugins tab,
+            // assembled into `pluginStatus` and stashed on the VM.
             let pluginResult = await PluginLoader.loadAll(
                 types: allPluginTypes,
                 configs: pluginConfigs
@@ -317,6 +318,13 @@ extension ChatViewModel {
                     message: "plugin \(failure.pluginID) failed to register",
                     payload: failure.message
                 )
+            }
+            let statusEntries = PluginStatusEntry.assemble(
+                types: allPluginTypes,
+                result: pluginResult
+            )
+            await MainActor.run { [weak self] in
+                self?.pluginStatus = statusEntries
             }
             // MCP servers (item 11). Each `*.json` under the user's
             // mcp directory describes one subprocess to spawn; tools

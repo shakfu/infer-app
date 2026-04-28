@@ -1,38 +1,36 @@
 import SwiftUI
 import InferCore
 
+// Tools, Voice, Appearance, and the Model-parameters card all
+// migrated to the Settings window (Cmd-,) across P2 and P3 of the
+// Settings migration. The sidebar now holds only navigation/selection
+// surfaces; configuration lives in Settings. Stale raw values
+// (`tools`, `voice`, `appearance`) read from UserDefaults fall
+// through `SidebarTab(rawValue:) ?? .model` and land on the Model
+// tab — no migration needed.
 enum SidebarTab: String, CaseIterable, Identifiable {
-    case model, agents, tools, history, voice, appearance, console
+    case model, agents, history, console
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .model: return "cube.box"
         case .agents: return "person.crop.circle.badge.questionmark"
-        case .tools: return "wrench.and.screwdriver"
         case .history: return "clock.arrow.circlepath"
         case .console: return "terminal"
-        case .voice: return "waveform"
-        case .appearance: return "paintbrush"
         }
     }
     var label: String {
         switch self {
         case .model: return "Model"
         case .agents: return "Agents"
-        case .tools: return "Tools"
         case .history: return "History"
         case .console: return "Console"
-        case .voice: return "Voice"
-        case .appearance: return "Appearance"
         }
     }
 }
 
 struct SidebarView: View {
     @Bindable var vm: ChatViewModel
-    @State var draft: InferSettings = .defaults
-    @State var showSystemPrompt = false
-    @State var didSeed = false
     @AppStorage(PersistKey.sidebarTab) var tabRaw: String = SidebarTab.model.rawValue
 
     var tab: Binding<SidebarTab> {
@@ -41,7 +39,6 @@ struct SidebarView: View {
             set: { tabRaw = $0.rawValue }
         )
     }
-    @AppStorage(PersistKey.appearance) var appearanceRaw: String = AppearanceMode.light.rawValue
 
     var body: some View {
         VStack(spacing: 0) {
@@ -52,19 +49,12 @@ struct SidebarView: View {
                     switch tab.wrappedValue {
                     case .model:
                         modelSection
-                        parametersSection
                     case .agents:
                         agentsLibrarySection
-                    case .tools:
-                        toolsSection
                     case .history:
                         historySection
                     case .console:
                         consoleSection
-                    case .voice:
-                        speechSection
-                    case .appearance:
-                        appearanceSection
                     }
                     Spacer(minLength: 0)
                 }
@@ -73,7 +63,6 @@ struct SidebarView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
-            if !didSeed { draft = vm.settings; didSeed = true }
             vm.refreshVaultRecents()
         }
     }
