@@ -61,7 +61,7 @@ let package = Package(
         // Managed by `scripts/gen_plugins.py`. Do not hand-edit between
         // the BEGIN/END markers; rerun `make plugins-gen` after editing
         // `projects/plugins/plugins.json`.
-        .package(path: "../plugins/plugin_wiki"),
+        .package(path: "../plugins/plugin_hacker_news"),
         .package(path: "../plugins/plugin_python_tools"),
         // END_GENERATED_PLUGINS_PACKAGES
     ],
@@ -159,7 +159,7 @@ let package = Package(
                 // Managed by `scripts/gen_plugins.py`. Do not hand-edit
                 // between the BEGIN/END markers; rerun `make plugins-gen`
                 // after editing `projects/plugins/plugins.json`.
-                .product(name: "plugin_wiki", package: "plugin_wiki"),
+                .product(name: "plugin_hacker_news", package: "plugin_hacker_news"),
                 .product(name: "plugin_python_tools", package: "plugin_python_tools"),
                 // END_GENERATED_PLUGINS_PRODUCTS
             ],

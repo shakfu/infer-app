@@ -294,9 +294,20 @@ extension ChatViewModel {
             // failures are caught + logged; remaining plugins still
             // load. The same data drives the Settings → Plugins tab,
             // assembled into `pluginStatus` and stashed on the VM.
+            // Cross-plugin tool dispatch: each plugin's `register` is
+            // handed an invoker bound to the same `registry` we wire
+            // built-in and plugin-contributed tools into. The closure
+            // dispatches at *call time* (not register time), so a
+            // plugin can capture the invoker and call any tool that
+            // ends up in the catalog — built-ins, its own, other
+            // plugins', or MCP-surfaced ones.
+            let pluginInvoker: ToolInvoker = { name, args in
+                try await registry.invoke(name: name, arguments: args)
+            }
             let pluginResult = await PluginLoader.loadAll(
                 types: allPluginTypes,
-                configs: pluginConfigs
+                configs: pluginConfigs,
+                invoker: pluginInvoker
             )
             for (id, contrib) in pluginResult.contributions {
                 for tool in contrib.tools {
@@ -321,7 +332,8 @@ extension ChatViewModel {
             }
             let statusEntries = PluginStatusEntry.assemble(
                 types: allPluginTypes,
-                result: pluginResult
+                result: pluginResult,
+                configs: pluginConfigs
             )
             await MainActor.run { [weak self] in
                 self?.pluginStatus = statusEntries

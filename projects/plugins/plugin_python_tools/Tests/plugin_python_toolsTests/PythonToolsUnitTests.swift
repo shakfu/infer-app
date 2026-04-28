@@ -98,8 +98,11 @@ final class PythonToolsUnitTests: XCTestCase {
         // "configured path missing" branch deterministically without
         // depending on the host environment.
         let cfg = PluginConfig(json: Data(#"{"python_path":"/nonexistent/python3"}"#.utf8))
+        let noopInvoker: ToolInvoker = { _, _ in
+            ToolResult(output: "", error: "no invoker wired in this test")
+        }
         do {
-            _ = try await PythonToolsPlugin.register(config: cfg)
+            _ = try await PythonToolsPlugin.register(config: cfg, invoker: noopInvoker)
             XCTFail("expected register to throw")
         } catch let error as PythonToolsError {
             guard case .configuredPythonMissing = error else {

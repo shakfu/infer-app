@@ -1,21 +1,23 @@
 import SwiftUI
 import InferCore
 
-// Tools, Voice, Appearance, and the Model-parameters card all
-// migrated to the Settings window (Cmd-,) across P2 and P3 of the
-// Settings migration. The sidebar now holds only navigation/selection
-// surfaces; configuration lives in Settings. Stale raw values
-// (`tools`, `voice`, `appearance`) read from UserDefaults fall
-// through `SidebarTab(rawValue:) ?? .model` and land on the Model
-// tab — no migration needed.
+// Tools, Appearance migrated to the Settings window (Cmd-,) in P2/P3
+// of the Settings migration. Voice and Model-parameters were
+// migrated, then reverted back to the sidebar — they're accessed
+// often enough during normal use that the extra Cmd-, hop wasn't
+// worth it (Settings is for set-once-and-forget configuration).
+// Stale `tools` / `appearance` raw values read from UserDefaults
+// fall through `SidebarTab(rawValue:) ?? .model` and land on the
+// Model tab.
 enum SidebarTab: String, CaseIterable, Identifiable {
-    case model, agents, history, console
+    case model, agents, history, voice, console
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .model: return "cube.box"
         case .agents: return "person.crop.circle.badge.questionmark"
         case .history: return "clock.arrow.circlepath"
+        case .voice: return "waveform"
         case .console: return "terminal"
         }
     }
@@ -24,6 +26,7 @@ enum SidebarTab: String, CaseIterable, Identifiable {
         case .model: return "Model"
         case .agents: return "Agents"
         case .history: return "History"
+        case .voice: return "Voice"
         case .console: return "Console"
         }
     }
@@ -31,6 +34,13 @@ enum SidebarTab: String, CaseIterable, Identifiable {
 
 struct SidebarView: View {
     @Bindable var vm: ChatViewModel
+    /// Local draft of `vm.settings` for the parameters card's
+    /// Apply/Reset pattern — sliders mutate this in-place and
+    /// `vm.applySettings(draft)` writes it back to the runner. Keeps
+    /// each slider tick from re-initialising the model.
+    @State var draft: InferSettings = .defaults
+    @State var showSystemPrompt = false
+    @State var didSeed = false
     @AppStorage(PersistKey.sidebarTab) var tabRaw: String = SidebarTab.model.rawValue
 
     var tab: Binding<SidebarTab> {
@@ -49,10 +59,13 @@ struct SidebarView: View {
                     switch tab.wrappedValue {
                     case .model:
                         modelSection
+                        parametersSection
                     case .agents:
                         agentsLibrarySection
                     case .history:
                         historySection
+                    case .voice:
+                        speechSection
                     case .console:
                         consoleSection
                     }
@@ -63,6 +76,7 @@ struct SidebarView: View {
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
+            if !didSeed { draft = vm.settings; didSeed = true }
             vm.refreshVaultRecents()
         }
     }

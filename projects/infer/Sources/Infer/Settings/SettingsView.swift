@@ -6,25 +6,17 @@ import SwiftUI
 /// `ChatHeader` invokes `NSApplication.showSettingsWindow(_:)` to
 /// surface the same window from the chat panel.
 ///
-/// Phasing — see `docs/dev/plugins.md` and the Settings discussion in
-/// the project README:
-///   P1 (this PR): Plugins tab only. Sidebar Tools/Voice/Appearance
-///                 unchanged.
-///   P2: Tools moves here; sidebar Tools tab removed.
-///   P3: Voice + Appearance + Model parameters move here.
+/// What lives here: configuration that is set-once-and-forget
+/// (Tools, Plugins, Appearance). What does *not* live here: anything
+/// the user touches mid-session — Model parameters and Voice are in
+/// the sidebar (Model tab and Voice tab respectively). They were
+/// migrated here in P3 of the original Settings work and reverted
+/// after early use showed the extra Cmd-, hop wasn't worth it.
 struct SettingsView: View {
     var vm: ChatViewModel
 
     var body: some View {
         TabView {
-            ModelParametersSettingsView(vm: vm)
-                .tabItem { Label("Model", systemImage: "slider.horizontal.3") }
-                .tag(SettingsTab.modelParameters)
-
-            VoiceSettingsView(vm: vm)
-                .tabItem { Label("Voice", systemImage: "waveform") }
-                .tag(SettingsTab.voice)
-
             ToolsSettingsView(vm: vm)
                 .tabItem { Label("Tools", systemImage: "wrench.and.screwdriver") }
                 .tag(SettingsTab.tools)
@@ -37,14 +29,12 @@ struct SettingsView: View {
                 .tabItem { Label("Appearance", systemImage: "paintbrush") }
                 .tag(SettingsTab.appearance)
         }
-        .frame(minWidth: 560, minHeight: 420)
+        .frame(minWidth: 520, minHeight: 360)
         .padding(.bottom, 8)
     }
 }
 
 enum SettingsTab: Hashable {
-    case modelParameters
-    case voice
     case tools
     case plugins
     case appearance

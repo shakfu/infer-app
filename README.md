@@ -174,13 +174,25 @@ Bundled agents that demonstrate these:
 - **Quarto renderer** — `builtin.quarto.render`. Generates `.qmd` source from a description and renders to a chosen format. See the [Quarto rendering](#quarto-rendering) section above.
 - **Research assistant** — `vault.search`, `wikipedia.search`, `wikipedia.article`, `web.search`. Decision policy in the persona's system prompt: vault-first for personal-corpus questions, Wikipedia-first for encyclopedic / definitional / biographical / historical, web-search for current events / public docs. Caps at 3 tool calls per turn, cites sources inline.
 - **Scratch** — `clipboard.get`, `clipboard.set`, `math.compute`, `wikipedia.search`, `wikipedia.article`, `builtin.clock.now`. Lightweight everyday assistant for short, well-scoped tasks. Caps at 1-2 tool calls per turn — the persona's value is speed. Use for "what's 0.0825 × 12 × 30?", "summarise what I just copied", "copy a polite decline email to my clipboard", "who designed the Eiffel Tower?".
+- **Python coder** — `python.run`, `python.eval`, `math.compute`, `fs.read`, `builtin.clock.now`. Runs Python 3 in an embedded subprocess for calculations, parsing, and quick experiments mid-conversation. Backed by `plugin_python_tools` (requires `make fetch-python`); falls back gracefully if the framework's absent — the agent loads but `python.*` calls return errors. Default 10 s timeout per call, max 120 s. Packages baked in: `openai`, `anthropic` (override with `PY_PKGS=...`).
+- **HN watcher** — `hn.search`, `hn.item`, `hn.user`. Searches Hacker News (Algolia HN API) and summarises stories, threads, or users. No setup; backed by `plugin_hacker_news`. Caps at 3 tool calls per turn; cites by `news.ycombinator.com` permalink rather than the external URL.
 - **Clock assistant** — `builtin.clock.now`, `builtin.text.wordcount`. Demo for verifying tool-call plumbing on a freshly loaded model.
 
 Authoring custom agents: drop a `*.json` file into `~/Library/Application Support/Infer/agents/`. Format mirrors the bundled agents at `projects/infer/Sources/Infer/Resources/agents/*.json` — keys: `id`, `metadata`, `requirements.toolsAllow`, `decodingParams`, `systemPrompt`.
 
+## Settings
+
+Open via **App menu → Settings…**, **Cmd-,**, or the **gear icon** in the chat header (next to Reset). Three tabs — set-once-and-forget configuration:
+
+- **Tools** — Quarto executable path with live status badge, web-search backend selector (DuckDuckGo / SearXNG endpoint).
+- **Plugins** — per-plugin status table; click a row to expand into per-tool descriptions and the pretty-printed `config` blob from `plugins.json`. See the [Plugins](#plugins) section below.
+- **Appearance** — light / dark / system color scheme.
+
+Mid-session knobs stay in the sidebar where they're one click away — **Model** parameters (temperature / top-p / max tokens / thinking budget / seed / system prompt with Apply) and the **Voice** tab (TTS, voice loop, dictation, whisper file transcription).
+
 ## Plugins
 
-Compile-time, statically-linked extensions under `projects/plugins/plugin_<name>/`. Each plugin is its own SPM package depending only on the leaf `projects/plugin-api/` package — plugins cannot reach into `InferAgents` or `Infer` internals. The author surface is one protocol (`Plugin`) returning a list of `BuiltinTool` instances; the host registers them into the same `ToolRegistry` the built-in tools live in, so any persona with `requirements.toolsAllow` matching a plugin-registered tool name can call it.
+Compile-time, statically-linked extensions under `projects/plugins/plugin_<name>/`. Each plugin is its own SPM package depending only on the leaf `projects/plugin-api/` package — plugins cannot reach into `InferAgents` or `Infer` internals. The author surface is one protocol (`Plugin`) returning a list of `BuiltinTool` instances; the host registers them into the same `ToolRegistry` the built-in tools live in, so any persona with `requirements.toolsAllow` matching a plugin-registered tool name can call it. Plugins that need to call other tools by name (their own, built-ins, or other plugins') capture the `ToolInvoker` closure handed to `register` and dispatch through it at call time.
 
 Whether a plugin is in the binary is decided by `projects/plugins/plugins.json`. Add an entry → `make plugins-gen` → `make build`. Remove an entry → regen → rebuild → those bytes are gone from the binary. A per-developer `projects/plugins/plugins.local.json` (gitignored) shadow-merges over the tracked file for opting out of heavy plugins locally.
 
@@ -188,7 +200,7 @@ Currently shipped:
 
 | Plugin | What it adds | Setup |
 |---|---|---|
-| `plugin_wiki` | `wiki.ping` (placeholder; the real `wiki.read` / `wiki.write` / `wiki.search` family lands when the wiki host feature ships per `docs/dev/wiki.md`) | None |
+| `plugin_hackernews` | `hn.search` / `hn.item` / `hn.user` against the public Algolia HN API. Pure Swift, no credentials, no install step. | None |
 | `plugin_python_tools` | `python.run` (script execution) and `python.eval` (single expression) over an embedded `Python.framework` with `openai` + `anthropic` baked in | `make fetch-python` (one-time, ~5 min — builds `thirdparty/Python.framework` via `scripts/buildpy.py`). Override the package set with `PY_PKGS="openai anthropic pandas matplotlib"`. Without this step the framework is absent and `python.*` tools simply don't register — the rest of the app launches normally. |
 
 Authoring a plugin: create `projects/plugins/plugin_<name>/` with its own `Package.swift` depending on `../../plugin-api`, conform a `public enum <Name>Plugin: Plugin` and return a `PluginContributions(tools: [...])` from `register(config:)`. Add the entry to `projects/plugins/plugins.json`, run `make plugins-gen`, rebuild. Full architecture + the reasoning behind decisions (leaf-API package, return-based contributions, why no cross-plugin deps in `plugins.json`, what shapes don't fit the plugin model) lives in `docs/dev/plugins.md`.

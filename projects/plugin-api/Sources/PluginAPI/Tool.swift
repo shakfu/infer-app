@@ -102,3 +102,23 @@ extension StreamingBuiltinTool {
         return ToolResult(output: "", error: "streaming tool ended without a result event")
     }
 }
+
+/// Host-supplied tool invocation closure. Wraps the host's
+/// `ToolRegistry` so callers — agent loops, and plugins that want to
+/// dispatch tools belonging to *other* plugins — can execute tools
+/// by name without holding the registry actor.
+///
+/// `name` corresponds to a `ToolSpec.name` from the merged catalog
+/// (built-ins + every plugin's contributions + MCP tools); `arguments`
+/// is a JSON-encoded string matching the tool's schema. Implementations
+/// throw on unknown tools or argument-parse failures the loop should
+/// treat as fatal; tool-side errors the model should see and recover
+/// from arrive as `ToolResult(error:)` with no throw. Mirrors
+/// `BuiltinTool.invoke`'s contract.
+///
+/// **Cross-plugin call timing.** The closure dispatches against the
+/// registry as it stands *at call time*, not at register time. So
+/// plugin B can be handed an invoker during `register` even though
+/// plugin A's tools haven't been registered yet — by the time B's
+/// tool actually runs (during a chat turn), A's tools are present.
+public typealias ToolInvoker = @Sendable (_ name: ToolName, _ arguments: String) async throws -> ToolResult

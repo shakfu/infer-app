@@ -26,7 +26,18 @@ public protocol Plugin: Sendable {
     /// recorded as a `PluginFailureRecord`, and surfaced via the
     /// host's warning sink — startup continues with the remaining
     /// plugins.
-    static func register(config: PluginConfig) async throws -> PluginContributions
+    ///
+    /// `invoker` is bound to the host's tool registry — plugins that
+    /// need to call other tools by name (their own, built-ins, or
+    /// other plugins') capture it when constructing tools. Plugins
+    /// that don't need cross-tool dispatch ignore the parameter. The
+    /// closure dispatches against the registry as it stands at call
+    /// time, not at register time, so plugin B can use it to reach
+    /// plugin A even when A registers later in the load order.
+    static func register(
+        config: PluginConfig,
+        invoker: @escaping ToolInvoker
+    ) async throws -> PluginContributions
 }
 
 /// What a plugin returns from `register`. Additive: new contribution

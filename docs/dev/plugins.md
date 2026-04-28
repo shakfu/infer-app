@@ -139,13 +139,16 @@ Minimal — `register` returns its contributions; the host wires them into its r
 ```swift
 // In the leaf `PluginAPI` module that every plugin depends on.
 public protocol Plugin: Sendable {
-    static var id: String { get }    // matches plugins.json id, e.g. "wiki"
-    static func register(config: PluginConfig) async throws -> PluginContributions
+    static var id: String { get }    // matches plugins.json id, e.g. "hackernews"
+    static func register(
+        config: PluginConfig,
+        invoker: @escaping ToolInvoker
+    ) async throws -> PluginContributions
 }
 
 public struct PluginContributions: Sendable {
     public var tools: [any BuiltinTool]
-    // Future, additive: agents, RAG sources, MCP server descriptors.
+    // Future, additive: agents, RAG sources.
     public init(tools: [any BuiltinTool] = []) { self.tools = tools }
     public static let none = PluginContributions()
 }
@@ -155,9 +158,20 @@ public struct PluginConfig: Sendable {
     public func decode<T: Decodable>(_ type: T.Type) throws -> T
     public static let empty: PluginConfig
 }
+
+// Cross-plugin tool dispatch. The closure dispatches against the
+// host's registry as it stands at *call time*, so plugin B can capture
+// it during register even when plugin A's tools register later.
+public typealias ToolInvoker = @Sendable (_ name: ToolName, _ arguments: String) async throws -> ToolResult
 ```
 
-`register` is the only entry point. No `start`/`stop`/`shutdown` hooks until something needs them — adding lifecycle later is cheap, making it mandatory now is what you regret. Plugins that *do* own background work (long-lived MCP subprocess, file watcher) will register a teardown handle on a future `PluginContributions.teardown` field; the host drains those in `applicationWillTerminate` alongside the runner shutdown sequence.
+`register` is the only entry point. No `start`/`stop`/`shutdown` hooks until something needs them — adding lifecycle later is cheap, making it mandatory now is what you regret. Plugins that own long-lived background work (file watcher, persistent connection) will register a teardown handle on a future `PluginContributions.teardown` field; the host drains those in `applicationWillTerminate` alongside the runner shutdown sequence.
+
+### Cross-plugin tool dispatch
+
+`register` is handed an `invoker: ToolInvoker` closure bound to the host's tool registry. Plugins that need to call other tools by name capture it when constructing their tools; plugins that don't need cross-tool dispatch ignore the parameter. The closure dispatches against the registry as it stands at **call time**, not register time, so plugin B can use the captured invoker to reach plugin A even when A registers later in the load order — by the time the chat turn runs and B's tool actually fires, A's tools are present.
+
+This is what makes "a chart plugin that calls `python.run` to render plots" possible without source-level coupling between `plugin_chart` and `plugin_python_tools`. They communicate through the registry, not through each other's modules.
 
 `PluginAPI` is the leaf SPM package at `projects/plugin-api/` — pure Swift, zero deps. `InferAgents` re-exports it via `@_exported import PluginAPI` so existing `import InferAgents` call sites continue to see `BuiltinTool`, `ToolName`, etc., unchanged.
 
@@ -166,7 +180,14 @@ public struct PluginConfig: Sendable {
 A throwing `register` does **not** abort startup. `PluginLoader.loadAll` catches per-plugin, records a `PluginFailureRecord`, and continues with the remaining plugins. The host logs each failure at ERROR and (in a later PR) surfaces it in two visible places: a non-dismissable banner the first time the user opens the chat, and a red-status row in Settings → Plugins.
 
 ```swift
-let result = await PluginLoader.loadAll(types: allPluginTypes, configs: pluginConfigs)
+let invoker: ToolInvoker = { name, args in
+    try await registry.invoke(name: name, arguments: args)
+}
+let result = await PluginLoader.loadAll(
+    types: allPluginTypes,
+    configs: pluginConfigs,
+    invoker: invoker
+)
 for (id, contrib) in result.contributions {
     for tool in contrib.tools { await registry.register(tool) }
 }
@@ -182,8 +203,11 @@ Reasoning: plugin failures are realistic (missing artefact, bad config blob, net
 Per-plugin config is validated **at register time, not build time**. The plugin decodes its own config:
 
 ```swift
-public static func register(into host: PluginHost, config: PluginConfig) async throws {
-    let cfg = try config.decode(WikiConfig.self)
+public static func register(
+    config: PluginConfig,
+    invoker _: ToolInvoker
+) async throws -> PluginContributions {
+    let cfg = try config.decode(MyConfig.self)
     // ...
 }
 ```
@@ -196,7 +220,7 @@ No JSON Schema files, no `jsonschema` dependency in `gen_plugins.py`. The cost (
 
 - **Tools** — `PluginContributions(tools: [WikiSearchTool()])`. Standard `BuiltinTool` conformance from `PluginAPI`; no plugin-specific tool protocol.
 - **(Future) Agents** — `PluginContributions.agents` will hold `[any Agent]`. The `agents.md` precedence rule (user-JSON > plugin > first-party) holds; with all-in-tree plugins, this is descriptive (it tells you where an agent came from) rather than a runtime trust boundary. Lands when an agent-shipping plugin needs it.
-- **MCP subprocess** — a plugin may spawn one or more MCP-server subprocesses from `register` and adapt their tool surface into `BuiltinTool` instances it returns. The MCP machinery (`MCPClient` over stdio, `ConsentPolicy`, the three-step shutdown escalation: `shutdown` request → SIGINT → SIGTERM with 200 ms per step) lives in the plugin's own package or in a shared `mcp-client` SPM package once more than one plugin needs it. Not part of `PluginAPI`.
+- **MCP servers** — *not via plugins.* MCP integration lives in the host's `MCPHost` (`projects/infer/Sources/InferAgents/MCP/`), configured at runtime via `~/Library/Application Support/Infer/mcp/*.json`. Each server's tools register into the same `ToolRegistry` plugins write to, namespaced as `mcp.<server>.<tool>`. The LLM can't tell the difference between a plugin-contributed tool and an MCP-surfaced one — both look identical in the system-prompt tool list and dispatch through `ToolRegistry.invoke`. Building "plugin spawns MCP subprocess" was considered and dropped: it would duplicate `MCPHost`'s job for marginal benefit (the only thing it'd add is *compile-time-fixed* MCP server choice, which fights MCP's runtime-configurable shape).
 - **(Future) RAG sources, UI extensions** — additive fields on `PluginContributions`; not in v1.
 
 ## Worked examples
@@ -260,15 +284,23 @@ Substrate built and exercised end-to-end via a placeholder `plugin_wiki`:
 - `Infer` target reads `GeneratedPlugins.swift` in `bootstrapAgents`, calls `PluginLoader.loadAll`, registers contributions into the existing `ToolRegistry`, logs failures.
 - Tests: `PluginAPITests` (loader + config), `plugin_wikiTests` (placeholder smoke). `make test` runs all three packages' suites.
 
-## Subsequent PRs (rough order)
+## Landed since PR-A
 
-- **PR-B:** Real `plugin_wiki` implementation — vault migration `v5_wiki` (per `docs/dev/wiki.md` phase 1), `WikiStore` actor, the `wiki.read` / `wiki.write` / `wiki.search` / `wiki.list` / `wiki.delete` tools (phase 4), Note-taker agent. UI / composer / RAG-augment / promotion (wiki.md phases 2/3/5/6) are deferred — they're not plugin-shaped under the current architecture.
-- **PR-C:** Runtime `enabled` toggle + `plugins.local.json` override merge. Currently the build-time-only `enabled: false` requires a rebuild.
-- **PR-D:** `plugin_python_tools` (landed alongside this PR series). `python.run` and `python.eval` over the embedded `Python.framework` built by `scripts/buildpy.py`. Subprocess model (no in-process libpython linkage), per-invocation temp working dir, default 10s / max 120s timeout. Framework discovery: `config.python_path` → app-bundle Frameworks → repo `thirdparty/Python.framework`. Bundle rule (`make bundle`) copies the framework into `Infer.app/Contents/Frameworks/` if present. Tests: 7 fast-path unit (path resolution, timeout clamping, JSON escape, register-without-framework error path) + 7 `PythonExternalTests` (auto-skip when framework absent; cover round-trip, stderr separation, exit code, timeout kill, eval repr/exception, JSON shape).
+- **`plugin_python_tools`** — `python.run` + `python.eval` over the embedded `Python.framework` built by `scripts/buildpy.py`. Subprocess model (no in-process libpython linkage), per-invocation temp working dir, default 10 s / max 120 s timeout. Framework discovery: `config.python_path` → app-bundle Frameworks → repo `thirdparty/Python.framework`. Bundle rule (`make bundle`) copies the framework into `Infer.app/Contents/Frameworks/` if present. 7 fast-path unit + 7 `PythonExternalTests` (auto-skip when framework absent).
+- **Cross-plugin tool dispatch.** `Plugin.register` extended with an `invoker: ToolInvoker` parameter; `ToolInvoker` moved out of `InferAgents` into `PluginAPI`. The closure dispatches at call time, not register time, so plugin B's tool can call plugin A's tool by name even though A's tools weren't in the registry when B's `register` ran.
+- **Settings window** (Cmd-, / App menu / cog icon in chat header). Five tabs: Model parameters, Voice, Tools, Plugins, Appearance. Sidebar trimmed to navigation only (Model picker, Agents, History, Console). Stale `tabRaw` values for removed sidebar tabs fall through to `.model`.
+- **Plugins-tab detail view.** Expandable rows; full per-tool descriptions; pretty-printed config blob from `plugins.json`; Reveal-in-Finder. Read-only — editing config in-app waits for the runtime toggle (next item) to land.
+
+## Roadmap (subsequent PRs, rough order)
+
+- **PR-C:** Runtime `enabled` toggle + `plugins.local.json` override merge. Currently the build-time-only `enabled: false` requires a rebuild. Runtime toggle adds a per-user state file (NOT `plugins.json`) and a switch in the Plugins detail view; takes effect on next launch since `register` only runs at startup.
 - **PR-E:** `plugin_financial_analyst` — drives out the "plugin ships a composed agent" path against `agent_composition.md`. Adds `PluginContributions.agents`.
-- **PR-F:** MCP subprocess support as a `plugin_*` opting in. Likely lives in a shared `mcp-client` SPM package the moment a second plugin needs it.
 - **PR-G:** Persistent "always allow" consent (per `(plugin_id, tool_name)`), backed by a separate state file (not `plugins.json` — that's build/enable, this is per-user trust).
-- **PR-H:** Settings → Plugins UI for the runtime toggle, autoApprove list, and per-plugin config blob editing.
+- **PR-H:** Editable per-plugin config in the Settings detail view. Depends on PR-C (otherwise edits would force a rebuild every time).
+
+PR-B (real wiki plugin) and PR-F (MCP subprocess plugin) were both **dropped**:
+- The wiki belongs in the host (vault co-residency, FTS atomicity with conversations, workspace cascade) — see `docs/dev/wiki.md` for the unchanged design, owned by the host now.
+- MCP integration already lives in `MCPHost`; building a parallel plugin-API path for it would duplicate the same job for marginal benefit. See "What a plugin can contribute" above.
 
 ## Open questions
 

@@ -20,7 +20,10 @@ import PluginAPI
 public enum PythonToolsPlugin: Plugin {
     public static let id = "python_tools"
 
-    public static func register(config: PluginConfig) async throws -> PluginContributions {
+    public static func register(
+        config: PluginConfig,
+        invoker _: ToolInvoker
+    ) async throws -> PluginContributions {
         let cfg: Config = (try? config.decode(Config.self)) ?? Config()
         let pythonPath = try resolvePythonPath(override: cfg.pythonPath)
         let runner = PythonRunner(pythonPath: pythonPath)

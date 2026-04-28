@@ -17,47 +17,61 @@ import XCTest
 /// so a divergence is caught at code-review time. When the algorithm
 /// changes, change both — fail-loud is the goal.
 private struct StatusFixture {
+    struct Tool: Equatable {
+        let name: ToolName
+        let description: String
+    }
     enum Status: Equatable {
-        case loaded(toolNames: [ToolName])
+        case loaded(tools: [Tool])
         case failed(message: String)
     }
     let id: String
     let status: Status
+    let configJSON: Data
 
     static func assemble(
         types: [any Plugin.Type],
-        result: PluginLoadResult
+        result: PluginLoadResult,
+        configs: [String: PluginConfig] = [:]
     ) -> [StatusFixture] {
         let failuresByID = Dictionary(
             uniqueKeysWithValues: result.failures.map { ($0.pluginID, $0.message) }
         )
         return types.map { type in
             let id = type.id
+            let configJSON = configs[id]?.json ?? PluginConfig.empty.json
             if let message = failuresByID[id] {
-                return StatusFixture(id: id, status: .failed(message: message))
+                return StatusFixture(id: id, status: .failed(message: message), configJSON: configJSON)
             }
-            let names = (result.contributions[id]?.tools.map(\.name) ?? []).sorted()
-            return StatusFixture(id: id, status: .loaded(toolNames: names))
+            let tools = (result.contributions[id]?.tools ?? [])
+                .map { Tool(name: $0.name, description: $0.spec.description) }
+                .sorted { $0.name < $1.name }
+            return StatusFixture(id: id, status: .loaded(tools: tools), configJSON: configJSON)
         }
     }
 }
 
 private enum AlphaPlugin: Plugin {
     static let id = "alpha"
-    static func register(config _: PluginConfig) async throws -> PluginContributions { .none }
+    static func register(config _: PluginConfig, invoker _: ToolInvoker) async throws -> PluginContributions { .none }
 }
 private enum BetaPlugin: Plugin {
     static let id = "beta"
-    static func register(config _: PluginConfig) async throws -> PluginContributions { .none }
+    static func register(config _: PluginConfig, invoker _: ToolInvoker) async throws -> PluginContributions { .none }
 }
 private enum GammaPlugin: Plugin {
     static let id = "gamma"
-    static func register(config _: PluginConfig) async throws -> PluginContributions { .none }
+    static func register(config _: PluginConfig, invoker _: ToolInvoker) async throws -> PluginContributions { .none }
 }
 
 private struct FixtureTool: BuiltinTool {
     let name: ToolName
-    var spec: ToolSpec { ToolSpec(name: name) }
+    let descriptionText: String
+    init(name: ToolName, description: String = "") {
+        self.name = name
+        self.descriptionText = description
+    }
+    var spec: ToolSpec { ToolSpec(name: name, description: descriptionText) }
     func invoke(arguments _: String) async throws -> ToolResult { .init(output: "") }
 }
 
@@ -77,7 +91,7 @@ final class PluginStatusEntryTests: XCTestCase {
         XCTAssertEqual(entries.map(\.id), ["alpha", "beta", "gamma"])
     }
 
-    func testAssembleSortsToolNamesPerPlugin() {
+    func testAssembleSortsToolsByName() {
         let result = PluginLoadResult(
             contributions: [
                 "alpha": PluginContributions(tools: [
@@ -88,7 +102,25 @@ final class PluginStatusEntryTests: XCTestCase {
             ]
         )
         let entries = StatusFixture.assemble(types: [AlphaPlugin.self], result: result)
-        XCTAssertEqual(entries.first?.status, .loaded(toolNames: ["a.tool", "m.tool", "z.tool"]))
+        guard case .loaded(let tools) = entries.first?.status else {
+            return XCTFail("expected loaded status")
+        }
+        XCTAssertEqual(tools.map(\.name), ["a.tool", "m.tool", "z.tool"])
+    }
+
+    func testAssembleCarriesToolDescriptions() {
+        let result = PluginLoadResult(
+            contributions: [
+                "alpha": PluginContributions(tools: [
+                    FixtureTool(name: "a.tool", description: "hi"),
+                ]),
+            ]
+        )
+        let entries = StatusFixture.assemble(types: [AlphaPlugin.self], result: result)
+        guard case .loaded(let tools) = entries.first?.status else {
+            return XCTFail("expected loaded status")
+        }
+        XCTAssertEqual(tools.first?.description, "hi")
     }
 
     func testAssembleSurfacesFailuresInline() {
@@ -103,18 +135,41 @@ final class PluginStatusEntryTests: XCTestCase {
             result: result
         )
         XCTAssertEqual(entries.count, 2)
-        XCTAssertEqual(entries[0].status, .loaded(toolNames: ["a.one"]))
-        XCTAssertEqual(entries[1].status, .failed(message: "missing config key"))
+        if case .failed(let message) = entries[1].status {
+            XCTAssertEqual(message, "missing config key")
+        } else {
+            XCTFail("expected failed status for beta")
+        }
     }
 
     func testAssembleHandlesContributionlessLoadedPlugin() {
-        // A plugin whose `register` returned `.none` should appear as
-        // loaded-with-zero-tools, not as failed and not as missing.
         let entries = StatusFixture.assemble(
             types: [AlphaPlugin.self],
             result: PluginLoadResult()
         )
-        XCTAssertEqual(entries.first?.status, .loaded(toolNames: []))
+        if case .loaded(let tools) = entries.first?.status {
+            XCTAssertTrue(tools.isEmpty)
+        } else {
+            XCTFail("expected loaded status with no tools")
+        }
+    }
+
+    func testAssembleAttachesConfigJSON() {
+        let cfg = PluginConfig(json: Data(#"{"hello":"world"}"#.utf8))
+        let entries = StatusFixture.assemble(
+            types: [AlphaPlugin.self],
+            result: PluginLoadResult(),
+            configs: ["alpha": cfg]
+        )
+        XCTAssertEqual(entries.first?.configJSON, cfg.json)
+    }
+
+    func testAssembleFallsBackToEmptyConfig() {
+        let entries = StatusFixture.assemble(
+            types: [AlphaPlugin.self],
+            result: PluginLoadResult()
+        )
+        XCTAssertEqual(entries.first?.configJSON, PluginConfig.empty.json)
     }
 
     func testAssembleEmpty() {
