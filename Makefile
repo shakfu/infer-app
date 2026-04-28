@@ -34,7 +34,7 @@ INFER_PRODUCT_DIR := $(INFER_BUILD_DIR)/Build/Products/$(INFER_CONFIG)
 INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 
 .PHONY: all build bundle run clean clean-infer clean-mlx-cache test
-.PHONY: fetch-llama fetch-whisper fetch-webassets fetch-sqlitevec generate-icon
+.PHONY: fetch-llama fetch-whisper fetch-webassets fetch-sqlitevec fetch-python generate-icon
 .PHONY: build-release bundle-release run-release
 
 all: build
@@ -114,6 +114,15 @@ $(SQLITEVEC_MARKER):
 	./scripts/fetch_sqlitevec.sh $(SQLITEVEC_TAG)
 
 fetch-sqlitevec: $(SQLITEVEC_MARKER)
+
+# Optional plugin. Builds CPython + a curated set of pip packages (default:
+# openai, anthropic) into thirdparty/Python.framework via scripts/buildpy.py.
+# The bundle rule copies the framework if present and skips otherwise, so
+# Infer.app builds and runs without ever invoking this target. Override the
+# package set with PY_PKGS, e.g.:
+#   make fetch-python PY_PKGS="openai anthropic pandas matplotlib"
+fetch-python:
+	./scripts/fetch_python_framework.sh
 
 build: $(LLAMA_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SQLITEVEC_MARKER)
 	xcodebuild $(INFER_XCODE_FLAGS) build
