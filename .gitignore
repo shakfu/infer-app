@@ -78,3 +78,6 @@ fastlane/test_output
 CLAUDE.md
 # AGENTS.md
 GEMINI.md
+
+# Per-developer plugin overrides — see docs/dev/plugins.md
+projects/plugins/plugins.local.json

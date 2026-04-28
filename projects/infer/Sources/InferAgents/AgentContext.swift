@@ -1,4 +1,5 @@
 import Foundation
+@_exported import PluginAPI
 
 public struct RunnerHandle: Sendable, Equatable {
     public let backend: BackendPreference
@@ -32,38 +33,10 @@ public struct TranscriptMessage: Codable, Equatable, Sendable {
     }
 }
 
-public struct ToolSpec: Codable, Equatable, Sendable {
-    public var name: ToolName
-    public var description: String
-
-    public init(name: ToolName, description: String = "") {
-        self.name = name
-        self.description = description
-    }
-}
-
-public struct ToolCall: Codable, Equatable, Sendable {
-    public var name: ToolName
-    /// Arguments as a raw JSON string. Kept as text rather than a decoded
-    /// type so the transcript can survive schema evolution without the
-    /// agent layer needing to know each tool's schema.
-    public var arguments: String
-
-    public init(name: ToolName, arguments: String) {
-        self.name = name
-        self.arguments = arguments
-    }
-}
-
-public struct ToolResult: Codable, Equatable, Sendable {
-    public var output: String
-    public var error: String?
-
-    public init(output: String, error: String? = nil) {
-        self.output = output
-        self.error = error
-    }
-}
+// `ToolSpec`, `ToolCall`, `ToolResult`, `ToolName`, `ToolError`,
+// `BuiltinTool`, `StreamingBuiltinTool`, `ToolEvent` moved to the
+// `PluginAPI` package so plugins can author tools without depending on
+// `InferAgents`. Re-exported via `@_exported import PluginAPI` above.
 
 /// One chunk of retrieval context returned by the host's vector store
 /// when an agent calls back through `AgentContext.retrieve` (or via the

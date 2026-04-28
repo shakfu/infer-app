@@ -6,7 +6,7 @@ A macOS SwiftUI chat app with two local inference backends selectable at runtime
 
 - **MLX** via `mlx-swift-lm`
 
-Plus, local speech-to-text via `whisper.cpp` (file drop and in-app recording), on-device dictation via `SFSpeechRecognizer`, TTS, a searchable SQLite vault of all conversations, Markdown/PDF/HTML transcript export, document rendering via an external Quarto installation, and a sandboxed [tool runtime](#built-in-agent-tools) (filesystem read/write/list, PDF text extraction, XLSX read + write, CSV/TSV writing, clipboard, math, vault + Wikipedia + web search, HTTP fetch with allowlist, plus MCP-server tools).
+Plus, local speech-to-text via `whisper.cpp` (file drop and in-app recording), on-device dictation via `SFSpeechRecognizer`, TTS, a searchable SQLite vault of all conversations, Markdown/PDF/HTML transcript export, document rendering via an external Quarto installation, a sandboxed [tool runtime](#built-in-agent-tools) (filesystem read/write/list, PDF text extraction, XLSX read + write, CSV/TSV writing, clipboard, math, vault + Wikipedia + web search, HTTP fetch with allowlist, plus MCP-server tools), and a [compile-time plugin system](#plugins) (Python execution via an embedded interpreter, more to come).
 
 Built with Swift Package Manager and `xcodebuild`.
 
@@ -163,6 +163,8 @@ Agents can opt into a per-agent allowlist of these tools through their JSON conf
 | `clipboard.get` / `clipboard.set` | Read / replace the macOS clipboard | 64 KB cap on writes; `set` clears prior representations |
 | `math.compute` | Arithmetic via `NSExpression` (digits, `+ - * / ( )`, scientific notation) | Whitelist regex blocks `FUNCTION:` / variable references; integer literals coerced to doubles so `1/3` returns `0.333…` not `0` |
 | `builtin.quarto.render` | Render `.qmd` source to HTML/PDF/DOCX/PPTX/etc. via an external Quarto install | Streaming-tool — emits per-line stderr as live progress; output staged under `~/Library/Caches/quarto-renders/` |
+| `python.run` | Run Python 3 code in a subprocess against an embedded `Python.framework` (only present when `make fetch-python` has been run; see [Plugins](#plugins)) | Per-invocation temp working dir; stdout / stderr / exit_code captured separately; default 10 s timeout, hard cap 120 s; user-account-level access (no syscall sandbox) |
+| `python.eval` | Evaluate a single Python expression and return its `repr()` | Same runtime + trust model as `python.run`; expression passed via env var to avoid quoting hazards |
 | `agents.handoff` / `agents.invoke` | Composition primitives — let one agent delegate to another | Inert tools; the composition driver follows the call from the trace post-segment |
 | `mcp.<server>.<tool>` | Tools surfaced from external MCP servers under `~/Library/Application Support/Infer/mcp/` | Per-server consent gate (default deny); roots advertised on the server's `initialize` handshake |
 
@@ -175,6 +177,21 @@ Bundled agents that demonstrate these:
 - **Clock assistant** — `builtin.clock.now`, `builtin.text.wordcount`. Demo for verifying tool-call plumbing on a freshly loaded model.
 
 Authoring custom agents: drop a `*.json` file into `~/Library/Application Support/Infer/agents/`. Format mirrors the bundled agents at `projects/infer/Sources/Infer/Resources/agents/*.json` — keys: `id`, `metadata`, `requirements.toolsAllow`, `decodingParams`, `systemPrompt`.
+
+## Plugins
+
+Compile-time, statically-linked extensions under `projects/plugins/plugin_<name>/`. Each plugin is its own SPM package depending only on the leaf `projects/plugin-api/` package — plugins cannot reach into `InferAgents` or `Infer` internals. The author surface is one protocol (`Plugin`) returning a list of `BuiltinTool` instances; the host registers them into the same `ToolRegistry` the built-in tools live in, so any persona with `requirements.toolsAllow` matching a plugin-registered tool name can call it.
+
+Whether a plugin is in the binary is decided by `projects/plugins/plugins.json`. Add an entry → `make plugins-gen` → `make build`. Remove an entry → regen → rebuild → those bytes are gone from the binary. A per-developer `projects/plugins/plugins.local.json` (gitignored) shadow-merges over the tracked file for opting out of heavy plugins locally.
+
+Currently shipped:
+
+| Plugin | What it adds | Setup |
+|---|---|---|
+| `plugin_wiki` | `wiki.ping` (placeholder; the real `wiki.read` / `wiki.write` / `wiki.search` family lands when the wiki host feature ships per `docs/dev/wiki.md`) | None |
+| `plugin_python_tools` | `python.run` (script execution) and `python.eval` (single expression) over an embedded `Python.framework` with `openai` + `anthropic` baked in | `make fetch-python` (one-time, ~5 min — builds `thirdparty/Python.framework` via `scripts/buildpy.py`). Override the package set with `PY_PKGS="openai anthropic pandas matplotlib"`. Without this step the framework is absent and `python.*` tools simply don't register — the rest of the app launches normally. |
+
+Authoring a plugin: create `projects/plugins/plugin_<name>/` with its own `Package.swift` depending on `../../plugin-api`, conform a `public enum <Name>Plugin: Plugin` and return a `PluginContributions(tools: [...])` from `register(config:)`. Add the entry to `projects/plugins/plugins.json`, run `make plugins-gen`, rebuild. Full architecture + the reasoning behind decisions (leaf-API package, return-based contributions, why no cross-plugin deps in `plugins.json`, what shapes don't fit the plugin model) lives in `docs/dev/plugins.md`.
 
 ## Reproducibility (seed)
 
@@ -203,4 +220,7 @@ make clean              # Remove build/
 | `fetch-llama` | Download `thirdparty/llama.xcframework` (tag via `LLAMA_TAG=...`) |
 | `fetch-whisper` | Download `thirdparty/whisper.xcframework` (tag via `WHISPER_TAG=...`) |
 | `fetch-webassets` | Download KaTeX + highlight.js to `thirdparty/webassets/` (versions via `KATEX_VERSION=...` / `HLJS_VERSION=...`) |
+| `fetch-python` | Build `thirdparty/Python.framework` via `scripts/buildpy.py` (one-time, ~5 min; opts in to `plugin_python_tools`'s `python.run` / `python.eval`). Override the bundled package set with `PY_PKGS="openai anthropic pandas matplotlib"` |
+| `plugins-gen` | Regenerate plugin glue (`Package.swift` marker sections + `Sources/Infer/GeneratedPlugins.swift`) from `projects/plugins/plugins.json`. `build` depends on this so a stale `Package.swift` never reaches `xcodebuild`. Idempotent — re-running with no input change is a no-op |
+| `plugins-gen-check` | CI dirty-tree assertion: regenerates and fails if anything changed. Catches "edited `plugins.json`, forgot to commit the generated diff" in review rather than at someone else's build |
 | `generate-icon` | Regenerate `projects/infer/Resources/AppIcon.icns` from `scripts/generate_app_icon.swift` |

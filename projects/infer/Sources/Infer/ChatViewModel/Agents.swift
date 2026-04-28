@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import InferAgents
 import InferCore
+import PluginAPI
 
 extension ChatViewModel {
     /// Root directory under which user-authored JSON personas/agents live.
@@ -284,6 +285,39 @@ extension ChatViewModel {
                 WikipediaArticleTool(),
                 VaultSearchTool(retriever: retriever),
             ])
+            // Plugins (compile-time, generated from
+            // `projects/plugins/plugins.json`). Runs after the built-in
+            // tools so plugin tools join the same merged catalog, and
+            // before the MCP bootstrap so the system-prompt tool
+            // section sees both. Each plugin's `register` returns the
+            // tools it contributes; the host registers them. Per-plugin
+            // failures are caught + logged; remaining plugins still
+            // load.
+            let pluginResult = await PluginLoader.loadAll(
+                types: allPluginTypes,
+                configs: pluginConfigs
+            )
+            for (id, contrib) in pluginResult.contributions {
+                for tool in contrib.tools {
+                    await registry.register(tool)
+                }
+                let toolCount = contrib.tools.count
+                if toolCount > 0 {
+                    logs.log(
+                        .info,
+                        source: "plugins",
+                        message: "plugin \(id) registered \(toolCount) tool\(toolCount == 1 ? "" : "s")"
+                    )
+                }
+            }
+            for failure in pluginResult.failures {
+                logs.log(
+                    .error,
+                    source: "plugins",
+                    message: "plugin \(failure.pluginID) failed to register",
+                    payload: failure.message
+                )
+            }
             // MCP servers (item 11). Each `*.json` under the user's
             // mcp directory describes one subprocess to spawn; tools
             // discovered via `initialize` + `tools/list` register

@@ -50,6 +50,20 @@ let package = Package(
         // transitively — both pure Swift, both well-maintained.
         // Pinned `from: "0.14.1"` per the upstream README's example.
         .package(url: "https://github.com/CoreOffice/CoreXLSX", from: "0.14.1"),
+        // Leaf plugin-author SPM package. Defines the `Plugin` protocol
+        // and the tool primitives (`BuiltinTool`, `ToolSpec`, etc.)
+        // that plugins under `projects/plugins/plugin_<name>/` compile
+        // against. Pure Swift, zero runtime deps. Re-exported from
+        // `InferAgents` (`@_exported import PluginAPI`) so existing
+        // code that imports `InferAgents` keeps working unchanged.
+        .package(path: "../plugin-api"),
+        // BEGIN_GENERATED_PLUGINS_PACKAGES
+        // Managed by `scripts/gen_plugins.py`. Do not hand-edit between
+        // the BEGIN/END markers; rerun `make plugins-gen` after editing
+        // `projects/plugins/plugins.json`.
+        .package(path: "../plugins/plugin_wiki"),
+        .package(path: "../plugins/plugin_python_tools"),
+        // END_GENERATED_PLUGINS_PACKAGES
     ],
     targets: [
         // Pure-Swift library for logic that does not depend on binary
@@ -74,6 +88,7 @@ let package = Package(
             name: "InferAgents",
             dependencies: [
                 "InferCore",
+                .product(name: "PluginAPI", package: "plugin-api"),
                 .product(name: "libxlsxwriter", package: "libxlsxwriter"),
                 .product(name: "CoreXLSX", package: "CoreXLSX"),
             ],
@@ -139,6 +154,14 @@ let package = Package(
                 .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 "InferRAG",
+                .product(name: "PluginAPI", package: "plugin-api"),
+                // BEGIN_GENERATED_PLUGINS_PRODUCTS
+                // Managed by `scripts/gen_plugins.py`. Do not hand-edit
+                // between the BEGIN/END markers; rerun `make plugins-gen`
+                // after editing `projects/plugins/plugins.json`.
+                .product(name: "plugin_wiki", package: "plugin_wiki"),
+                .product(name: "plugin_python_tools", package: "plugin_python_tools"),
+                // END_GENERATED_PLUGINS_PRODUCTS
             ],
             path: "Sources/Infer",
             exclude: ["Info.plist"],

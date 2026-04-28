@@ -36,6 +36,7 @@ INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 .PHONY: all build bundle run clean clean-infer clean-mlx-cache test
 .PHONY: fetch-llama fetch-whisper fetch-webassets fetch-sqlitevec fetch-python generate-icon
 .PHONY: build-release bundle-release run-release
+.PHONY: plugins-gen plugins-gen-check
 
 all: build
 
@@ -70,8 +71,32 @@ clean-mlx-cache:
 # `make test-integration` instead. Does not require the Metal Toolchain
 # or the fetched llama/whisper xcframeworks — the Infer executable
 # target is not built here, only the library targets and their tests.
-test:
+# Regenerate plugin glue (Package.swift marker sections + GeneratedPlugins.swift)
+# from `projects/plugins/plugins.json`. Idempotent — re-running is a no-op when
+# nothing changed. `build` depends on this so a stale Package.swift never reaches
+# xcodebuild.
+plugins-gen:
+	./scripts/gen_plugins.py
+
+# CI guard: regenerate, then assert the working tree is clean. Catches the
+# "edited plugins.json, forgot to regenerate" case in review rather than at
+# someone else's build.
+plugins-gen-check: plugins-gen
+	@if ! git diff --quiet -- projects/infer/Package.swift projects/infer/Sources/Infer/GeneratedPlugins.swift; then \
+		echo "error: generated plugin files are stale; run 'make plugins-gen' and commit the result" >&2; \
+		git --no-pager diff -- projects/infer/Package.swift projects/infer/Sources/Infer/GeneratedPlugins.swift >&2; \
+		exit 1; \
+	fi
+
+test: plugins-gen
 	cd $(INFER_DIR) && swift test --skip ExternalTests
+	cd projects/plugin-api && swift test --skip ExternalTests
+	@for plugin_pkg in projects/plugins/plugin_*; do \
+		if [ -f "$$plugin_pkg/Package.swift" ]; then \
+			echo "==> swift test --skip ExternalTests in $$plugin_pkg"; \
+			(cd "$$plugin_pkg" && swift test --skip ExternalTests) || exit 1; \
+		fi; \
+	done
 
 # External-system tests. Runs only suites whose name ends in
 # `ExternalTests` — `QuartoExternalTests` today, more as they're added
@@ -81,6 +106,12 @@ test:
 # machines that don't install every external dep.
 test-integration:
 	cd $(INFER_DIR) && swift test --filter ExternalTests
+	@for plugin_pkg in projects/plugins/plugin_*; do \
+		if [ -f "$$plugin_pkg/Package.swift" ]; then \
+			echo "==> swift test --filter ExternalTests in $$plugin_pkg"; \
+			(cd "$$plugin_pkg" && swift test --filter ExternalTests) || exit 1; \
+		fi; \
+	done
 
 # Run everything — fast suites + external suites in one pass. Useful
 # pre-commit / pre-release. Slower than `make test` by however long
@@ -124,7 +155,7 @@ fetch-sqlitevec: $(SQLITEVEC_MARKER)
 fetch-python:
 	./scripts/fetch_python_framework.sh
 
-build: $(LLAMA_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SQLITEVEC_MARKER)
+build: $(LLAMA_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SQLITEVEC_MARKER) plugins-gen
 	xcodebuild $(INFER_XCODE_FLAGS) build
 
 bundle: build $(INFER_DIR)/Resources/AppIcon.icns $(WEBASSETS_MARKER)
@@ -138,6 +169,13 @@ bundle: build $(INFER_DIR)/Resources/AppIcon.icns $(WEBASSETS_MARKER)
 	cp -R $(LLAMA_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/llama.framework
 	cp -R $(WHISPER_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/whisper.framework
 	cp -R $(WEBASSETS_DIR) $(INFER_APP_BUNDLE)/Contents/Resources/WebAssets
+	@if [ -d "thirdparty/Python.framework" ]; then \
+		echo "  bundling Python.framework"; \
+		rm -rf "$(INFER_APP_BUNDLE)/Contents/Frameworks/Python.framework"; \
+		cp -R "thirdparty/Python.framework" "$(INFER_APP_BUNDLE)/Contents/Frameworks/Python.framework"; \
+	else \
+		echo "  Python.framework not present (run 'make fetch-python' to opt in to plugin_python_tools)"; \
+	fi
 	@for bundle in $(INFER_PRODUCT_DIR)/*.bundle; do \
 		[ -e "$$bundle" ] || continue; \
 		cp -R "$$bundle" $(INFER_APP_BUNDLE)/Contents/Resources/; \

@@ -1,35 +1,10 @@
 import Foundation
+import PluginAPI
 
-/// A native Swift tool exposed to agents via the `ToolRegistry`. Kept
-/// narrow on purpose so a future MCP client can be added alongside
-/// without pulling MCP machinery into agents that only need in-process
-/// tools. See `docs/dev/plugins.md` for the eventual MCP boundary.
-public protocol BuiltinTool: Sendable {
-    /// Stable dot-namespaced name, e.g. `builtin.clock.now`. Used as
-    /// the registry key and shown to the model in the tool list.
-    var name: ToolName { get }
-
-    /// Metadata handed to the agent layer for assembly into the
-    /// system-prompt tool section. The `description` should include
-    /// enough guidance for the model to know when to call the tool and
-    /// what JSON to pass in the `parameters` object.
-    var spec: ToolSpec { get }
-
-    /// Run the tool. `arguments` is a raw JSON string (the `parameters`
-    /// object from the model's tool call). Implementations are
-    /// responsible for decoding. Return `ToolResult(output:)` on
-    /// success or `ToolResult(output: "", error:)` on a caught failure
-    /// — throwing is reserved for programmer errors the loop should
-    /// treat as fatal, not for tool-side errors that the model should
-    /// see and recover from.
-    func invoke(arguments: String) async throws -> ToolResult
-}
-
-public enum ToolError: Error, Equatable, Sendable {
-    /// The loop tried to invoke a tool the registry doesn't know. This
-    /// is a loop-level invariant violation, not a tool-side error.
-    case unknown(ToolName)
-}
+// `BuiltinTool` and `ToolError` live in `PluginAPI`. The registry
+// itself stays here because it is host-side state, not plugin-facing
+// surface — plugins return `[any BuiltinTool]` from `register` and the
+// host registers them.
 
 /// Actor-isolated catalog of locally-registered tools. Per-turn, the
 /// agent's `toolsAvailable` hook filters this set; the loop invokes

@@ -1,0 +1,14 @@
+{
+    "plugins": [
+        {
+            "id": "wiki",
+            "enabled": true,
+            "config": {}
+        },
+        {
+            "id": "python_tools",
+            "enabled": true,
+            "config": {}
+        }
+    ]
+}
