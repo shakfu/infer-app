@@ -62,6 +62,16 @@ actor LlamaRunner {
     /// as UInt32 since that's what `llama_sampler_init_dist` takes — the
     /// UInt64 upstream is truncated.
     private var samplerSeed: UInt32 = UInt32(LLAMA_DEFAULT_SEED)
+    /// Special token IDs for `<think>` and `</think>`, populated at load
+    /// time by tokenising those literal strings against the model's vocab
+    /// with `parse_special=true`. nil when the loaded model doesn't have
+    /// them as single special tokens (base models, non-reasoning models).
+    /// When non-nil, `runDecodeLoop` emits sentinel chars on these IDs so
+    /// `ThinkBlockStreamFilter` can switch from string-match to authoritative
+    /// token-based detection — robust against models that emit the literal
+    /// string `</think>` inside their reasoning.
+    private var thinkOpenTokenId: llama_token?
+    private var thinkCloseTokenId: llama_token?
     private var messages: [(role: String, content: String)] = []
     /// Length (in bytes) of the last template render with `add_ass=false`.
     /// Used to compute the prompt delta for each new turn.
@@ -228,6 +238,18 @@ actor LlamaRunner {
         } else {
             self.chatTemplate = nil
         }
+
+        // Probe for `<think>` / `</think>` as single special tokens.
+        // Reasoning models (Qwen-3, DeepSeek-R1, …) have these in their
+        // vocab; non-reasoning models tokenize them as multiple regular
+        // tokens, in which case the lookups return nil and the filter
+        // falls back to its string-match path.
+        self.thinkOpenTokenId = Self.detectSpecialToken(
+            vocab: self.vocab, text: "<think>"
+        )
+        self.thinkCloseTokenId = Self.detectSpecialToken(
+            vocab: self.vocab, text: "</think>"
+        )
 
         self.modelPath = path
 
@@ -400,6 +422,8 @@ actor LlamaRunner {
             isGenerating = true
             let flag = cancelFlag
             let handles = LlamaHandles(ctx: ctx, sampler: sampler, vocab: vocab)
+            let openId = self.thinkOpenTokenId
+            let closeId = self.thinkCloseTokenId
 
             Task.detached {
                 var assistant = ""
@@ -408,7 +432,9 @@ actor LlamaRunner {
                     try Self.runDecodeLoop(
                         ctx: handles.ctx, sampler: handles.sampler, vocab: handles.vocab,
                         prompt: promptDelta, maxTokens: maxTokens,
-                        cancel: flag
+                        cancel: flag,
+                        thinkOpenTokenId: openId,
+                        thinkCloseTokenId: closeId
                     ) { piece in
                         continuation.yield(piece)
                         assistant += piece
@@ -488,6 +514,8 @@ actor LlamaRunner {
             isGenerating = true
             let flag = cancelFlag
             let handles = LlamaHandles(ctx: ctx, sampler: sampler, vocab: vocab)
+            let openId = self.thinkOpenTokenId
+            let closeId = self.thinkCloseTokenId
 
             Task.detached {
                 var assistant = ""
@@ -496,7 +524,9 @@ actor LlamaRunner {
                     try Self.runDecodeLoop(
                         ctx: handles.ctx, sampler: handles.sampler, vocab: handles.vocab,
                         prompt: promptDelta, maxTokens: maxTokens,
-                        cancel: flag
+                        cancel: flag,
+                        thinkOpenTokenId: openId,
+                        thinkCloseTokenId: closeId
                     ) { piece in
                         continuation.yield(piece)
                         assistant += piece
@@ -670,7 +700,9 @@ actor LlamaRunner {
         try Self.runDecodeLoop(
             ctx: ctx, sampler: sampler, vocab: vocab,
             prompt: rendered, maxTokens: maxTokens,
-            cancel: flag
+            cancel: flag,
+            thinkOpenTokenId: thinkOpenTokenId,
+            thinkCloseTokenId: thinkCloseTokenId
         ) { piece in
             collected += piece
         }
@@ -797,6 +829,8 @@ actor LlamaRunner {
         prompt: String,
         maxTokens: Int,
         cancel: CancelFlag,
+        thinkOpenTokenId: llama_token? = nil,
+        thinkCloseTokenId: llama_token? = nil,
         onPiece: (String) -> Void
     ) throws {
         // Tokenize and submit the prompt delta.
@@ -825,15 +859,39 @@ actor LlamaRunner {
             if llama_vocab_is_eog(vocab, next) { break }
             llama_sampler_accept(sampler, next)
 
-            let bytes = pieceBytes(vocab: vocab, token: next)
-            if !bytes.isEmpty {
-                pending.append(contentsOf: bytes)
-                let safe = safeUTF8Boundary(pending)
-                if safe > 0 {
-                    let chunk = pending.prefix(safe)
-                    let str = String(decoding: chunk, as: UTF8.self)
-                    pending.removeFirst(safe)
+            // Think-tag detection by token ID. When the model samples the
+            // special `<think>` / `</think>` token (different IDs from the
+            // BPE-decomposed string forms), emit a Private-Use Area
+            // sentinel into the stream — `ThinkBlockStreamFilter` switches
+            // to authoritative-mode on first sentinel and stops trusting
+            // surface-form `</think>` strings inside the model's prose.
+            let isThinkOpen = thinkOpenTokenId.map { $0 == next } ?? false
+            let isThinkClose = thinkCloseTokenId.map { $0 == next } ?? false
+            if isThinkOpen || isThinkClose {
+                // Drain whatever UTF-8 bytes are buffered before the
+                // sentinel — special tokens are atomic at the BPE level
+                // so `pending` should normally be empty here, but a model
+                // emitting a multi-byte sequence right before sampling the
+                // special token would otherwise leave its bytes stranded.
+                if !pending.isEmpty {
+                    let str = String(decoding: pending, as: UTF8.self)
+                    pending.removeAll()
                     if !str.isEmpty { onPiece(str) }
+                }
+                onPiece(isThinkOpen
+                    ? ThinkBlockStreamFilter.openSentinel
+                    : ThinkBlockStreamFilter.closeSentinel)
+            } else {
+                let bytes = pieceBytes(vocab: vocab, token: next)
+                if !bytes.isEmpty {
+                    pending.append(contentsOf: bytes)
+                    let safe = safeUTF8Boundary(pending)
+                    if safe > 0 {
+                        let chunk = pending.prefix(safe)
+                        let str = String(decoding: chunk, as: UTF8.self)
+                        pending.removeFirst(safe)
+                        if !str.isEmpty { onPiece(str) }
+                    }
                 }
             }
 
@@ -854,5 +912,21 @@ actor LlamaRunner {
             let str = String(decoding: pending, as: UTF8.self)
             if !str.isEmpty { onPiece(str) }
         }
+    }
+
+    /// Tokenize `text` against the vocab with `parse_special=true`. If the
+    /// model has it as a single special token (Qwen-3 / DeepSeek-R1's
+    /// `<think>` / `</think>`, for example), returns that token ID.
+    /// Returns nil for base / non-reasoning models where the string
+    /// decomposes into multiple regular tokens.
+    private static func detectSpecialToken(
+        vocab: OpaquePointer?,
+        text: String
+    ) -> llama_token? {
+        guard let vocab else { return nil }
+        guard let tokens = try? tokenize(vocab: vocab, text: text, addSpecial: false) else {
+            return nil
+        }
+        return tokens.count == 1 ? tokens[0] : nil
     }
 }

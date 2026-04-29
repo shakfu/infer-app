@@ -14,6 +14,19 @@ import Foundation
 /// Supports multiple think blocks in one stream — toggles `inThink`
 /// each time it sees a complete `<think>` or `</think>`. Tag matching
 /// is case-sensitive (matches what the upstream models emit).
+///
+/// **Authoritative sentinels (token-ID based).** When the runner
+/// recognises the model's special `<think>` / `</think>` token IDs at
+/// the vocab level (not a string match against decoded bytes), it can
+/// inject a Private-Use Area sentinel character into the stream —
+/// `\u{E600}` for open, `\u{E601}` for close. The first sentinel the
+/// filter sees flips it into "sentinel mode": from that point on, the
+/// surface-form `<think>` / `</think>` strings are treated as ordinary
+/// text and never toggle the state. This makes the filter robust
+/// against models that mention the literal string `</think>` inside
+/// their reasoning (which used to terminate thinking prematurely and
+/// leak the rest into the visible reply). Backends that don't emit
+/// sentinels (cloud, MLX) keep the legacy string-match path.
 public struct ThinkBlockStreamFilter: Sendable {
     /// Captured reasoning text — concatenation of all content seen
     /// while inside `<think>…</think>` blocks. UI shows this in a
@@ -31,8 +44,19 @@ public struct ThinkBlockStreamFilter: Sendable {
     /// enough characters to decide.
     private var pending: String = ""
 
+    /// Set once the filter has seen any sentinel from the runner. Once
+    /// true, string-matching for `<think>` / `</think>` is disabled —
+    /// boundary signals come exclusively from the runner.
+    private var sentinelMode: Bool = false
+
     private static let openTag = "<think>"
     private static let closeTag = "</think>"
+    /// Private-Use Area code points the runner injects to mark token-ID-
+    /// authoritative boundaries. Chosen from U+E000..U+F8FF where Unicode
+    /// guarantees no defined meaning, so a model emitting these by
+    /// chance is a non-issue in practice.
+    public static let openSentinel = "\u{E600}"
+    public static let closeSentinel = "\u{E601}"
 
     public init() {}
 
@@ -41,6 +65,21 @@ public struct ThinkBlockStreamFilter: Sendable {
     /// think block or held as a partial tag). Idempotent under
     /// re-entry — internal state only mutates on each call.
     public mutating func feed(_ piece: String) -> String {
+        // Authoritative-sentinel path: if the piece contains either
+        // PUA sentinel, the runner is signalling a real boundary —
+        // honour it and switch into sentinel mode for the rest of the
+        // stream so further surface-form `<think>` / `</think>` tags
+        // are treated as literal text.
+        if piece.contains(Self.openSentinel) || piece.contains(Self.closeSentinel) {
+            return feedWithSentinels(piece)
+        }
+        if sentinelMode {
+            // Already in sentinel mode and no sentinel in this piece —
+            // route based purely on `inThink` without scanning for
+            // surface-form tags.
+            return routePassthrough(piece)
+        }
+
         pending += piece
         var output = ""
 
@@ -77,6 +116,45 @@ public struct ThinkBlockStreamFilter: Sendable {
             break
         }
         return output
+    }
+
+    /// Walk a piece char-by-char, honouring sentinels as authoritative
+    /// boundary signals. Each PUA sentinel toggles `inThink`; non-sentinel
+    /// chars route to thinking or output based on the current state.
+    /// Drains the legacy `pending` buffer (any partial tag we were
+    /// holding back) by appending it to whichever bucket matches the
+    /// state in force when this method is entered — `pending` is
+    /// inherently a string-match concept and has no place in sentinel
+    /// mode beyond that single transition flush.
+    private mutating func feedWithSentinels(_ piece: String) -> String {
+        var output = ""
+        if !pending.isEmpty {
+            if inThink { thinking += pending } else { output += pending }
+            pending = ""
+        }
+        sentinelMode = true
+        for ch in piece {
+            switch String(ch) {
+            case Self.openSentinel:
+                inThink = true
+            case Self.closeSentinel:
+                inThink = false
+            default:
+                if inThink { thinking.append(ch) } else { output.append(ch) }
+            }
+        }
+        return output
+    }
+
+    /// Sentinel-mode routing for a piece that doesn't itself contain a
+    /// sentinel. Whole piece goes to one bucket based on `inThink` —
+    /// no string-match for tags.
+    private mutating func routePassthrough(_ piece: String) -> String {
+        if inThink {
+            thinking += piece
+            return ""
+        }
+        return piece
     }
 
     /// Stream end — release any held tail. If we're still inside a
