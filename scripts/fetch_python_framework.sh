@@ -12,7 +12,7 @@
 # disabled. Run this script (once) to opt in.
 #
 # Pass extra packages via PY_PKGS, e.g.:
-#   PY_PKGS="openai anthropic httpx" ./scripts/fetch_python_framework.sh
+#   PY_PKGS="httpx requests" ./scripts/fetch_python_framework.sh
 #
 # Override the Python version with PY_VERSION (default: 3.13.13).
 
@@ -24,7 +24,7 @@ BUILD_DIR="$REPO_ROOT/build/python-framework"
 BUILDPY="$REPO_ROOT/scripts/buildpy.py"
 
 PY_VERSION="${PY_VERSION:-3.13.13}"
-PY_PKGS="${PY_PKGS:-openai anthropic}"
+PY_PKGS="${PY_PKGS:-}"
 FORCE="${FORCE:-0}"
 
 if [[ -d "$TARGET" && "$FORCE" != "1" ]]; then
@@ -48,10 +48,17 @@ pushd "$BUILD_DIR" >/dev/null
 # buildpy writes to <CWD>/build/install when --install-dir is omitted with
 # `-t framework-ext`. Pass --install-dir explicitly so we land in a known
 # spot regardless of buildpy's internal defaults.
+PKG_ARGS=()
+if [[ -n "$PY_PKGS" ]]; then
+    # Word-split intentionally — PY_PKGS is a space-separated list.
+    # shellcheck disable=SC2206
+    PKG_ARGS=(-i $PY_PKGS)
+fi
+
 "$BUILDPY" \
     -c framework_max \
     -v "$PY_VERSION" \
-    -i $PY_PKGS \
+    ${PKG_ARGS[@]+"${PKG_ARGS[@]}"} \
     --install-dir "$BUILD_DIR/staged"
 
 popd >/dev/null

@@ -8,7 +8,7 @@ import PythonKit
 /// path that won't resolve under a sandboxed/distributed app.
 ///
 /// `PYTHONHOME` tells the embedded interpreter where stdlib + site-packages
-/// live; without it, `import anthropic` raises `ModuleNotFoundError` because
+/// live; without it, third-party imports raise `ModuleNotFoundError` because
 /// site-packages is unreachable.
 enum PythonBridge {
     enum InitError: Error {
