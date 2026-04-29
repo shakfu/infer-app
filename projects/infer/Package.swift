@@ -136,6 +136,10 @@ let package = Package(
             name: "Whisper",
             path: "../../thirdparty/Whisper.xcframework"
         ),
+        .binaryTarget(
+            name: "StableDiffusion",
+            path: "../../thirdparty/StableDiffusion.xcframework"
+        ),
         // Narrow C bridge over whisper.cpp. Originally a workaround for
         // dual-ggml symbol collisions between the upstream llama and
         // whisper xcframeworks; with the unified Ggml framework that
@@ -156,6 +160,7 @@ let package = Package(
                 "Ggml",
                 "LlamaCpp",
                 "CWhisperBridge",
+                "StableDiffusion",
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),

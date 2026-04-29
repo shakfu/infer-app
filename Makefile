@@ -174,7 +174,7 @@ fetch-sqlitevec: $(SQLITEVEC_MARKER)
 fetch-python:
 	./scripts/fetch_python_framework.sh
 
-build: $(GGML_XCFRAMEWORK) $(LLAMACPP_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SQLITEVEC_MARKER) plugins-gen
+build: $(GGML_XCFRAMEWORK) $(LLAMACPP_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SD_XCFRAMEWORK) $(SQLITEVEC_MARKER) plugins-gen
 	xcodebuild $(INFER_XCODE_FLAGS) build
 
 bundle: build $(INFER_DIR)/Resources/AppIcon.icns $(WEBASSETS_MARKER)
@@ -188,6 +188,7 @@ bundle: build $(INFER_DIR)/Resources/AppIcon.icns $(WEBASSETS_MARKER)
 	cp -R $(GGML_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/Ggml.framework
 	cp -R $(LLAMACPP_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/LlamaCpp.framework
 	cp -R $(WHISPER_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/Whisper.framework
+	cp -R $(SD_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/StableDiffusion.framework
 	cp -R $(WEBASSETS_DIR) $(INFER_APP_BUNDLE)/Contents/Resources/WebAssets
 	@if [ -d "thirdparty/Python.framework" ]; then \
 		echo "  bundling Python.framework"; \

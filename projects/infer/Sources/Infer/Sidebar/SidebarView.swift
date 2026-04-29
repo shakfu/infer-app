@@ -10,12 +10,13 @@ import InferCore
 // fall through `SidebarTab(rawValue:) ?? .model` and land on the
 // Model tab.
 enum SidebarTab: String, CaseIterable, Identifiable {
-    case model, agents, history, voice, console
+    case model, agents, image, history, voice, console
     var id: String { rawValue }
     var icon: String {
         switch self {
         case .model: return "cube.box"
         case .agents: return "person.crop.circle.badge.questionmark"
+        case .image: return "photo.on.rectangle"
         case .history: return "clock.arrow.circlepath"
         case .voice: return "waveform"
         case .console: return "terminal"
@@ -25,6 +26,7 @@ enum SidebarTab: String, CaseIterable, Identifiable {
         switch self {
         case .model: return "Model"
         case .agents: return "Agents"
+        case .image: return "Image"
         case .history: return "History"
         case .voice: return "Voice"
         case .console: return "Console"
@@ -66,6 +68,8 @@ struct SidebarView: View {
                         parametersSection
                     case .agents:
                         agentsLibrarySection
+                    case .image:
+                        imageSection
                     case .history:
                         historySection
                     case .voice:

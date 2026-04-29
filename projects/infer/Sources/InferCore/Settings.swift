@@ -54,6 +54,35 @@ public enum PersistKey {
     public static let cloudCompatName = "infer.cloud.compat.name"
     public static let cloudCompatURL = "infer.cloud.compat.url"
 
+    /// Stable Diffusion (image generation) state. Lives outside the
+    /// `Backend` enum because image gen isn't a chat backend — it's a
+    /// dedicated panel with its own lifecycle. Model input is either a
+    /// local `.safetensors` / `.gguf` path, an HF id of the form
+    /// `repo/path/to/file.safetensors`, or an https URL.
+    /// All-in-one checkpoint (SD 1.x/2.x/SDXL/Flux fp8 single-file).
+    public static let sdModelInput = "infer.sd.modelInput"
+    /// Diffusion-only file. Used when the model ships separately from
+    /// its VAE + text encoder(s) — Z-Image, Flux full multi-file.
+    public static let sdDiffusionModelInput = "infer.sd.diffusionModelInput"
+    public static let sdVAEInput = "infer.sd.vaeInput"
+    /// Text encoder for Z-Image (a small LLM, e.g. Qwen3-4B-Q8_0.gguf).
+    public static let sdLLMInput = "infer.sd.llmInput"
+    /// T5 text encoder for Flux multi-file.
+    public static let sdT5XXLInput = "infer.sd.t5xxlInput"
+    /// CLIP-L text encoder for Flux multi-file.
+    public static let sdClipLInput = "infer.sd.clipLInput"
+    /// `offload_params_to_cpu` — needed on lower-RAM machines for Z-Image
+    /// and large Flux models. Maps to sd-cpp's `--offload-to-cpu`.
+    public static let sdOffloadToCPU = "infer.sd.offloadToCPU"
+    public static let sdPrompt = "infer.sd.prompt"
+    public static let sdNegativePrompt = "infer.sd.negativePrompt"
+    public static let sdWidth = "infer.sd.width"
+    public static let sdHeight = "infer.sd.height"
+    public static let sdSteps = "infer.sd.steps"
+    public static let sdCfgScale = "infer.sd.cfgScale"
+    public static let sdSampler = "infer.sd.sampler"
+    public static let sdSeed = "infer.sd.seed"
+
     /// Whether `StepTraceDisclosure` auto-expands while a tool loop is
     /// in flight. Default true (matches pre-M3 behaviour). Users who
     /// find the expanding row noisy can flip it off; the disclosure

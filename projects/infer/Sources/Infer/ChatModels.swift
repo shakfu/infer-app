@@ -78,6 +78,15 @@ enum Backend: String, CaseIterable, Identifiable {
     }
 }
 
+/// One row in the Stable Diffusion gallery. Ties an on-disk PNG to its
+/// sidecar metadata; `Identifiable` so SwiftUI's `ForEach` can diff
+/// without a manual `id:` keypath.
+struct SDGalleryEntry: Identifiable, Equatable {
+    let imageURL: URL
+    let metadata: GeneratedImageMetadata
+    var id: URL { imageURL }
+}
+
 enum AppearanceMode: String, CaseIterable, Identifiable {
     case light, dark, system
     var id: String { rawValue }

@@ -164,6 +164,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await vm.mlx.shutdown()
             await vm.cloud.requestStop()
             await vm.cloud.shutdown()
+            await vm.sd.requestStop()
+            await vm.sd.shutdown()
             await vm.embedder.shutdown()
             await vm.reranker.shutdown()
             await vm.vectorStore.shutdown()

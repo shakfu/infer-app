@@ -70,6 +70,93 @@ final class ChatViewModel {
     var cloudCompatURL: String = UserDefaults.standard.string(forKey: PersistKey.cloudCompatURL) ?? "" {
         didSet { UserDefaults.standard.set(cloudCompatURL, forKey: PersistKey.cloudCompatURL) }
     }
+
+    // MARK: - Stable Diffusion state
+
+    /// Either a local file path, an `https://` URL, or an HF reference of
+    /// the form `repo/path/to/file.safetensors`. Resolved at Load time.
+    var sdModelInput: String = UserDefaults.standard.string(forKey: PersistKey.sdModelInput) ?? "" {
+        didSet { UserDefaults.standard.set(sdModelInput, forKey: PersistKey.sdModelInput) }
+    }
+    /// Multi-file (Z-Image, Flux) component paths. Each accepts the same
+    /// shapes as `sdModelInput`: local path, `https://` URL, or
+    /// `namespace/name/path/file.ext` HF reference. Empty = unused.
+    var sdDiffusionModelInput: String = UserDefaults.standard.string(forKey: PersistKey.sdDiffusionModelInput) ?? "" {
+        didSet { UserDefaults.standard.set(sdDiffusionModelInput, forKey: PersistKey.sdDiffusionModelInput) }
+    }
+    var sdVAEInput: String = UserDefaults.standard.string(forKey: PersistKey.sdVAEInput) ?? "" {
+        didSet { UserDefaults.standard.set(sdVAEInput, forKey: PersistKey.sdVAEInput) }
+    }
+    var sdLLMInput: String = UserDefaults.standard.string(forKey: PersistKey.sdLLMInput) ?? "" {
+        didSet { UserDefaults.standard.set(sdLLMInput, forKey: PersistKey.sdLLMInput) }
+    }
+    var sdT5XXLInput: String = UserDefaults.standard.string(forKey: PersistKey.sdT5XXLInput) ?? "" {
+        didSet { UserDefaults.standard.set(sdT5XXLInput, forKey: PersistKey.sdT5XXLInput) }
+    }
+    var sdClipLInput: String = UserDefaults.standard.string(forKey: PersistKey.sdClipLInput) ?? "" {
+        didSet { UserDefaults.standard.set(sdClipLInput, forKey: PersistKey.sdClipLInput) }
+    }
+    var sdOffloadToCPU: Bool = UserDefaults.standard.bool(forKey: PersistKey.sdOffloadToCPU) {
+        didSet { UserDefaults.standard.set(sdOffloadToCPU, forKey: PersistKey.sdOffloadToCPU) }
+    }
+    var sdPrompt: String = UserDefaults.standard.string(forKey: PersistKey.sdPrompt) ?? "" {
+        didSet { UserDefaults.standard.set(sdPrompt, forKey: PersistKey.sdPrompt) }
+    }
+    var sdNegativePrompt: String = UserDefaults.standard.string(forKey: PersistKey.sdNegativePrompt) ?? "" {
+        didSet { UserDefaults.standard.set(sdNegativePrompt, forKey: PersistKey.sdNegativePrompt) }
+    }
+    var sdWidth: Int = {
+        let v = UserDefaults.standard.integer(forKey: PersistKey.sdWidth)
+        return v > 0 ? v : 512
+    }() {
+        didSet { UserDefaults.standard.set(sdWidth, forKey: PersistKey.sdWidth) }
+    }
+    var sdHeight: Int = {
+        let v = UserDefaults.standard.integer(forKey: PersistKey.sdHeight)
+        return v > 0 ? v : 512
+    }() {
+        didSet { UserDefaults.standard.set(sdHeight, forKey: PersistKey.sdHeight) }
+    }
+    var sdSteps: Int = {
+        let v = UserDefaults.standard.integer(forKey: PersistKey.sdSteps)
+        return v > 0 ? v : 20
+    }() {
+        didSet { UserDefaults.standard.set(sdSteps, forKey: PersistKey.sdSteps) }
+    }
+    var sdCfgScale: Double = {
+        let v = UserDefaults.standard.double(forKey: PersistKey.sdCfgScale)
+        return v > 0 ? v : 7.0
+    }() {
+        didSet { UserDefaults.standard.set(sdCfgScale, forKey: PersistKey.sdCfgScale) }
+    }
+    var sdSampler: SDSampler = {
+        if let raw = UserDefaults.standard.string(forKey: PersistKey.sdSampler),
+           let s = SDSampler(rawValue: raw) {
+            return s
+        }
+        return .eulerA
+    }() {
+        didSet { UserDefaults.standard.set(sdSampler.rawValue, forKey: PersistKey.sdSampler) }
+    }
+    /// Stored as String so "blank = random per generation" survives a
+    /// `UserDefaults.integer(forKey:)` call (which would otherwise return
+    /// 0 indistinguishably from absent).
+    var sdSeedInput: String = UserDefaults.standard.string(forKey: PersistKey.sdSeed) ?? "" {
+        didSet { UserDefaults.standard.set(sdSeedInput, forKey: PersistKey.sdSeed) }
+    }
+    var sdModelLoaded: Bool = false
+    var sdModelStatus: String = "No image model loaded"
+    var sdIsLoadingModel: Bool = false
+    var sdIsGenerating: Bool = false
+    var sdProgress: SDProgress? = nil
+    var sdDownloadProgress: Double? = nil
+    var sdErrorMessage: String? = nil
+    /// Persistent gallery, sorted newest-first. Built at launch by scanning
+    /// the output directory's PNG + JSON sidecar pairs and appended to as
+    /// each new generation completes.
+    var sdGallery: [SDGalleryEntry] = []
+    var sdLoadTask: Task<Void, Never>? = nil
+    var sdGenerationTask: Task<Void, Never>? = nil
     /// Previously-loaded models from the vault, filtered to those whose local
     /// artifact still exists. Refreshed after each successful load and on init.
     var availableModels: [VaultModelEntry] = []
@@ -229,6 +316,10 @@ final class ChatViewModel {
     /// provider + model id + key. See `Loading.swift:loadCloud` for the
     /// configure path.
     let cloud = CloudRunner()
+    /// Stable Diffusion (image generation) runner. Lives outside the
+    /// `Backend` enum because image gen is a dedicated sidebar panel
+    /// rather than a chat backend — see `Sidebar/ImagePanel.swift`.
+    let sd = StableDiffusionRunner()
     let ggufDownloader = GGUFDownloader()
     let speechRecognizer = SpeechRecognizer()
     let speechSynthesizer = SpeechSynthesizer()
