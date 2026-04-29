@@ -40,6 +40,20 @@ public enum PersistKey {
     public static let bargeInEnabled = "infer.bargeInEnabled"
     public static let ggufDirectory = "infer.ggufDirectory"
 
+    /// Cloud-backend selections. Persisted separately from the local
+    /// backends because the model identifier shape is per-provider:
+    /// `gpt-5` means nothing to Anthropic, etc. Three model slots so
+    /// switching providers in the UI restores the last-used model for
+    /// that provider rather than resetting to a default. Custom-endpoint
+    /// name + URL persist alongside; the API key is in the keychain
+    /// (see `APIKeyStore`), not here.
+    public static let cloudProviderKind = "infer.cloud.providerKind"
+    public static let cloudOpenAIModel = "infer.cloud.openai.model"
+    public static let cloudAnthropicModel = "infer.cloud.anthropic.model"
+    public static let cloudCompatModel = "infer.cloud.compat.model"
+    public static let cloudCompatName = "infer.cloud.compat.name"
+    public static let cloudCompatURL = "infer.cloud.compat.url"
+
     /// Whether `StepTraceDisclosure` auto-expands while a tool loop is
     /// in flight. Default true (matches pre-M3 behaviour). Users who
     /// find the expanding row noisy can flip it off; the disclosure

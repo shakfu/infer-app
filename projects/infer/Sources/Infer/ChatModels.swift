@@ -67,11 +67,13 @@ struct ChatMessage: Identifiable, Equatable {
 enum Backend: String, CaseIterable, Identifiable {
     case llama
     case mlx
+    case cloud
     var id: String { rawValue }
     var label: String {
         switch self {
         case .llama: return "llama.cpp"
         case .mlx: return "MLX"
+        case .cloud: return "Cloud"
         }
     }
 }

@@ -142,6 +142,7 @@ public enum TemplateFamily: String, Codable, Sendable, CaseIterable {
 public enum BackendPreference: String, Codable, Sendable, CaseIterable {
     case llama
     case mlx
+    case cloud
     case any
 }
 

@@ -130,6 +130,9 @@ extension ChatViewModel {
                          imageURLs: msg.imageURL.map { [$0] } ?? [])
                     }
                     await self.mlx.setHistory(history)
+                case .cloud:
+                    let history = turns.map { (role: $0.role.rawValue, content: $0.text) }
+                    await self.cloud.setHistory(history)
                 }
                 let elapsed = Date().timeIntervalSince(started)
                 self.logs.logFromBackground(
@@ -173,6 +176,9 @@ extension ChatViewModel {
                      imageURLs: msg.imageURL.map { [$0] } ?? [])
                 }
                 await self.mlx.setHistory(history)
+            case .cloud:
+                let history = turns.map { (role: $0.role.rawValue, content: $0.text) }
+                await self.cloud.setHistory(history)
             }
             await MainActor.run { self.refreshTokenUsage() }
         }

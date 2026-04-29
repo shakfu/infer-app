@@ -41,6 +41,10 @@ struct SidebarView: View {
     @State var draft: InferSettings = .defaults
     @State var showSystemPrompt = false
     @State var didSeed = false
+    /// Controls the "Set API Key…" sheet for the cloud backend. Owned
+    /// here (not the VM) because it's transient UI state with no
+    /// persistence requirement.
+    @State var showingCloudKeySheet = false
     @AppStorage(PersistKey.sidebarTab) var tabRaw: String = SidebarTab.model.rawValue
 
     var tab: Binding<SidebarTab> {
@@ -100,7 +104,15 @@ struct SidebarView: View {
             switch vm.backend {
             case .llama: return (cur as NSString).lastPathComponent
             case .mlx: return cur
+            case .cloud: return cur
             }
+        }
+        if vm.backend == .cloud {
+            // Cloud doesn't list "downloaded" models — the user picks
+            // provider + model id directly via the cloud config row, so
+            // a "Choose a model" hint here would be misleading. Leave
+            // the field empty until configured.
+            return vm.cloudActiveModel.isEmpty ? "Configure cloud below" : vm.cloudActiveModel
         }
         if vm.availableModels.isEmpty { return "No downloaded models" }
         return "Choose a model…"

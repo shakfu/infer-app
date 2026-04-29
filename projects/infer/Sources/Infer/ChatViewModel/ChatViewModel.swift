@@ -28,6 +28,48 @@ final class ChatViewModel {
     var ggufDirectory: String = UserDefaults.standard.string(forKey: PersistKey.ggufDirectory) ?? "" {
         didSet { UserDefaults.standard.set(ggufDirectory, forKey: PersistKey.ggufDirectory) }
     }
+
+    /// Selected provider for the Cloud backend. Persisted separately from
+    /// `backend` so flipping back to Cloud restores the last-used provider.
+    var cloudProviderKind: CloudProviderKind = {
+        if let raw = UserDefaults.standard.string(forKey: PersistKey.cloudProviderKind),
+           let k = CloudProviderKind(rawValue: raw) {
+            return k
+        }
+        return .openai
+    }() {
+        didSet {
+            UserDefaults.standard.set(cloudProviderKind.rawValue, forKey: PersistKey.cloudProviderKind)
+        }
+    }
+    /// Per-provider model id. Three slots so switching providers in the
+    /// picker restores the right model (a `gpt-5` selection shouldn't
+    /// follow you into Anthropic). Empty string is allowed: the user
+    /// must enter a model before Load. Defaults seeded from the
+    /// `CloudRecommendedModels` first entry.
+    var cloudOpenAIModel: String = UserDefaults.standard.string(forKey: PersistKey.cloudOpenAIModel)
+        ?? CloudRecommendedModels.openai.first ?? "" {
+        didSet { UserDefaults.standard.set(cloudOpenAIModel, forKey: PersistKey.cloudOpenAIModel) }
+    }
+    var cloudAnthropicModel: String = UserDefaults.standard.string(forKey: PersistKey.cloudAnthropicModel)
+        ?? CloudRecommendedModels.anthropic.first ?? "" {
+        didSet { UserDefaults.standard.set(cloudAnthropicModel, forKey: PersistKey.cloudAnthropicModel) }
+    }
+    var cloudCompatModel: String = UserDefaults.standard.string(forKey: PersistKey.cloudCompatModel) ?? "" {
+        didSet { UserDefaults.standard.set(cloudCompatModel, forKey: PersistKey.cloudCompatModel) }
+    }
+    /// Human-readable name for the active OpenAI-compatible endpoint. Drives
+    /// the keychain account string (`compat.<normalized-name>`) so multiple
+    /// endpoints don't share credentials.
+    var cloudCompatName: String = UserDefaults.standard.string(forKey: PersistKey.cloudCompatName) ?? "" {
+        didSet { UserDefaults.standard.set(cloudCompatName, forKey: PersistKey.cloudCompatName) }
+    }
+    /// Base URL for the active OpenAI-compatible endpoint. Validated by
+    /// `CloudEndpointPolicy.isAcceptable` at Load time — `https://` or
+    /// `http://localhost`.
+    var cloudCompatURL: String = UserDefaults.standard.string(forKey: PersistKey.cloudCompatURL) ?? "" {
+        didSet { UserDefaults.standard.set(cloudCompatURL, forKey: PersistKey.cloudCompatURL) }
+    }
     /// Previously-loaded models from the vault, filtered to those whose local
     /// artifact still exists. Refreshed after each successful load and on init.
     var availableModels: [VaultModelEntry] = []
@@ -182,6 +224,11 @@ final class ChatViewModel {
 
     let llama = LlamaRunner()
     let mlx = MLXRunner()
+    /// Hosted-API runner (OpenAI, Anthropic, OpenAI-compatible). Configured
+    /// lazily on first cloud "Load" — there's no model file to mmap, only a
+    /// provider + model id + key. See `Loading.swift:loadCloud` for the
+    /// configure path.
+    let cloud = CloudRunner()
     let ggufDownloader = GGUFDownloader()
     let speechRecognizer = SpeechRecognizer()
     let speechSynthesizer = SpeechSynthesizer()
@@ -427,6 +474,7 @@ final class ChatViewModel {
             switch b {
             case .llama: await self.llama.resetConversation()
             case .mlx: await self.mlx.resetConversation()
+            case .cloud: await self.cloud.resetConversation()
             }
             await MainActor.run { self.refreshTokenUsage() }
         }

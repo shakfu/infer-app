@@ -307,6 +307,17 @@ extension ChatViewModel {
                     prompt: prompt,
                     maxTokens: 180
                 )
+            case .cloud:
+                // Cloud has no side-effect-free generation primitive yet
+                // — calling `sendUserMessage` would pollute the user's
+                // chat transcript with the HyDE prompt. Skip HyDE on
+                // cloud and fall back to direct query at the call site.
+                logs.log(
+                    .debug,
+                    source: "rag",
+                    message: "HyDE skipped (cloud backend); falling back to direct query"
+                )
+                return nil
             }
         } catch {
             logs.log(

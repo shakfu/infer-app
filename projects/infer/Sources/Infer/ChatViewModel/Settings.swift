@@ -22,6 +22,20 @@ extension ChatViewModel {
         let effects = agentController.applySettings(new, previous: previous)
         apply(effects)
 
+        // Cloud runner is configured statelessly each turn but caches the
+        // system prompt + sampling for re-send. Push fresh values when
+        // the cloud backend is currently loaded; rebuilds history if the
+        // system prompt changed (symmetric with MLX).
+        if backend == .cloud, modelLoaded {
+            let cloud = self.cloud
+            let sp = new.systemPrompt
+            let temp = new.temperature
+            let p = new.topP
+            Task {
+                await cloud.updateSettings(systemPrompt: sp, temperature: temp, topP: p)
+            }
+        }
+
         // Re-register the Quarto tool against the new override path so
         // the next render uses the right binary. Cheap (no process is
         // spawned at registration time) and safe to do unconditionally,
@@ -70,7 +84,12 @@ extension ChatViewModel {
             switch b {
             case .llama:
                 usage = await self.llama.tokenUsage()
-            case .mlx:
+            case .mlx, .cloud:
+                // Neither path exposes a cheap real token count. Approximate
+                // from transcript char count (~4 chars/token for English) so
+                // the consumer surfaces *something* — there's no reliable
+                // total context size to report, so `total: nil` keeps the
+                // header from rendering a misleading percentage.
                 let chars = msgs.reduce(0) { $0 + $1.text.count } + systemChars
                 usage = chars == 0 ? nil : TokenUsage(used: chars / 4, total: nil)
             }

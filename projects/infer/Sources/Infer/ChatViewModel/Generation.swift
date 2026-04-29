@@ -373,6 +373,12 @@ extension ChatViewModel {
         attachedImage: URL?
     ) async -> AgentOutcome {
         let toolSpecs = self.agentController.activeToolSpecs
+        // Tool loop is wired only for the local llama backend in this PR.
+        // Cloud and MLX agents that declared tools will simply not engage
+        // them — the model emits the call as visible text and the user
+        // sees it. Cloud tool support is a follow-up (would need either
+        // provider-native function calling or a llama-style template
+        // injection scheme).
         let engageToolLoop = backend == .llama && !toolSpecs.isEmpty
 
         // Per-turn telemetry (item 8). Captured locally here so the
@@ -396,6 +402,14 @@ extension ChatViewModel {
                 let imgs: [URL] = attachedImage.map { [$0] } ?? []
                 stream = await self.mlx.sendUserMessage(
                     userText, imageURLs: imgs, maxTokens: runnerMaxTokens
+                )
+            case .cloud:
+                // Cloud is text-only in this PR; image attachments are
+                // dropped silently. Same `runnerMaxTokens` semantics as
+                // the local backends — the cloud runner forwards it as
+                // `max_tokens` on the wire.
+                stream = await self.cloud.sendUserMessage(
+                    userText, maxTokens: runnerMaxTokens
                 )
             }
             var firstDecodeText = ""
@@ -625,6 +639,7 @@ extension ChatViewModel {
         switch self.backend {
         case .llama: await self.llama.requestStop()
         case .mlx: await self.mlx.requestStop()
+        case .cloud: await self.cloud.requestStop()
         }
     }
 
@@ -634,6 +649,7 @@ extension ChatViewModel {
             switch b {
             case .llama: await self.llama.requestStop()
             case .mlx: await self.mlx.requestStop()
+            case .cloud: await self.cloud.requestStop()
             }
         }
         generationTask?.cancel()
@@ -655,6 +671,7 @@ extension ChatViewModel {
             switch b {
             case .llama: await self.llama.rewindLastTurn()
             case .mlx: await self.mlx.rewindLastTurn()
+            case .cloud: await self.cloud.rewindLastTurn()
             }
             await MainActor.run { self.send() }
         }
@@ -671,6 +688,7 @@ extension ChatViewModel {
             switch b {
             case .llama: await self.llama.rewindLastTurn()
             case .mlx: await self.mlx.rewindLastTurn()
+            case .cloud: await self.cloud.rewindLastTurn()
             }
         }
     }
@@ -925,6 +943,13 @@ extension ChatViewModel {
         // overrides customLoop, so the lookup is skipped — the
         // standard LLM path handles every Default-agent turn.
         guard agentId != DefaultAgent.id else { return nil }
+        // Cloud backend has no `AgentRunner` conformance yet, so the
+        // decoder closure below would silently fall through to MLX —
+        // wrong runner, wrong context. Skip customLoop on cloud and
+        // let the host's standard decode path call into `CloudRunner`.
+        // Tracked: cloud + custom-loop agents would need a CloudRunner
+        // AgentRunner adapter (out of scope for this PR).
+        guard self.backend != .cloud else { return nil }
         guard let agent = await agentController.registry.agent(id: agentId) else {
             return nil
         }

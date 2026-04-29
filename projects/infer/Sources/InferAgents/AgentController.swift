@@ -341,6 +341,7 @@ public final class AgentController {
         case .any: break
         case .llama: if backend != .llama { return false }
         case .mlx: if backend != .mlx { return false }
+        case .cloud: if backend != .cloud { return false }
         }
         // Template-family check only applies when the agent declares a
         // requirement. An unset `templateFamily` means "any template
@@ -367,6 +368,7 @@ public final class AgentController {
         case .any: break
         case .llama: if backend != .llama { return "Requires llama.cpp backend" }
         case .mlx: if backend != .mlx { return "Requires MLX backend" }
+        case .cloud: if backend != .cloud { return "Requires cloud backend" }
         }
         if let required = listing.templateFamily {
             if let detected = detectedTemplateFamily {

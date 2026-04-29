@@ -499,6 +499,7 @@ extension ChatViewModel {
         switch backend {
         case .llama: return .llama
         case .mlx: return .mlx
+        case .cloud: return .cloud
         }
     }
 

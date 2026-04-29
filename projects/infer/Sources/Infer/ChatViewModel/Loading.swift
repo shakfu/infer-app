@@ -6,9 +6,17 @@ import InferCore
 extension ChatViewModel {
     /// Autoload the most-recently-used model whose artifact still exists on
     /// disk. Iterates the vault's `models` table in last-used order; the first
-    /// entry that passes the availability check wins.
+    /// entry that passes the availability check wins. Cloud doesn't have a
+    /// vault entry — if the persisted backend was `.cloud`, we restore the
+    /// picker but don't auto-configure (would silently consume credentials
+    /// at every launch); the user clicks Load when ready.
     func autoLoadLastModel() {
         guard !modelLoaded, !isLoadingModel else { return }
+        if let raw = UserDefaults.standard.string(forKey: PersistKey.backend),
+           let last = Backend(rawValue: raw), last == .cloud {
+            self.backend = .cloud
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -68,6 +76,131 @@ extension ChatViewModel {
             } else {
                 errorMessage = "No .gguf found at \(path)"
             }
+        case .cloud:
+            // The cloud "load" doesn't take `modelInput` — the model id
+            // lives in the per-provider state slot. The header/sidebar UI
+            // edits `cloudOpenAIModel` / `cloudAnthropicModel` /
+            // `cloudCompatModel` directly. `raw` is ignored on this path.
+            _ = raw
+            loadCloud()
+        }
+    }
+
+    /// Resolve the active provider, look up its API key, and configure the
+    /// `CloudRunner`. There's no model file to mmap and no progress to
+    /// report, so the path is synchronous-ish: read state, validate,
+    /// configure the actor, set `modelLoaded = true`. Errors land in
+    /// `errorMessage` and leave the prior state untouched.
+    func loadCloud() {
+        guard !isLoadingModel else { return }
+
+        guard let provider = makeCloudProvider() else {
+            errorMessage = "Configure the cloud endpoint first (provider, model, and URL for compat)."
+            return
+        }
+        let modelId = cloudActiveModel
+        guard !modelId.isEmpty else {
+            errorMessage = "Enter a model id (or pick one from the Recommended menu)."
+            return
+        }
+
+        // Resolve credentials. `.envVar` source is logged so the user
+        // sees that an env var is being used — silent fallback to a
+        // process env var was flagged in the security review (visible
+        // to other processes via `ps -E`, leaks into child processes).
+        guard let resolved = APIKeyStore.resolve(for: provider) else {
+            errorMessage = "No API key set for \(provider.displayName). Use Set Key… or set \(provider.envVarName ?? "the keychain")."
+            return
+        }
+        if resolved.source == .envVar {
+            logs.log(
+                .warning,
+                source: "cloud",
+                message: "Using API key from environment variable for \(provider.displayName)",
+                payload: provider.envVarName
+            )
+        }
+
+        let s = self.settings
+        let runner = self.cloud
+        let providerCopy = provider
+        let modelCopy = modelId
+
+        isLoadingModel = true
+        modelLoaded = false
+        modelStatus = "Configuring \(provider.displayName)…"
+        errorMessage = nil
+        loadTask = Task {
+            do {
+                try Task.checkCancellation()
+                try await runner.configure(
+                    provider: providerCopy,
+                    model: modelCopy,
+                    apiKey: resolved.key,
+                    systemPrompt: s.systemPrompt,
+                    temperature: s.temperature,
+                    topP: s.topP
+                )
+                try Task.checkCancellation()
+                let displayId = "\(providerCopy.displayName): \(modelCopy)"
+                let stableId = "\(providerCopy.keychainAccount):\(modelCopy)"
+                await MainActor.run {
+                    self.modelLoaded = true
+                    self.modelStatus = displayId
+                    self.isLoadingModel = false
+                    self.loadTask = nil
+                    self.currentModelId = stableId
+                    // Cloud has no GGUF template metadata; clear the agent
+                    // layer's cached fingerprint so a stale llama family
+                    // doesn't gate cloud-targeted agents incorrectly.
+                    self.agentController.setDetectedTemplateFamily(nil)
+                    UserDefaults.standard.set(Backend.cloud.rawValue, forKey: PersistKey.backend)
+                    self.refreshTokenUsage()
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    self.modelStatus = "Configure cancelled"
+                    self.isLoadingModel = false
+                    self.loadTask = nil
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Failed to configure cloud: \(error.localizedDescription)"
+                    self.modelStatus = "No model loaded"
+                    self.isLoadingModel = false
+                    self.loadTask = nil
+                }
+            }
+        }
+    }
+
+    /// Assemble a `CloudProvider` from the persisted kind + name + URL.
+    /// Returns nil for `.openaiCompatible` when the user hasn't filled in
+    /// a name and a parseable URL — the load path treats nil as a config
+    /// error and surfaces a friendly message.
+    func makeCloudProvider() -> CloudProvider? {
+        switch cloudProviderKind {
+        case .openai: return .openai
+        case .anthropic: return .anthropic
+        case .openaiCompatible:
+            let name = cloudCompatName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let urlStr = cloudCompatURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty,
+                  let url = URL(string: urlStr),
+                  CloudEndpointPolicy.isAcceptable(url)
+            else { return nil }
+            return .openaiCompatible(name: name, baseURL: url)
+        }
+    }
+
+    /// Active model id for the current cloud provider. Read-only; setting
+    /// goes through the provider-specific @Observable property so SwiftUI
+    /// invalidates the right field.
+    var cloudActiveModel: String {
+        switch cloudProviderKind {
+        case .openai: return cloudOpenAIModel
+        case .anthropic: return cloudAnthropicModel
+        case .openaiCompatible: return cloudCompatModel
         }
     }
 

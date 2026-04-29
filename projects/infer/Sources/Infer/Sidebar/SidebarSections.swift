@@ -586,49 +586,56 @@ extension SidebarView {
             .pickerStyle(.segmented)
             .disabled(vm.isLoadingModel || vm.isGenerating)
 
-            modelPicker
+            if vm.backend == .cloud {
+                cloudConfigRows
+            } else {
+                modelPicker
 
-            TextField(
-                vm.backend == .mlx
-                    ? "HF repo id (empty = default)"
-                    : ".gguf path, filename, or https:// URL",
-                text: $vm.modelInput
-            )
-            .textFieldStyle(.roundedBorder)
-            .disabled(vm.isLoadingModel || vm.isGenerating)
-            .onSubmit { vm.loadCurrentBackend() }
+                TextField(
+                    vm.backend == .mlx
+                        ? "HF repo id (empty = default)"
+                        : ".gguf path, filename, or https:// URL",
+                    text: $vm.modelInput
+                )
+                .textFieldStyle(.roundedBorder)
+                .disabled(vm.isLoadingModel || vm.isGenerating)
+                .onSubmit { vm.loadCurrentBackend() }
 
-            HStack(spacing: 6) {
-                if vm.isLoadingModel {
-                    Button(role: .cancel) { vm.cancelLoad() } label: {
-                        Label("Cancel", systemImage: "xmark.circle")
-                            .frame(maxWidth: .infinity)
-                    }
-                } else {
-                    Button {
-                        vm.loadCurrentBackend()
-                    } label: {
-                        Label("Load", systemImage: "tray.and.arrow.down")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .disabled(vm.isGenerating)
-                    if vm.backend == .llama {
+                HStack(spacing: 6) {
+                    if vm.isLoadingModel {
+                        Button(role: .cancel) { vm.cancelLoad() } label: {
+                            Label("Cancel", systemImage: "xmark.circle")
+                                .frame(maxWidth: .infinity)
+                        }
+                    } else {
                         Button {
-                            vm.browseForLlamaModel()
+                            vm.loadCurrentBackend()
                         } label: {
-                            Label("Browse…", systemImage: "folder")
+                            Label("Load", systemImage: "tray.and.arrow.down")
+                                .frame(maxWidth: .infinity)
                         }
                         .disabled(vm.isGenerating)
+                        if vm.backend == .llama {
+                            Button {
+                                vm.browseForLlamaModel()
+                            } label: {
+                                Label("Browse…", systemImage: "folder")
+                            }
+                            .disabled(vm.isGenerating)
+                        }
                     }
                 }
-            }
-            .buttonStyle(.bordered)
+                .buttonStyle(.bordered)
 
-            if vm.backend == .llama {
-                ggufDirectoryRow
+                if vm.backend == .llama {
+                    ggufDirectoryRow
+                }
             }
         }
         .onAppear { vm.refreshAvailableModelsIfNeeded() }
+        .sheet(isPresented: $showingCloudKeySheet) {
+            CloudKeySheet(vm: vm, isPresented: $showingCloudKeySheet)
+        }
     }
 
     @ViewBuilder
