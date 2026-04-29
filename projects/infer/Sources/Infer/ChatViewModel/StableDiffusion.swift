@@ -98,6 +98,10 @@ extension ChatViewModel {
         let modelDir = sdModelDirectory
         let downloader = self.ggufDownloader
         let offload = self.sdOffloadToCPU
+        // 0 (the default for unset Int in UserDefaults) means "auto" —
+        // the runner picks half cores. Anything else is the user's
+        // explicit override.
+        let threads: Int? = sdNThreads > 0 ? sdNThreads : nil
         sdLoadTask = Task { [weak self] in
             do {
                 var paths = SDPaths()
@@ -141,7 +145,8 @@ extension ChatViewModel {
                     llmPath: paths.llmPath,
                     t5xxlPath: paths.t5xxlPath,
                     clipLPath: paths.clipLPath,
-                    offloadParamsToCPU: offload
+                    offloadParamsToCPU: offload,
+                    nThreads: threads
                 )
                 try Task.checkCancellation()
                 await MainActor.run {

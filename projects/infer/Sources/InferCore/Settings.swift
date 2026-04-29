@@ -74,6 +74,12 @@ public enum PersistKey {
     /// `offload_params_to_cpu` — needed on lower-RAM machines for Z-Image
     /// and large Flux models. Maps to sd-cpp's `--offload-to-cpu`.
     public static let sdOffloadToCPU = "infer.sd.offloadToCPU"
+    /// CPU thread count for sd-cpp's BLAS / on-CPU model paths. Stored
+    /// as Int; 0 = "auto" (use half of `activeProcessorCount`). Lower
+    /// values trade SD throughput for system responsiveness during
+    /// generation — `activeProcessorCount - 1` (the prior default) is
+    /// enough to peg the WindowServer.
+    public static let sdNThreads = "infer.sd.nThreads"
     public static let sdPrompt = "infer.sd.prompt"
     public static let sdNegativePrompt = "infer.sd.negativePrompt"
     public static let sdWidth = "infer.sd.width"

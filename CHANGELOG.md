@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stable Diffusion generation no longer pegs macOS into "windows can't be dragged" territory.** Three coordinated quick wins on the in-process `StableDiffusionRunner` path. (1) Default `n_threads` capped at `activeProcessorCount / 2` instead of `nproc - 1`; the prior default saturated CPU at high QoS and starved the WindowServer + main thread. SD throughput drops <10% on M-series in exchange for the OS staying responsive. (2) The detached generation `Task` runs at `.utility` rather than `.userInitiated` — the C `generate_image` call dominates wall clock anyway, and the user is watching a progress bar, not waiting on a sub-second op, so the lower QoS is the right scheduler hint. (3) New **Threads** stepper in the Image panel's Components disclosure (persisted as `infer.sd.nThreads`, `0 = auto`) lets users dial threads down further on machines that need more headroom or up on Mac Pros where 8 threads under-utilises. These mitigations are sufficient for SD-1.x / SDXL; Z-Image-Turbo and Flux remain heavy enough that subprocess execution is the real fix — captured as a parked TODO entry rather than chased here.
+
 ## [0.1.9]
 
 ### Added

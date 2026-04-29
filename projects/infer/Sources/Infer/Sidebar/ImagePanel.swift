@@ -112,6 +112,7 @@ struct SDImagePanel: View {
                         )
                         Toggle("Offload params to CPU (lower RAM, slower)", isOn: $vm.sdOffloadToCPU)
                             .font(.caption)
+                        threadsRow
                     }
                     .padding(.vertical, 4)
                 },
@@ -170,6 +171,35 @@ struct SDImagePanel: View {
                 .help("Browse for \(label)")
             }
         }
+    }
+
+    /// CPU thread count selector. `0` displays as "Auto (n)" where n is
+    /// half `activeProcessorCount`; positive values are explicit.
+    @ViewBuilder
+    private var threadsRow: some View {
+        let auto = max(1, ProcessInfo.processInfo.activeProcessorCount / 2)
+        let maxThreads = ProcessInfo.processInfo.activeProcessorCount
+        HStack {
+            Text("Threads").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            if vm.sdNThreads == 0 {
+                Text("Auto (\(auto))").font(.caption.monospacedDigit())
+            } else {
+                Text("\(vm.sdNThreads)").font(.caption.monospacedDigit())
+            }
+            Stepper(value: $vm.sdNThreads, in: 0...maxThreads, step: 1) { EmptyView() }
+                .labelsHidden()
+            if vm.sdNThreads > 0 {
+                Button {
+                    vm.sdNThreads = 0
+                } label: {
+                    Image(systemName: "xmark.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("Reset to auto (half cores)")
+            }
+        }
+        .help("Lower if the system feels sluggish during generation; higher if you have spare cores.")
     }
 
     private static let modelFileTypes: [UTType] = [

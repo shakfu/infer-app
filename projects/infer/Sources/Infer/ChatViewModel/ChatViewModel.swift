@@ -99,6 +99,13 @@ final class ChatViewModel {
     var sdOffloadToCPU: Bool = UserDefaults.standard.bool(forKey: PersistKey.sdOffloadToCPU) {
         didSet { UserDefaults.standard.set(sdOffloadToCPU, forKey: PersistKey.sdOffloadToCPU) }
     }
+    /// CPU thread count for sd-cpp. 0 = auto (half of `activeProcessorCount`).
+    /// Surface as a stepper in the Components disclosure so users can dial
+    /// it down further on machines that need more headroom for the
+    /// WindowServer or up on Mac Pros where 8 threads under-utilises.
+    var sdNThreads: Int = UserDefaults.standard.integer(forKey: PersistKey.sdNThreads) {
+        didSet { UserDefaults.standard.set(sdNThreads, forKey: PersistKey.sdNThreads) }
+    }
     var sdPrompt: String = UserDefaults.standard.string(forKey: PersistKey.sdPrompt) ?? "" {
         didSet { UserDefaults.standard.set(sdPrompt, forKey: PersistKey.sdPrompt) }
     }
