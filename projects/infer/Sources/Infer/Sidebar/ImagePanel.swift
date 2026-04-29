@@ -3,20 +3,43 @@ import AppKit
 import UniformTypeIdentifiers
 import InferCore
 
-/// Stable Diffusion sidebar tab. Lives next to `modelSection` /
-/// `agentsLibrarySection` / etc. as a `SidebarView` extension so the
-/// switch-on-tab dispatch in `SidebarView.body` can call into it without
-/// wiring up a separate view struct.
-extension SidebarView {
-    @ViewBuilder
-    var imageSection: some View {
+/// Stable Diffusion sidebar panel. Extracted from `SidebarView` into its own
+/// `View` struct so it can carry its own `@State` (the multi-file
+/// disclosure expansion) seeded from VM persistence at construction time.
+/// `SidebarView`'s tab dispatch instantiates one of these for the Image tab
+/// (see `SidebarView.imageSection`).
+struct SDImagePanel: View {
+    /// `@Bindable` so child controls can use `$vm.sdXxx` to obtain
+    /// two-way bindings into the @Observable view model — same pattern as
+    /// `SidebarView.vm`.
+    @Bindable var vm: ChatViewModel
+    /// Whether the multi-file (Z-Image / Flux) component disclosure is
+    /// expanded. Seeded from VM persistence in `init`: if any of the
+    /// component fields has a saved value, the disclosure opens
+    /// immediately so returning users see their config; otherwise it's
+    /// collapsed and SD-1.x / SDXL users see only the single all-in-one
+    /// field. After init, the user can toggle freely — `@State` keeps
+    /// their choice for the session.
+    @State private var componentsExpanded: Bool
+
+    init(vm: ChatViewModel) {
+        self._vm = Bindable(vm)
+        let anyComponentFilled = !vm.sdDiffusionModelInput.isEmpty
+            || !vm.sdVAEInput.isEmpty
+            || !vm.sdLLMInput.isEmpty
+            || !vm.sdT5XXLInput.isEmpty
+            || !vm.sdClipLInput.isEmpty
+        self._componentsExpanded = State(initialValue: anyComponentFilled)
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            sdModelRow
-            sdPromptRow
-            sdParamsRow
-            sdGenerateRow
-            sdProgressRow
-            sdGalleryRow
+            modelRow
+            promptRow
+            paramsRow
+            generateRow
+            progressRow
+            galleryRow
         }
         .onAppear { vm.refreshGallery() }
     }
@@ -24,7 +47,7 @@ extension SidebarView {
     // MARK: - Model row
 
     @ViewBuilder
-    private var sdModelRow: some View {
+    private var modelRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             SectionHeader(icon: "cube.box", title: "Image Model")
 
@@ -52,44 +75,50 @@ extension SidebarView {
             // Single-file (SD 1.x/2.x/SDXL/Flux all-in-one) goes here.
             // Multi-file workflows (Z-Image, Flux split) leave this blank
             // and fill the disclosure below.
-            sdComponentField(
+            componentField(
                 label: "All-in-one model",
                 placeholder: ".safetensors / https URL / namespace/name/file.ext",
                 binding: $vm.sdModelInput
             )
 
-            DisclosureGroup("Components (Z-Image / Flux multi-file)") {
-                VStack(alignment: .leading, spacing: 6) {
-                    sdComponentField(
-                        label: "Diffusion model",
-                        placeholder: "diffusion-only file (e.g. z_image_turbo-Q6_K.gguf)",
-                        binding: $vm.sdDiffusionModelInput
-                    )
-                    sdComponentField(
-                        label: "VAE",
-                        placeholder: "ae.safetensors",
-                        binding: $vm.sdVAEInput
-                    )
-                    sdComponentField(
-                        label: "LLM (Z-Image text encoder)",
-                        placeholder: "Qwen3-4B-Q8_0.gguf",
-                        binding: $vm.sdLLMInput
-                    )
-                    sdComponentField(
-                        label: "T5XXL (Flux)",
-                        placeholder: "t5xxl_fp16.safetensors",
-                        binding: $vm.sdT5XXLInput
-                    )
-                    sdComponentField(
-                        label: "CLIP-L (Flux)",
-                        placeholder: "clip_l.safetensors",
-                        binding: $vm.sdClipLInput
-                    )
-                    Toggle("Offload params to CPU (lower RAM, slower)", isOn: $vm.sdOffloadToCPU)
-                        .font(.caption)
+            DisclosureGroup(
+                isExpanded: $componentsExpanded,
+                content: {
+                    VStack(alignment: .leading, spacing: 6) {
+                        componentField(
+                            label: "Diffusion model",
+                            placeholder: "diffusion-only file (e.g. z_image_turbo-Q6_K.gguf)",
+                            binding: $vm.sdDiffusionModelInput
+                        )
+                        componentField(
+                            label: "VAE",
+                            placeholder: "ae.safetensors",
+                            binding: $vm.sdVAEInput
+                        )
+                        componentField(
+                            label: "LLM (Z-Image text encoder)",
+                            placeholder: "Qwen3-4B-Q8_0.gguf",
+                            binding: $vm.sdLLMInput
+                        )
+                        componentField(
+                            label: "T5XXL (Flux)",
+                            placeholder: "t5xxl_fp16.safetensors",
+                            binding: $vm.sdT5XXLInput
+                        )
+                        componentField(
+                            label: "CLIP-L (Flux)",
+                            placeholder: "clip_l.safetensors",
+                            binding: $vm.sdClipLInput
+                        )
+                        Toggle("Offload params to CPU (lower RAM, slower)", isOn: $vm.sdOffloadToCPU)
+                            .font(.caption)
+                    }
+                    .padding(.vertical, 4)
+                },
+                label: {
+                    Text("Components (Z-Image / Flux multi-file)")
                 }
-                .padding(.vertical, 4)
-            }
+            )
             .font(.caption)
 
             HStack(spacing: 6) {
@@ -115,7 +144,7 @@ extension SidebarView {
     /// Browse button that targets that field's binding. Used for both the
     /// all-in-one slot and each multi-file component.
     @ViewBuilder
-    private func sdComponentField(
+    private func componentField(
         label: String,
         placeholder: String,
         binding: Binding<String>
@@ -130,7 +159,7 @@ extension SidebarView {
                 Button {
                     if let url = FileDialogs.openFile(
                         message: "Select \(label)",
-                        contentTypes: sdModelFileTypes
+                        contentTypes: Self.modelFileTypes
                     ) {
                         binding.wrappedValue = url.path
                     }
@@ -143,18 +172,16 @@ extension SidebarView {
         }
     }
 
-    private var sdModelFileTypes: [UTType] {
-        [
-            UTType(filenameExtension: "safetensors"),
-            UTType(filenameExtension: "gguf"),
-            UTType(filenameExtension: "ckpt"),
-        ].compactMap { $0 }
-    }
+    private static let modelFileTypes: [UTType] = [
+        UTType(filenameExtension: "safetensors"),
+        UTType(filenameExtension: "gguf"),
+        UTType(filenameExtension: "ckpt"),
+    ].compactMap { $0 }
 
     // MARK: - Prompt rows
 
     @ViewBuilder
-    private var sdPromptRow: some View {
+    private var promptRow: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Prompt")
                 .font(.caption)
@@ -183,7 +210,7 @@ extension SidebarView {
     // MARK: - Params
 
     @ViewBuilder
-    private var sdParamsRow: some View {
+    private var paramsRow: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 paramStepper("Width", value: $vm.sdWidth, range: 64...2048, step: 64)
@@ -250,7 +277,7 @@ extension SidebarView {
     // MARK: - Generate / progress
 
     @ViewBuilder
-    private var sdGenerateRow: some View {
+    private var generateRow: some View {
         HStack(spacing: 6) {
             if vm.sdIsGenerating {
                 Button(role: .cancel) {
@@ -282,7 +309,7 @@ extension SidebarView {
     }
 
     @ViewBuilder
-    private var sdProgressRow: some View {
+    private var progressRow: some View {
         if let p = vm.sdProgress {
             switch p {
             case .step(let cur, let total, let secsPerStep):
@@ -311,7 +338,7 @@ extension SidebarView {
     // MARK: - Gallery
 
     @ViewBuilder
-    private var sdGalleryRow: some View {
+    private var galleryRow: some View {
         if !vm.sdGallery.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
@@ -335,6 +362,16 @@ extension SidebarView {
                 }
             }
         }
+    }
+}
+
+extension SidebarView {
+    /// Hook into the tab dispatch in `SidebarView.body`. Wraps the panel
+    /// View struct so its init runs every time the tab is shown — that's
+    /// what lets `componentsExpanded` re-seed from current VM state.
+    @ViewBuilder
+    var imageSection: some View {
+        SDImagePanel(vm: vm)
     }
 }
 
