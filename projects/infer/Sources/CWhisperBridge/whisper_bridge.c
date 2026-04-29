@@ -1,6 +1,6 @@
 #include "whisper_bridge.h"
 #include <stdlib.h>
-#include <whisper/whisper.h>
+#include <Whisper/whisper.h>
 
 struct whisper_bridge_context {
     struct whisper_context * ctx;

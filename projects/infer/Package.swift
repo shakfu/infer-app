@@ -117,21 +117,34 @@ let package = Package(
             dependencies: ["InferRAG"],
             path: "Tests/InferRAGTests"
         ),
+        // Combined ggml-stack frameworks. One shared `Ggml` xcframework
+        // ships libggml*.dylib (base + cpu + metal + blas backends);
+        // `LlamaCpp` / `Whisper` / (future) `StableDiffusion` are thin
+        // xcframeworks layered on top whose module maps `use Ggml`. This
+        // collapses the prior dual-ggml problem (where llama.framework and
+        // whisper.framework each shipped their own libggml.dylib and
+        // collided when both modules were imported into one target).
         .binaryTarget(
-            name: "llama",
-            path: "../../thirdparty/llama.xcframework"
+            name: "Ggml",
+            path: "../../thirdparty/Ggml.xcframework"
         ),
         .binaryTarget(
-            name: "whisper",
-            path: "../../thirdparty/whisper.xcframework"
+            name: "LlamaCpp",
+            path: "../../thirdparty/LlamaCpp.xcframework"
         ),
-        // Narrow C bridge over whisper.cpp. Isolates whisper's ggml headers
-        // from the Swift-visible module graph so the Infer target can also
-        // import 'llama' (which ships its own, incompatible ggml.h) without
-        // a Clang type-redefinition error.
+        .binaryTarget(
+            name: "Whisper",
+            path: "../../thirdparty/Whisper.xcframework"
+        ),
+        // Narrow C bridge over whisper.cpp. Originally a workaround for
+        // dual-ggml symbol collisions between the upstream llama and
+        // whisper xcframeworks; with the unified Ggml framework that
+        // rationale is gone, but the bridge is kept for now because its
+        // narrow C surface is convenient and removing it is a separate
+        // refactor.
         .target(
             name: "CWhisperBridge",
-            dependencies: ["whisper"],
+            dependencies: ["Whisper", "Ggml"],
             path: "Sources/CWhisperBridge",
             publicHeadersPath: "include"
         ),
@@ -140,7 +153,8 @@ let package = Package(
             dependencies: [
                 "InferCore",
                 "InferAgents",
-                "llama",
+                "Ggml",
+                "LlamaCpp",
                 "CWhisperBridge",
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXVLM", package: "mlx-swift-lm"),

@@ -1,10 +1,19 @@
 BUILD_DIR := build
-LLAMA_XCFRAMEWORK := thirdparty/llama.xcframework
-LLAMA_FRAMEWORK := $(LLAMA_XCFRAMEWORK)/macos-arm64_x86_64/llama.framework
-LLAMA_TAG := b8848
-WHISPER_XCFRAMEWORK := thirdparty/whisper.xcframework
-WHISPER_FRAMEWORK := $(WHISPER_XCFRAMEWORK)/macos-arm64_x86_64/whisper.framework
-WHISPER_TAG := v1.8.4
+# Combined ggml-stack: one Ggml.xcframework shipping libggml*.dylib +
+# thin LlamaCpp / Whisper / StableDiffusion frameworks layered on top.
+# Replaces the prior separate llama.xcframework + whisper.xcframework
+# from upstream releases (parked under thirdparty/_old/ for reference).
+# Fetched together from one GitHub release; bump $(STACK_VERSION) and
+# rerun `make fetch-stack` to upgrade.
+STACK_VERSION := 0.2.14
+GGML_XCFRAMEWORK := thirdparty/Ggml.xcframework
+GGML_FRAMEWORK := $(GGML_XCFRAMEWORK)/macos-arm64/Ggml.framework
+LLAMACPP_XCFRAMEWORK := thirdparty/LlamaCpp.xcframework
+LLAMACPP_FRAMEWORK := $(LLAMACPP_XCFRAMEWORK)/macos-arm64/LlamaCpp.framework
+WHISPER_XCFRAMEWORK := thirdparty/Whisper.xcframework
+WHISPER_FRAMEWORK := $(WHISPER_XCFRAMEWORK)/macos-arm64/Whisper.framework
+SD_XCFRAMEWORK := thirdparty/StableDiffusion.xcframework
+SD_FRAMEWORK := $(SD_XCFRAMEWORK)/macos-arm64/StableDiffusion.framework
 WEBASSETS_DIR := thirdparty/webassets
 WEBASSETS_MARKER := $(WEBASSETS_DIR)/katex/katex.min.js
 SQLITEVEC_DIR := thirdparty/SQLiteVec
@@ -34,7 +43,7 @@ INFER_PRODUCT_DIR := $(INFER_BUILD_DIR)/Build/Products/$(INFER_CONFIG)
 INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 
 .PHONY: all build bundle run clean clean-infer clean-mlx-cache test
-.PHONY: fetch-llama fetch-whisper fetch-webassets fetch-sqlitevec fetch-python generate-icon
+.PHONY: fetch-stack fetch-webassets fetch-sqlitevec fetch-python generate-icon
 .PHONY: build-release bundle-release run-release
 .PHONY: plugins-gen plugins-gen-check
 
@@ -119,17 +128,27 @@ test-integration:
 test-all:
 	cd $(INFER_DIR) && swift test
 
-# --- Infer app (SwiftPM + llama.framework + MLX) ---
+# --- Infer app (SwiftPM + ggml-stack frameworks + MLX) ---
 
-$(LLAMA_XCFRAMEWORK):
-	./scripts/fetch_llama_framework.sh $(LLAMA_TAG)
+# All four xcframeworks are produced and released together. The fetch
+# script downloads a single release zip and lays them out in thirdparty/.
+# A version-stamped marker file gates the script so bumping
+# $(STACK_VERSION) invalidates the install and triggers a re-fetch.
+# (Make 3.81 — what ships with macOS — predates grouped targets, so the
+# common idiom of "one rule with multiple outputs" is encoded as a
+# marker file the per-framework targets depend on.)
+STACK_MARKER := thirdparty/.stack-$(STACK_VERSION)
 
-fetch-llama: $(LLAMA_XCFRAMEWORK)
+$(STACK_MARKER):
+	./scripts/fetch_combined_framework.sh $(STACK_VERSION)
+	@touch $@
 
-$(WHISPER_XCFRAMEWORK):
-	./scripts/fetch_whisper_framework.sh $(WHISPER_TAG)
+$(GGML_XCFRAMEWORK): $(STACK_MARKER)
+$(LLAMACPP_XCFRAMEWORK): $(STACK_MARKER)
+$(WHISPER_XCFRAMEWORK): $(STACK_MARKER)
+$(SD_XCFRAMEWORK): $(STACK_MARKER)
 
-fetch-whisper: $(WHISPER_XCFRAMEWORK)
+fetch-stack: $(STACK_MARKER)
 
 $(WEBASSETS_MARKER):
 	./scripts/fetch_webassets.sh
@@ -155,7 +174,7 @@ fetch-sqlitevec: $(SQLITEVEC_MARKER)
 fetch-python:
 	./scripts/fetch_python_framework.sh
 
-build: $(LLAMA_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SQLITEVEC_MARKER) plugins-gen
+build: $(GGML_XCFRAMEWORK) $(LLAMACPP_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SQLITEVEC_MARKER) plugins-gen
 	xcodebuild $(INFER_XCODE_FLAGS) build
 
 bundle: build $(INFER_DIR)/Resources/AppIcon.icns $(WEBASSETS_MARKER)
@@ -166,8 +185,9 @@ bundle: build $(INFER_DIR)/Resources/AppIcon.icns $(WEBASSETS_MARKER)
 	cp $(INFER_BIN) $(INFER_APP_BUNDLE)/Contents/MacOS/Infer
 	cp $(INFER_DIR)/Sources/Infer/Info.plist $(INFER_APP_BUNDLE)/Contents/Info.plist
 	cp $(INFER_DIR)/Resources/AppIcon.icns $(INFER_APP_BUNDLE)/Contents/Resources/AppIcon.icns
-	cp -R $(LLAMA_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/llama.framework
-	cp -R $(WHISPER_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/whisper.framework
+	cp -R $(GGML_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/Ggml.framework
+	cp -R $(LLAMACPP_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/LlamaCpp.framework
+	cp -R $(WHISPER_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/Whisper.framework
 	cp -R $(WEBASSETS_DIR) $(INFER_APP_BUNDLE)/Contents/Resources/WebAssets
 	@if [ -d "thirdparty/Python.framework" ]; then \
 		echo "  bundling Python.framework"; \

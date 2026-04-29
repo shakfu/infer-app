@@ -1,6 +1,6 @@
 import Foundation
 import Accelerate
-import llama
+import LlamaCpp
 
 /// Errors raised by `EmbeddingRunner`. Surfaced to callers via the
 /// thrown API and routed to `LogCenter` at the first call site.

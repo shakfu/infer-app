@@ -1,5 +1,5 @@
 import Foundation
-import llama
+import LlamaCpp
 
 enum RerankerError: Error, CustomStringConvertible {
     case notLoaded

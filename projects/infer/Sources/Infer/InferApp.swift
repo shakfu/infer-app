@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-import llama
+import LlamaCpp
 import InferAgents
 import InferCore
 import InferRAG

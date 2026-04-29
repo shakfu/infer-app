@@ -1,5 +1,5 @@
 import Foundation
-import llama
+import LlamaCpp
 import InferAgents
 import InferCore
 
@@ -734,17 +734,60 @@ actor LlamaRunner {
         return Array(tokens.prefix(Int(n)))
     }
 
-    private static func piece(vocab: OpaquePointer, token: llama_token) -> String {
+    /// Raw bytes for a single token. Replaces the older `piece` helper that
+    /// eagerly converted to `String` per token — that broke multi-byte UTF-8
+    /// sequences (notably emojis) when a 4-byte sequence straddled a token
+    /// boundary, surfacing as `��` replacement-char pairs in the rendered
+    /// reply. The streaming layer now buffers these bytes across tokens
+    /// (`runDecodeLoop`) and only emits a `String` at a valid UTF-8 boundary.
+    private static func pieceBytes(vocab: OpaquePointer, token: llama_token) -> [UInt8] {
         var buf = [CChar](repeating: 0, count: 256)
         let n = llama_token_to_piece(vocab, token, &buf, Int32(buf.count), 0, false)
         if n < 0 {
             buf = [CChar](repeating: 0, count: Int(-n) + 1)
             let n2 = llama_token_to_piece(vocab, token, &buf, Int32(buf.count), 0, false)
-            if n2 <= 0 { return "" }
-            return decodeCChars(buf, length: Int(n2))
+            if n2 <= 0 { return [] }
+            return buf.prefix(Int(n2)).map { UInt8(bitPattern: $0) }
         }
-        if n == 0 { return "" }
-        return decodeCChars(buf, length: Int(n))
+        if n == 0 { return [] }
+        return buf.prefix(Int(n)).map { UInt8(bitPattern: $0) }
+    }
+
+    /// Return the longest prefix length of `bytes` that ends on a complete
+    /// UTF-8 sequence. Walks back at most 4 bytes (the longest valid
+    /// sequence) looking for the most recent lead byte; if its expected
+    /// continuation count exceeds what's actually present, the lead and
+    /// everything after it are held back for the next token. Pathological
+    /// input (4 continuation bytes with no preceding lead — would never
+    /// come from a well-formed tokenizer) flushes as-is rather than
+    /// accumulating forever.
+    private static func safeUTF8Boundary(_ bytes: [UInt8]) -> Int {
+        let n = bytes.count
+        guard n > 0 else { return 0 }
+        let earliest = max(0, n - 4)
+        var i = n - 1
+        while i >= earliest {
+            let b = bytes[i]
+            if b < 0x80 {
+                // ASCII byte. Anything between i+1 and n-1 would be a
+                // dangling continuation (no lead) — invalid; emit as-is so
+                // the buffer doesn't accumulate. Normal tokenizer output
+                // never produces this shape.
+                return n
+            }
+            if b >= 0xC0 {
+                let expected: Int
+                if b >= 0xF0 { expected = 4 }
+                else if b >= 0xE0 { expected = 3 }
+                else { expected = 2 }
+                let trailing = n - i  // bytes from this lead through end
+                return trailing >= expected ? n : i
+            }
+            i -= 1  // continuation byte; keep walking back
+        }
+        // Walked back 4 bytes without finding a lead — flush rather than
+        // hold (would only happen on malformed input).
+        return n
     }
 
     private static func runDecodeLoop(
@@ -768,6 +811,12 @@ actor LlamaRunner {
             if rc != 0 { throw LlamaError.decodeFailed(rc) }
         }
 
+        // UTF-8 byte buffer: holds the tail of a multi-byte sequence
+        // straddling a token boundary so we never emit a partial sequence
+        // (which would surface as `��` replacement chars in the reply).
+        // Flushed at end-of-loop and on EOG.
+        var pending: [UInt8] = []
+
         var produced = 0
         while produced < maxTokens {
             if cancel.isSet { throw LlamaError.cancelled }
@@ -776,8 +825,17 @@ actor LlamaRunner {
             if llama_vocab_is_eog(vocab, next) { break }
             llama_sampler_accept(sampler, next)
 
-            let text = piece(vocab: vocab, token: next)
-            if !text.isEmpty { onPiece(text) }
+            let bytes = pieceBytes(vocab: vocab, token: next)
+            if !bytes.isEmpty {
+                pending.append(contentsOf: bytes)
+                let safe = safeUTF8Boundary(pending)
+                if safe > 0 {
+                    let chunk = pending.prefix(safe)
+                    let str = String(decoding: chunk, as: UTF8.self)
+                    pending.removeFirst(safe)
+                    if !str.isEmpty { onPiece(str) }
+                }
+            }
 
             var one = [next]
             let rc = one.withUnsafeMutableBufferPointer { buf -> Int32 in
@@ -786,6 +844,15 @@ actor LlamaRunner {
             }
             if rc != 0 { throw LlamaError.decodeFailed(rc) }
             produced += 1
+        }
+
+        // Flush any trailing bytes. If we exited cleanly (EOG / max-tokens),
+        // a non-empty `pending` means the model genuinely stopped mid-
+        // sequence — exceptionally rare; render with replacement chars
+        // rather than swallow.
+        if !pending.isEmpty {
+            let str = String(decoding: pending, as: UTF8.self)
+            if !str.isEmpty { onPiece(str) }
         }
     }
 }

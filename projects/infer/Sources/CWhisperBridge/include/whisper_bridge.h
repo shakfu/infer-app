@@ -1,10 +1,12 @@
-// Narrow C surface over whisper.cpp. This bridge exists because
-// llama.framework and whisper.framework each ship their own copy of ggml.h,
-// and importing both Swift modules ('llama' and 'whisper') into one target
-// produces a Clang "X has different definitions in different modules" error
-// on the shared ggml types. By compiling all whisper.h usage inside this
-// C target and exposing only primitive-typed functions here, Swift never
-// sees whisper's ggml declarations.
+// Narrow C surface over whisper.cpp. Originally a workaround for a
+// Clang module redefinition error: the upstream llama.framework and
+// whisper.framework each shipped their own copy of ggml.h, and importing
+// both Swift modules into one target produced "X has different definitions
+// in different modules" diagnostics on the shared ggml types. The combined
+// Ggml + LlamaCpp + Whisper xcframework set now shares one Ggml module so
+// that collision is gone — the bridge stays for now because its narrow C
+// surface is convenient (Swift doesn't have to thread `whisper_full_params`
+// or sampling enums through), and removing it is a separate refactor.
 #ifndef WHISPER_BRIDGE_H
 #define WHISPER_BRIDGE_H
 
