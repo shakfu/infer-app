@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9]
+
 ### Added
 
 - **Cloud chat backend — OpenAI, Anthropic, and OpenAI-compatible endpoints.** Third backend next to llama.cpp / MLX, selected from the same picker. One `CloudRunner` actor handles all three providers because the per-provider divergence (system-prompt placement, SSE event shape, base URL) lives entirely inside the swappable `CloudClient` implementation; the actor body — transcript management, cancellation, rollback, settings — is provider-agnostic. The doc draft proposed two separate runners (`OpenAIRunner` / `AnthropicRunner`); after looking at the sketch in `projects/sketch/`, the actor body for both providers was identical except for the HTTP client, so the split would have duplicated ~150 lines for no gain. **OpenAI-compatible** (`.openaiCompatible(name:baseURL:)`) is a third `CloudProvider` case that reuses `OpenAIClient` with a swappable URL — drops in Ollama (`http://localhost:11434/v1`), LM Studio, Groq, Together, Anyscale, Fireworks, OpenRouter, anything speaking `/v1/chat/completions` with SSE. URL acceptability is gated by `CloudEndpointPolicy.isAcceptable`: `https://` everywhere, `http://` only for loopback hosts (`localhost` / `127.0.0.1` / `::1`) so a typo can't send the API key in cleartext to a non-loopback host. Per-provider model id persists separately (a `gpt-5` selection shouldn't follow you into Anthropic), and compat endpoints get their own keychain account (`compat.<normalized-name>`) so multiple endpoints don't share credentials. Hybrid model picker: free-text field plus a "Recommended" dropdown of common ids (`CloudRecommendedModels`). Cloud runner is implemented as `InferCore.CloudRunner` so the wire-format logic is unit-testable under `swift test` without the Metal Toolchain — 26 new tests cover OpenAI / Anthropic SSE parsing, system-prompt routing (top-level for Anthropic vs inline for OpenAI), key-prefix scrubbing, cancellation, rollback, and compat-endpoint URL validation.
@@ -33,7 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Bundle step copies four frameworks** (`Ggml`, `LlamaCpp`, `Whisper`, `StableDiffusion`) into `Contents/Frameworks/` instead of two. `applicationWillTerminate` adds `cloud.shutdown()` and `sd.shutdown()` to the runner-teardown sequence so cloud HTTP tasks and the `sd_ctx_t*` are freed cleanly on quit.
 
+- **SD multi-file disclosure auto-expands when persisted components exist.** The "Components (Z-Image / Flux multi-file)" disclosure on the Image panel was previously collapsed by default — discoverable enough that anyone reading the label found it, but invisible enough that users running Z-Image asked "where do I put the VAE?" before noticing. Refactored `Sidebar/ImagePanel.swift` to extract the panel into a standalone `SDImagePanel: View` struct (out of the `SidebarView` extension) so it can carry its own `@State componentsExpanded` and seed it from VM persistence at construction time: if any of `sdDiffusionModelInput` / `sdVAEInput` / `sdLLMInput` / `sdT5XXLInput` / `sdClipLInput` has a saved value, the disclosure opens immediately. Fresh users / single-file workflows still see the simple presentation. After init, the user toggles freely; `@State` preserves their choice for the session. Required flipping `let vm` → `@Bindable var vm` with an explicit `init(vm:)` that calls `Bindable(vm)` so child text fields can use `$vm.sdXxx` for two-way bindings.
 
+## [0.1.8]
 
 ### Added
 
@@ -178,7 +182,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`Agent.run(turn:context:) -> StepTrace`** and `AgentError.loopNotAvailable`. The protocol method was an unused escape hatch with a default that threw; no production code path called it. Replaced by `Agent.customLoop` (see Added). Two new `AgentError` cases (`toolInvokerMissing`, `toolDispatchFailed`) carry the failure modes that actually matter for `customLoop` implementations.
 
-## [0.1.6]
+## [0.1.7]
 
 ### Added
 
