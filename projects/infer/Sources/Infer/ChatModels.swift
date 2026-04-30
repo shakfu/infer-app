@@ -87,6 +87,22 @@ struct SDGalleryEntry: Identifiable, Equatable {
     var id: URL { imageURL }
 }
 
+/// Image-generation backend for the Image tab. Independent of the chat
+/// backend (`Backend` enum) — a user can run local-llama chat with
+/// cloud OpenAI image gen, or vice versa. Persisted via the
+/// `infer.image.backend` `@AppStorage` key.
+enum ImageBackend: String, CaseIterable, Identifiable {
+    case localSD
+    case openai
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .localSD: return "Local SD"
+        case .openai: return "OpenAI"
+        }
+    }
+}
+
 enum AppearanceMode: String, CaseIterable, Identifiable {
     case light, dark, system
     var id: String { rawValue }

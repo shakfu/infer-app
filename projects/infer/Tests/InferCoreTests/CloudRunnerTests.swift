@@ -25,9 +25,7 @@ private final class StubCloudClient: CloudClient, @unchecked Sendable {
     func streamChat(
         messages: [CloudChatMessage],
         model: String,
-        temperature: Double,
-        topP: Double,
-        maxTokens: Int
+        params: CloudGenerationParams
     ) -> AsyncThrowingStream<String, Error> {
         lock.lock()
         _captured = messages
@@ -67,8 +65,7 @@ final class CloudRunnerTests: XCTestCase {
             model: "gpt-test",
             apiKey: "sk-test-key",
             systemPrompt: systemPrompt,
-            temperature: 0.5,
-            topP: 0.9
+            params: CloudGenerationParams(temperature: 0.5, topP: 0.9, maxTokens: 512)
         )
     }
 
@@ -117,8 +114,7 @@ final class CloudRunnerTests: XCTestCase {
                 model: "gpt-test",
                 apiKey: "",
                 systemPrompt: nil,
-                temperature: 0.5,
-                topP: 0.9
+                params: CloudGenerationParams(temperature: 0.5, topP: 0.9, maxTokens: 512)
             )
             XCTFail("expected missingKey")
         } catch let CloudError.missingKey {
@@ -141,8 +137,7 @@ final class CloudRunnerTests: XCTestCase {
                 model: "x",
                 apiKey: "k",
                 systemPrompt: nil,
-                temperature: 0.5,
-                topP: 0.9
+                params: CloudGenerationParams(temperature: 0.5, topP: 0.9, maxTokens: 512)
             )
             XCTFail("expected invalidEndpoint")
         } catch let CloudError.invalidEndpoint {
@@ -164,8 +159,7 @@ final class CloudRunnerTests: XCTestCase {
             model: "llama3",
             apiKey: "k",
             systemPrompt: nil,
-            temperature: 0.5,
-            topP: 0.9
+            params: CloudGenerationParams(temperature: 0.5, topP: 0.9, maxTokens: 512)
         )
         let id = await runner.loadedModelId
         XCTAssertEqual(id, "llama3")
@@ -215,7 +209,10 @@ final class CloudRunnerTests: XCTestCase {
         var transcript = await runner.transcriptSnapshot()
         XCTAssertEqual(transcript.count, 3)
 
-        await runner.updateSettings(systemPrompt: "v2", temperature: 0.5, topP: 0.9)
+        await runner.updateSettings(
+            systemPrompt: "v2",
+            params: CloudGenerationParams(temperature: 0.5, topP: 0.9, maxTokens: 512)
+        )
         transcript = await runner.transcriptSnapshot()
         XCTAssertEqual(transcript.count, 1)
         XCTAssertEqual(transcript[0].content, "v2")
@@ -229,7 +226,10 @@ final class CloudRunnerTests: XCTestCase {
         let s1 = await runner.sendUserMessage("hi")
         for try await _ in s1 {}
 
-        await runner.updateSettings(systemPrompt: "v1", temperature: 0.1, topP: 0.5)
+        await runner.updateSettings(
+            systemPrompt: "v1",
+            params: CloudGenerationParams(temperature: 0.1, topP: 0.5, maxTokens: 512)
+        )
         let transcript = await runner.transcriptSnapshot()
         XCTAssertEqual(transcript.count, 3)
     }

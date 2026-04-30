@@ -108,7 +108,8 @@ final class CloudClientsTests: XCTestCase {
                 CloudChatMessage(role: .system, content: "be terse"),
                 CloudChatMessage(role: .user, content: "hi"),
             ],
-            model: "gpt-test", temperature: 0.5, topP: 0.9, maxTokens: 64
+            model: "gpt-test",
+            params: CloudGenerationParams(temperature: 0.5, topP: 0.9, maxTokens: 64)
         ) {
             collected += piece
         }
@@ -145,7 +146,8 @@ final class CloudClientsTests: XCTestCase {
         do {
             for try await _ in client.streamChat(
                 messages: [CloudChatMessage(role: .user, content: "hi")],
-                model: "gpt-test", temperature: 0.5, topP: 0.9, maxTokens: 64
+                model: "gpt-test",
+            params: CloudGenerationParams(temperature: 0.5, topP: 0.9, maxTokens: 64)
             ) {}
             XCTFail("expected throw")
         } catch let CloudError.http(status, body) {
@@ -188,7 +190,8 @@ final class CloudClientsTests: XCTestCase {
                 CloudChatMessage(role: .system, content: "be terse"),
                 CloudChatMessage(role: .user, content: "hi"),
             ],
-            model: "claude-test", temperature: 0.5, topP: 0.9, maxTokens: 64
+            model: "claude-test",
+            params: CloudGenerationParams(temperature: 0.5, topP: 0.9, maxTokens: 64)
         ) {
             collected += piece
         }
@@ -236,7 +239,8 @@ final class CloudClientsTests: XCTestCase {
         var collected = ""
         for try await piece in client.streamChat(
             messages: [CloudChatMessage(role: .user, content: "hi")],
-            model: "claude-test", temperature: 0.5, topP: 0.9, maxTokens: 32
+            model: "claude-test",
+            params: CloudGenerationParams(temperature: 0.5, topP: 0.9, maxTokens: 32)
         ) {
             collected += piece
         }

@@ -20,8 +20,10 @@ public actor CloudRunner {
     private var client: CloudClient?
 
     private var systemPrompt: String?
-    private var temperature: Double = 0.8
-    private var topP: Double = 0.95
+    /// Sampling + generation knobs forwarded to the wire layer. Mutated
+    /// via `configure` and `updateSettings`; read once per `sendUserMessage`
+    /// to capture the snapshot the request will use.
+    private var params: CloudGenerationParams = CloudGenerationParams()
 
     /// Full transcript we resend each turn. System prompt, if any, sits at
     /// index 0; both providers accept it there (Anthropic relocates it to a
@@ -66,8 +68,7 @@ public actor CloudRunner {
         model: String,
         apiKey: String,
         systemPrompt: String?,
-        temperature: Double,
-        topP: Double
+        params: CloudGenerationParams
     ) throws {
         guard !apiKey.isEmpty else { throw CloudError.missingKey }
         if case .openaiCompatible(_, let url) = provider,
@@ -77,8 +78,7 @@ public actor CloudRunner {
         self.provider = provider
         self.model = model
         self.systemPrompt = (systemPrompt?.isEmpty ?? true) ? nil : systemPrompt
-        self.temperature = temperature
-        self.topP = topP
+        self.params = params
         self.client = clientFactory(provider, apiKey)
         rebuildInitialMessages()
     }
@@ -93,12 +93,11 @@ public actor CloudRunner {
     /// Apply new sampling / system-prompt settings. Rebuilds the seed history
     /// if the system prompt changed (conversation history lost — symmetric
     /// with MLXRunner's behavior).
-    public func updateSettings(systemPrompt: String?, temperature: Double, topP: Double) {
+    public func updateSettings(systemPrompt: String?, params: CloudGenerationParams) {
         let normalized: String? = (systemPrompt?.isEmpty ?? true) ? nil : systemPrompt
         let promptChanged = normalized != self.systemPrompt
         self.systemPrompt = normalized
-        self.temperature = temperature
-        self.topP = topP
+        self.params = params
         if promptChanged {
             rebuildInitialMessages()
         }
@@ -164,8 +163,10 @@ public actor CloudRunner {
 
             messages.append(CloudChatMessage(role: .user, content: text))
             let outbound = messages
-            let temperature = self.temperature
-            let topP = self.topP
+            // Snapshot the params for this turn and apply the per-call
+            // `maxTokens` override (matches the local runners' shape).
+            var sendParams = self.params
+            sendParams.maxTokens = maxTokens
 
             isGenerating = true
             let task = Task {
@@ -178,9 +179,7 @@ public actor CloudRunner {
                     let stream = client.streamChat(
                         messages: outbound,
                         model: model,
-                        temperature: temperature,
-                        topP: topP,
-                        maxTokens: maxTokens
+                        params: sendParams
                     )
                     for try await piece in stream {
                         if Task.isCancelled {

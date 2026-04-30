@@ -151,6 +151,58 @@ final class ChatViewModel {
     var sdSeedInput: String = UserDefaults.standard.string(forKey: PersistKey.sdSeed) ?? "" {
         didSet { UserDefaults.standard.set(sdSeedInput, forKey: PersistKey.sdSeed) }
     }
+    /// Active image-generation backend for the Image tab. Independent
+    /// of the chat `Backend` enum.
+    var imageBackend: ImageBackend = {
+        if let raw = UserDefaults.standard.string(forKey: PersistKey.imageBackend),
+           let v = ImageBackend(rawValue: raw) {
+            return v
+        }
+        return .localSD
+    }() {
+        didSet { UserDefaults.standard.set(imageBackend.rawValue, forKey: PersistKey.imageBackend) }
+    }
+
+    /// OpenAI image-gen params. Persisted independently of the local-SD
+    /// width/height/steps so flipping back and forth doesn't clobber
+    /// either side's settings.
+    var openaiImageSize: CloudImageParams.Size = {
+        if let raw = UserDefaults.standard.string(forKey: PersistKey.openaiImageSize),
+           let v = CloudImageParams.Size(rawValue: raw) {
+            return v
+        }
+        return .auto
+    }() {
+        didSet { UserDefaults.standard.set(openaiImageSize.rawValue, forKey: PersistKey.openaiImageSize) }
+    }
+    var openaiImageQuality: CloudImageParams.Quality = {
+        if let raw = UserDefaults.standard.string(forKey: PersistKey.openaiImageQuality),
+           let v = CloudImageParams.Quality(rawValue: raw) {
+            return v
+        }
+        return .auto
+    }() {
+        didSet { UserDefaults.standard.set(openaiImageQuality.rawValue, forKey: PersistKey.openaiImageQuality) }
+    }
+    var openaiImageFormat: CloudImageParams.OutputFormat = {
+        if let raw = UserDefaults.standard.string(forKey: PersistKey.openaiImageFormat),
+           let v = CloudImageParams.OutputFormat(rawValue: raw) {
+            return v
+        }
+        return .png
+    }() {
+        didSet { UserDefaults.standard.set(openaiImageFormat.rawValue, forKey: PersistKey.openaiImageFormat) }
+    }
+    var openaiImageBackground: CloudImageParams.Background = {
+        if let raw = UserDefaults.standard.string(forKey: PersistKey.openaiImageBackground),
+           let v = CloudImageParams.Background(rawValue: raw) {
+            return v
+        }
+        return .auto
+    }() {
+        didSet { UserDefaults.standard.set(openaiImageBackground.rawValue, forKey: PersistKey.openaiImageBackground) }
+    }
+
     var sdModelLoaded: Bool = false
     var sdModelStatus: String = "No image model loaded"
     var sdIsLoadingModel: Bool = false
@@ -327,6 +379,11 @@ final class ChatViewModel {
     /// `Backend` enum because image gen is a dedicated sidebar panel
     /// rather than a chat backend — see `Sidebar/ImagePanel.swift`.
     let sd = StableDiffusionRunner()
+    /// Cloud image runner (OpenAI gpt-image-1). Independent of `sd` so
+    /// the user can flip the Image tab between local SD and cloud
+    /// without affecting the local-SD model load. Configured lazily on
+    /// first cloud generate; see `cloudImageGenerate()`.
+    let cloudImage = CloudImageRunner()
     let ggufDownloader = GGUFDownloader()
     let speechRecognizer = SpeechRecognizer()
     let speechSynthesizer = SpeechSynthesizer()

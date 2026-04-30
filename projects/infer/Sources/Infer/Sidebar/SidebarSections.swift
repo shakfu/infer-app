@@ -250,6 +250,15 @@ extension SidebarView {
             && s.maxTokens == draft.maxTokens
             && s.thinkingBudget == draft.thinkingBudget
             && s.seed == draft.seed
+            && s.stopSequences == draft.stopSequences
+            && s.reasoningEffort == draft.reasoningEffort
+            && s.verbosity == draft.verbosity
+            && s.frequencyPenalty == draft.frequencyPenalty
+            && s.presencePenalty == draft.presencePenalty
+            && s.serviceTier == draft.serviceTier
+            && s.promptCacheKey == draft.promptCacheKey
+            && s.anthropicPromptCaching == draft.anthropicPromptCaching
+            && s.cloudExtendedThinkingEnabled == draft.cloudExtendedThinkingEnabled
     }
 
     // MARK: Voice

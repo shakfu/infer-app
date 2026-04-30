@@ -249,6 +249,15 @@ extension ChatViewModel {
     // MARK: - Generate
 
     func generateImage() {
+        // Cloud routes through its own helper because the readiness
+        // check is "key resolved" (no model file) and the param set is
+        // disjoint from local SD's. Keeps both paths' guards local to
+        // their backend.
+        if imageBackend == .openai {
+            generateImageCloud()
+            return
+        }
+
         guard sdModelLoaded, !sdIsGenerating else { return }
         let trimmed = sdPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -322,8 +331,84 @@ extension ChatViewModel {
         // consuming the stream and from launching follow-on calls — the
         // current generate_image continues until it returns. Documented
         // limitation of sd-cpp.
+        //
+        // Cloud cancellation is real — the URLSession data task is
+        // torn down by Task.cancel() propagation.
         sdGenerationTask?.cancel()
-        Task { await sd.requestStop() }
+        let runner = self.sd
+        let cloud = self.cloudImage
+        Task {
+            await runner.requestStop()
+            await cloud.requestStop()
+        }
+    }
+
+    /// OpenAI gpt-image-1 generation. Resolves the API key from the
+    /// keychain (or env var fallback) on every call so a key rotation
+    /// applies on the next generate without an explicit reload.
+    /// Status / progress / errors flow through the same `sdIsGenerating`
+    /// / `sdProgress` / `sdErrorMessage` fields the local path uses, so
+    /// the panel UI doesn't need a parallel state machine.
+    private func generateImageCloud() {
+        guard !sdIsGenerating else { return }
+        let trimmed = sdPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            sdErrorMessage = "Enter a prompt."
+            return
+        }
+        guard let resolved = APIKeyStore.resolve(for: .openai) else {
+            sdErrorMessage = "Set an OpenAI API key (Model tab → Set Key…)."
+            return
+        }
+
+        sdErrorMessage = nil
+        sdIsGenerating = true
+        sdProgress = nil
+
+        let runner = self.cloudImage
+        let directory = self.sdOutputDirectory
+        let prompt = sdPrompt
+        let params = CloudImageParams(
+            model: "gpt-image-1",
+            size: openaiImageSize,
+            quality: openaiImageQuality,
+            outputFormat: openaiImageFormat,
+            background: openaiImageBackground,
+            n: 1
+        )
+        let key = resolved.key
+
+        sdGenerationTask = Task { [weak self] in
+            do {
+                try await runner.configure(apiKey: key)
+                let stream = await runner.generate(
+                    prompt: prompt,
+                    params: params,
+                    outputDirectory: directory
+                )
+                for try await event in stream {
+                    if Task.isCancelled { break }
+                    await MainActor.run {
+                        self?.sdProgress = event
+                    }
+                    if case .done(let imageURL) = event {
+                        await MainActor.run {
+                            self?.appendGalleryEntry(at: imageURL)
+                        }
+                    }
+                }
+                await MainActor.run {
+                    self?.sdIsGenerating = false
+                    self?.sdGenerationTask = nil
+                }
+            } catch {
+                await MainActor.run {
+                    self?.sdErrorMessage = "Generation failed: \(error.localizedDescription)"
+                    self?.sdIsGenerating = false
+                    self?.sdGenerationTask = nil
+                }
+            }
+        }
     }
 
     // MARK: - Gallery
@@ -352,7 +437,11 @@ extension ChatViewModel {
         decoder.dateDecodingStrategy = .iso8601
 
         var entries: [SDGalleryEntry] = []
-        for url in items where url.pathExtension.lowercased() == "png" {
+        // Local SD always writes .png; cloud entries may be .jpg or
+        // .webp depending on the user's `output_format`. The sidecar is
+        // paired by basename, regardless of extension.
+        let imageExts: Set<String> = ["png", "jpg", "jpeg", "webp"]
+        for url in items where imageExts.contains(url.pathExtension.lowercased()) {
             let sidecarURL = url.deletingPathExtension().appendingPathExtension("json")
             // Sidecar is optional — if missing/corrupt we still surface the
             // image with a placeholder metadata so the user can see what's
@@ -405,6 +494,93 @@ extension ChatViewModel {
     /// if the active backend doesn't accept images (currently MLX only).
     func useGalleryEntryInChat(_ entry: SDGalleryEntry) {
         pendingImageURL = entry.imageURL
+    }
+
+    /// Flip the curation flag on a gallery entry. Writes the sidecar
+    /// JSON synchronously (small file, main-thread-safe) and updates
+    /// `sdGallery` so SwiftUI re-renders. No-op if the entry isn't in
+    /// the current gallery (was deleted concurrently).
+    func setKept(_ entry: SDGalleryEntry, kept: Bool) {
+        guard let idx = sdGallery.firstIndex(where: { $0.id == entry.id }) else { return }
+        var updated = sdGallery[idx].metadata
+        updated.kept = kept
+        let sidecarURL = entry.imageURL
+            .deletingPathExtension()
+            .appendingPathExtension("json")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        do {
+            let data = try encoder.encode(updated)
+            try data.write(to: sidecarURL, options: .atomic)
+            sdGallery[idx] = SDGalleryEntry(imageURL: entry.imageURL, metadata: updated)
+        } catch {
+            // Failure here is non-fatal — the in-memory flag stays the
+            // old value, the user can retry. No alert because the
+            // gallery is a high-traffic surface and a transient APFS
+            // hiccup shouldn't pop a dialog.
+            FileHandle.standardError.write(
+                Data("setKept failed for \(entry.imageURL.lastPathComponent): \(error)\n".utf8)
+            )
+        }
+    }
+
+    /// Bulk version. Same write-each-sidecar shape — no batched
+    /// optimisation because the file count for a curation pass is
+    /// small (tens, not thousands) and the cost is dominated by APFS
+    /// overhead, not encoding.
+    func bulkSetKept(_ entries: [SDGalleryEntry], kept: Bool) {
+        for entry in entries {
+            setKept(entry, kept: kept)
+        }
+    }
+
+    /// Move a gallery entry's PNG + sidecar to the Trash. Recoverable
+    /// from Finder's "Put Back" so this is a soft delete. Removes the
+    /// entry from `sdGallery` regardless of recycle outcome — if the
+    /// recycle fails (file already gone, permission denied), the user
+    /// shouldn't keep seeing the row.
+    func deleteGalleryEntry(_ entry: SDGalleryEntry) {
+        let pngURL = entry.imageURL
+        let jsonURL = pngURL.deletingPathExtension().appendingPathExtension("json")
+        var urls = [pngURL]
+        if FileManager.default.fileExists(atPath: jsonURL.path) {
+            urls.append(jsonURL)
+        }
+        NSWorkspace.shared.recycle(urls) { _, error in
+            if let error {
+                FileHandle.standardError.write(
+                    Data("deleteGalleryEntry recycle failed: \(error)\n".utf8)
+                )
+            }
+        }
+        sdGallery.removeAll { $0.id == entry.id }
+    }
+
+    /// Bulk delete. Recycles all matched URLs in one NSWorkspace call
+    /// so the user gets one Trash sound, not N.
+    func bulkDelete(_ entries: [SDGalleryEntry]) {
+        var urls: [URL] = []
+        for entry in entries {
+            urls.append(entry.imageURL)
+            let jsonURL = entry.imageURL
+                .deletingPathExtension()
+                .appendingPathExtension("json")
+            if FileManager.default.fileExists(atPath: jsonURL.path) {
+                urls.append(jsonURL)
+            }
+        }
+        if !urls.isEmpty {
+            NSWorkspace.shared.recycle(urls) { _, error in
+                if let error {
+                    FileHandle.standardError.write(
+                        Data("bulkDelete recycle failed: \(error)\n".utf8)
+                    )
+                }
+            }
+        }
+        let ids = Set(entries.map { $0.id })
+        sdGallery.removeAll { ids.contains($0.id) }
     }
 
     /// Repopulate the prompt + parameters from a gallery entry's sidecar.

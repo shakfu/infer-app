@@ -108,7 +108,15 @@ struct InferApp: App {
                     .keyboardShortcut(".", modifiers: [.command, .shift])
                     .disabled(!chatVM.speechSynthesizer.isSpeaking)
             }
+            CommandGroup(after: .windowList) {
+                GalleryMenuItem()
+            }
         }
+        Window("Gallery", id: galleryWindowID) {
+            GalleryView(vm: chatVM)
+                .preferredColorScheme((AppearanceMode(rawValue: appearanceRaw) ?? .light).colorScheme)
+        }
+        .defaultSize(width: 880, height: 640)
         // Settings window — Cmd-, opens it from anywhere in the app,
         // and the cog icon in `ChatHeader` invokes the same scene via
         // `NSApplication.showSettingsWindow(_:)`. P1 (this PR) ships
@@ -166,6 +174,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await vm.cloud.shutdown()
             await vm.sd.requestStop()
             await vm.sd.shutdown()
+            await vm.cloudImage.requestStop()
+            await vm.cloudImage.shutdown()
             await vm.embedder.shutdown()
             await vm.reranker.shutdown()
             await vm.vectorStore.shutdown()

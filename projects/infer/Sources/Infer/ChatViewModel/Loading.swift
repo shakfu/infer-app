@@ -138,8 +138,7 @@ extension ChatViewModel {
                     model: modelCopy,
                     apiKey: resolved.key,
                     systemPrompt: s.systemPrompt,
-                    temperature: s.temperature,
-                    topP: s.topP
+                    params: s.cloudParams()
                 )
                 try Task.checkCancellation()
                 let displayId = "\(providerCopy.displayName): \(modelCopy)"

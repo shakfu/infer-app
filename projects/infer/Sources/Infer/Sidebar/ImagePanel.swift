@@ -34,14 +34,131 @@ struct SDImagePanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            modelRow
-            promptRow
-            paramsRow
-            generateRow
-            progressRow
+            backendPicker
+            switch vm.imageBackend {
+            case .localSD:
+                modelRow
+                promptRow
+                paramsRow
+                generateRow
+                progressRow
+            case .openai:
+                cloudOpenAIBackendStatus
+                promptRow
+                cloudOpenAIParamsRow
+                generateRow
+                progressRow
+            }
             galleryRow
         }
         .onAppear { vm.refreshGallery() }
+    }
+
+    // MARK: - Backend picker
+
+    @ViewBuilder
+    private var backendPicker: some View {
+        Picker("Image backend", selection: $vm.imageBackend) {
+            ForEach(ImageBackend.allCases) { b in
+                Text(b.label).tag(b)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .disabled(vm.sdIsGenerating || vm.sdIsLoadingModel)
+    }
+
+    // MARK: - OpenAI status
+
+    /// Cloud needs no model load, but the user does need a key. Status
+    /// row mirrors `cloudKeyStatusRow` from `CloudSidebar.swift` —
+    /// resolves on every render (cheap, off the hot path).
+    @ViewBuilder
+    private var cloudOpenAIBackendStatus: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            SectionHeader(icon: "cloud", title: "OpenAI gpt-image-1")
+            HStack(spacing: 6) {
+                let resolved = APIKeyStore.resolve(for: .openai)
+                if let resolved {
+                    Image(systemName: "checkmark.circle")
+                        .foregroundStyle(.green)
+                        .font(.caption)
+                    Text(resolved.source == .keychain
+                        ? "Key in keychain"
+                        : "Key from \(CloudProvider.openai.envVarName ?? "env")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Image(systemName: "exclamationmark.circle")
+                        .foregroundStyle(.orange)
+                        .font(.caption)
+                    Text("No OpenAI API key — set one via the Model tab.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+        }
+    }
+
+    // MARK: - OpenAI params row
+
+    @ViewBuilder
+    private var cloudOpenAIParamsRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader(icon: "slider.horizontal.3", title: "Parameters")
+
+            HStack {
+                Text("Size").font(.caption)
+                Spacer()
+                Picker("", selection: $vm.openaiImageSize) {
+                    ForEach(CloudImageParams.Size.allCases, id: \.rawValue) { s in
+                        Text(s.label).tag(s)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .controlSize(.small)
+                .fixedSize()
+            }
+
+            // Segmented pickers stack their label above the control —
+            // the segmented style takes intrinsic width that crowds out
+            // an inline caption when the sidebar is narrow.
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Quality").font(.caption).foregroundStyle(.secondary)
+                Picker("", selection: $vm.openaiImageQuality) {
+                    ForEach(CloudImageParams.Quality.allCases, id: \.rawValue) { q in
+                        Text(q.rawValue.capitalized).tag(q)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Format").font(.caption).foregroundStyle(.secondary)
+                Picker("", selection: $vm.openaiImageFormat) {
+                    ForEach(CloudImageParams.OutputFormat.allCases, id: \.rawValue) { f in
+                        Text(f.rawValue.uppercased()).tag(f)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Background").font(.caption).foregroundStyle(.secondary)
+                Picker("", selection: $vm.openaiImageBackground) {
+                    ForEach(CloudImageParams.Background.allCases, id: \.rawValue) { b in
+                        Text(b.rawValue.capitalized).tag(b)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            .help("Transparent only takes effect with PNG or WebP output.")
+        }
     }
 
     // MARK: - Model row
@@ -306,6 +423,21 @@ struct SDImagePanel: View {
 
     // MARK: - Generate / progress
 
+    /// Generate button is gated by prompt presence in both backends.
+    /// Local SD adds a model-loaded check; cloud adds a key-resolved
+    /// check. Centralised so the readiness rule is one place.
+    private var generateButtonDisabled: Bool {
+        if vm.sdPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return true
+        }
+        switch vm.imageBackend {
+        case .localSD:
+            return !vm.sdModelLoaded
+        case .openai:
+            return APIKeyStore.resolve(for: .openai) == nil
+        }
+    }
+
     @ViewBuilder
     private var generateRow: some View {
         HStack(spacing: 6) {
@@ -326,7 +458,7 @@ struct SDImagePanel: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!vm.sdModelLoaded || vm.sdPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(generateButtonDisabled)
             }
         }
 
@@ -367,31 +499,56 @@ struct SDImagePanel: View {
 
     // MARK: - Gallery
 
+    /// Compact gallery summary in the sidebar. The full browse + curate
+    /// surface lives in the dedicated Gallery window (Cmd+Shift+G or
+    /// Window > Show Gallery). The sidebar shows only the most-recent
+    /// few thumbnails plus a button to open the full window — keeps the
+    /// Image tab focused on parameters + the active generation.
     @ViewBuilder
     private var galleryRow: some View {
         if !vm.sdGallery.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    SectionHeader(icon: "photo.on.rectangle", title: "Gallery")
+                    SectionHeader(icon: "photo.on.rectangle", title: "Recent")
                     Spacer()
-                    Button {
-                        NSWorkspace.shared.open(vm.sdOutputDirectory)
-                    } label: {
-                        Image(systemName: "folder")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Open output folder in Finder")
+                    GalleryOpenButton()
+                        .help("Browse, curate, and delete images (⇧⌘G).")
                 }
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 100), spacing: 6)],
-                    spacing: 6
-                ) {
-                    ForEach(vm.sdGallery) { entry in
+
+                let recent = Array(vm.sdGallery.prefix(4))
+                HStack(spacing: 6) {
+                    ForEach(recent) { entry in
                         SDGalleryThumbnail(vm: vm, entry: entry)
                     }
+                    Spacer()
+                }
+
+                if vm.sdGallery.count > recent.count {
+                    Text("\(vm.sdGallery.count) total — open Gallery to see them all.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
             }
         }
+    }
+}
+
+/// Sidebar button that opens the Gallery window. Pulled out as its
+/// own View so `@Environment(\.openWindow)` can resolve — the property
+/// wrapper requires a view context, and inlining inside `galleryRow`
+/// would force `SDImagePanel` itself to grow the env dependency for
+/// one button.
+struct GalleryOpenButton: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button {
+            openWindow(id: galleryWindowID)
+        } label: {
+            Label("Open Gallery", systemImage: "photo.stack")
+                .labelStyle(.iconOnly)
+        }
+        .buttonStyle(.borderless)
     }
 }
 

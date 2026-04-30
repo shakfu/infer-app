@@ -10,6 +10,44 @@ public enum PersistKey {
     public static let maxTokens = "infer.maxTokens"
     public static let thinkingBudget = "infer.thinkingBudget"
     public static let seed = "infer.seed"
+    /// Newline-separated list of stop sequences; empty / missing key
+    /// means "no stop sequences". Newline is used as the separator
+    /// because it's the one byte that can't appear inside a stop
+    /// sequence the model ever emits literally — escapes would only
+    /// add UI complexity for zero benefit.
+    public static let stopSequences = "infer.stopSequences"
+    /// OpenAI reasoning effort: one of CloudGenerationParams.ReasoningEffort
+    /// raw values, or empty / missing for "let the model default".
+    /// Only takes effect on o-series + gpt-5 models — other models
+    /// silently ignore.
+    public static let reasoningEffort = "infer.cloud.reasoningEffort"
+    /// OpenAI gpt-5 verbosity: low | medium | high, or empty for default.
+    public static let verbosity = "infer.cloud.verbosity"
+    /// OpenAI frequency_penalty (-2.0..2.0). Stored as Double; missing
+    /// key omits the field from the request.
+    public static let frequencyPenalty = "infer.cloud.frequencyPenalty"
+    /// OpenAI presence_penalty (-2.0..2.0). Same shape as frequencyPenalty.
+    public static let presencePenalty = "infer.cloud.presencePenalty"
+    /// Provider-specific service tier string. OpenAI accepts
+    /// auto|default|flex|scale|priority; Anthropic accepts auto|standard_only.
+    /// Stored as a single field because the runtime never compares values
+    /// across providers — each client just forwards the string.
+    public static let serviceTier = "infer.cloud.serviceTier"
+    /// OpenAI prompt_cache_key. Free-form opaque tag the user picks.
+    /// Empty / missing = no prompt-cache hint sent.
+    public static let promptCacheKey = "infer.cloud.promptCacheKey"
+    /// Anthropic prompt-caching toggle. When true, the system prompt is
+    /// tagged `cache_control: ephemeral` on each request so the cached
+    /// rate applies. Anthropic's caching is opt-in per content block;
+    /// OpenAI's is keyed by promptCacheKey above — both surfaces are
+    /// exposed because they don't unify cleanly.
+    public static let anthropicPromptCaching = "infer.cloud.anthropicPromptCaching"
+    /// Whether to enable Anthropic extended thinking on cloud. Gates the
+    /// projection of `thinkingBudget` into the cloud request — local
+    /// runners always honour `thinkingBudget` as a widening allowance,
+    /// but cloud's Anthropic extended-thinking feature changes sampling
+    /// semantics (forces temperature=1.0) so it must be explicit.
+    public static let cloudExtendedThinkingEnabled = "infer.cloud.extendedThinkingEnabled"
     public static let sidebarOpen = "infer.sidebarOpen"
     public static let sidebarTab = "infer.sidebarTab"
     public static let activeWorkspaceId = "infer.activeWorkspaceId"
@@ -89,6 +127,18 @@ public enum PersistKey {
     public static let sdSampler = "infer.sd.sampler"
     public static let sdSeed = "infer.sd.seed"
 
+    /// Image-generation backend (Local SD or cloud OpenAI). Independent
+    /// of the chat backend; an image-gen user might run cloud-only
+    /// while chat is local, or the reverse. Persisted as the
+    /// `ImageBackend` enum's raw value.
+    public static let imageBackend = "infer.image.backend"
+    /// OpenAI image-gen params (gpt-image-1). Discrete sets — the API
+    /// rejects arbitrary sizes, so the picker ships a fixed list.
+    public static let openaiImageSize = "infer.image.openai.size"
+    public static let openaiImageQuality = "infer.image.openai.quality"
+    public static let openaiImageFormat = "infer.image.openai.format"
+    public static let openaiImageBackground = "infer.image.openai.background"
+
     /// Whether `StepTraceDisclosure` auto-expands while a tool loop is
     /// in flight. Default true (matches pre-M3 behaviour). Users who
     /// find the expanding row noisy can flip it off; the disclosure
@@ -153,6 +203,25 @@ public struct InferSettings: Equatable, Sendable {
     /// String-not-URL rationale as `quartoPath`.
     public var searxngEndpoint: String?
 
+    /// User-configured stop sequences. Forwarded to both cloud providers
+    /// (OpenAI: `stop`, Anthropic: `stop_sequences`) and to the local
+    /// runners once their stop-sequence wiring lands. Empty = none.
+    public var stopSequences: [String]
+    /// OpenAI reasoning effort. Persisted as the enum's raw value; nil
+    /// or unrecognised string = "let the model default".
+    public var reasoningEffort: CloudGenerationParams.ReasoningEffort?
+    /// OpenAI gpt-5 verbosity.
+    public var verbosity: CloudGenerationParams.Verbosity?
+    public var frequencyPenalty: Double?
+    public var presencePenalty: Double?
+    public var serviceTier: String?
+    public var promptCacheKey: String?
+    public var anthropicPromptCaching: Bool
+    /// Gate for projecting `thinkingBudget` into Anthropic's extended
+    /// thinking feature on cloud. Off by default so existing users
+    /// don't suddenly hit the temperature-clamp side effect.
+    public var cloudExtendedThinkingEnabled: Bool
+
     public init(
         systemPrompt: String,
         temperature: Double,
@@ -162,7 +231,16 @@ public struct InferSettings: Equatable, Sendable {
         maxAgentSteps: Int = 8,
         seed: UInt64? = nil,
         quartoPath: String? = nil,
-        searxngEndpoint: String? = nil
+        searxngEndpoint: String? = nil,
+        stopSequences: [String] = [],
+        reasoningEffort: CloudGenerationParams.ReasoningEffort? = nil,
+        verbosity: CloudGenerationParams.Verbosity? = nil,
+        frequencyPenalty: Double? = nil,
+        presencePenalty: Double? = nil,
+        serviceTier: String? = nil,
+        promptCacheKey: String? = nil,
+        anthropicPromptCaching: Bool = false,
+        cloudExtendedThinkingEnabled: Bool = false
     ) {
         self.systemPrompt = systemPrompt
         self.temperature = temperature
@@ -173,6 +251,15 @@ public struct InferSettings: Equatable, Sendable {
         self.seed = seed
         self.quartoPath = quartoPath
         self.searxngEndpoint = searxngEndpoint
+        self.stopSequences = stopSequences
+        self.reasoningEffort = reasoningEffort
+        self.verbosity = verbosity
+        self.frequencyPenalty = frequencyPenalty
+        self.presencePenalty = presencePenalty
+        self.serviceTier = serviceTier
+        self.promptCacheKey = promptCacheKey
+        self.anthropicPromptCaching = anthropicPromptCaching
+        self.cloudExtendedThinkingEnabled = cloudExtendedThinkingEnabled
     }
 
     public static let defaults = InferSettings(
@@ -194,6 +281,16 @@ public struct InferSettings: Equatable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let searxngRaw = defaults.string(forKey: PersistKey.searxngEndpoint)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let stopRaw = defaults.string(forKey: PersistKey.stopSequences) ?? ""
+        let stops = stopRaw.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+        let effort = (defaults.string(forKey: PersistKey.reasoningEffort))
+            .flatMap(CloudGenerationParams.ReasoningEffort.init(rawValue:))
+        let verbosity = (defaults.string(forKey: PersistKey.verbosity))
+            .flatMap(CloudGenerationParams.Verbosity.init(rawValue:))
+        let serviceTierRaw = defaults.string(forKey: PersistKey.serviceTier)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let cacheKeyRaw = defaults.string(forKey: PersistKey.promptCacheKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return InferSettings(
             systemPrompt: defaults.string(forKey: PersistKey.systemPrompt) ?? "",
             temperature: defaults.object(forKey: PersistKey.temperature) as? Double ?? Self.defaults.temperature,
@@ -203,7 +300,16 @@ public struct InferSettings: Equatable, Sendable {
             maxAgentSteps: defaults.object(forKey: PersistKey.maxAgentSteps) as? Int ?? Self.defaults.maxAgentSteps,
             seed: seed,
             quartoPath: (quartoRaw?.isEmpty == false) ? quartoRaw : nil,
-            searxngEndpoint: (searxngRaw?.isEmpty == false) ? searxngRaw : nil
+            searxngEndpoint: (searxngRaw?.isEmpty == false) ? searxngRaw : nil,
+            stopSequences: stops,
+            reasoningEffort: effort,
+            verbosity: verbosity,
+            frequencyPenalty: defaults.object(forKey: PersistKey.frequencyPenalty) as? Double,
+            presencePenalty: defaults.object(forKey: PersistKey.presencePenalty) as? Double,
+            serviceTier: (serviceTierRaw?.isEmpty == false) ? serviceTierRaw : nil,
+            promptCacheKey: (cacheKeyRaw?.isEmpty == false) ? cacheKeyRaw : nil,
+            anthropicPromptCaching: defaults.bool(forKey: PersistKey.anthropicPromptCaching),
+            cloudExtendedThinkingEnabled: defaults.bool(forKey: PersistKey.cloudExtendedThinkingEnabled)
         )
     }
 
@@ -229,5 +335,63 @@ public struct InferSettings: Equatable, Sendable {
         } else {
             defaults.removeObject(forKey: PersistKey.searxngEndpoint)
         }
+        if stopSequences.isEmpty {
+            defaults.removeObject(forKey: PersistKey.stopSequences)
+        } else {
+            defaults.set(stopSequences.joined(separator: "\n"), forKey: PersistKey.stopSequences)
+        }
+        if let reasoningEffort {
+            defaults.set(reasoningEffort.rawValue, forKey: PersistKey.reasoningEffort)
+        } else {
+            defaults.removeObject(forKey: PersistKey.reasoningEffort)
+        }
+        if let verbosity {
+            defaults.set(verbosity.rawValue, forKey: PersistKey.verbosity)
+        } else {
+            defaults.removeObject(forKey: PersistKey.verbosity)
+        }
+        if let frequencyPenalty {
+            defaults.set(frequencyPenalty, forKey: PersistKey.frequencyPenalty)
+        } else {
+            defaults.removeObject(forKey: PersistKey.frequencyPenalty)
+        }
+        if let presencePenalty {
+            defaults.set(presencePenalty, forKey: PersistKey.presencePenalty)
+        } else {
+            defaults.removeObject(forKey: PersistKey.presencePenalty)
+        }
+        if let serviceTier, !serviceTier.isEmpty {
+            defaults.set(serviceTier, forKey: PersistKey.serviceTier)
+        } else {
+            defaults.removeObject(forKey: PersistKey.serviceTier)
+        }
+        if let promptCacheKey, !promptCacheKey.isEmpty {
+            defaults.set(promptCacheKey, forKey: PersistKey.promptCacheKey)
+        } else {
+            defaults.removeObject(forKey: PersistKey.promptCacheKey)
+        }
+        defaults.set(anthropicPromptCaching, forKey: PersistKey.anthropicPromptCaching)
+        defaults.set(cloudExtendedThinkingEnabled, forKey: PersistKey.cloudExtendedThinkingEnabled)
+    }
+
+    /// Project these settings into a `CloudGenerationParams` for the
+    /// cloud runner. Pure projection — no policy or model-id awareness;
+    /// per-provider guards live inside each `CloudClient` impl.
+    public func cloudParams() -> CloudGenerationParams {
+        CloudGenerationParams(
+            temperature: temperature,
+            topP: topP,
+            maxTokens: maxTokens,
+            seed: seed,
+            stopSequences: stopSequences,
+            thinkingBudgetTokens: (cloudExtendedThinkingEnabled && thinkingBudget > 0) ? thinkingBudget : nil,
+            reasoningEffort: reasoningEffort,
+            promptCacheKey: promptCacheKey,
+            anthropicPromptCaching: anthropicPromptCaching,
+            verbosity: verbosity,
+            frequencyPenalty: frequencyPenalty,
+            presencePenalty: presencePenalty,
+            serviceTier: serviceTier
+        )
     }
 }

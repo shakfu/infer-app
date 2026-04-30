@@ -29,10 +29,9 @@ extension ChatViewModel {
         if backend == .cloud, modelLoaded {
             let cloud = self.cloud
             let sp = new.systemPrompt
-            let temp = new.temperature
-            let p = new.topP
+            let cloudParams = new.cloudParams()
             Task {
-                await cloud.updateSettings(systemPrompt: sp, temperature: temp, topP: p)
+                await cloud.updateSettings(systemPrompt: sp, params: cloudParams)
             }
         }
 

@@ -491,6 +491,15 @@ public struct GeneratedImageMetadata: Codable, Equatable, Sendable {
     public var sampler: String
     public var modelPath: String
     public var createdAt: Date
+    /// Curation flag. False on creation; flipped via the gallery window.
+    /// Persisted in the sidecar JSON so it survives app restarts.
+    public var kept: Bool
+    /// Origin tag — `nil` (or absent in older sidecars) = local SD;
+    /// `"openai"` = cloud gpt-image-1. Future providers (e.g. an
+    /// openai-compatible self-hosted endpoint) get their own string.
+    /// Used by the gallery's "Reuse settings" path to decide which
+    /// parameter set to repopulate.
+    public var provider: String?
 
     public init(
         prompt: String,
@@ -502,7 +511,9 @@ public struct GeneratedImageMetadata: Codable, Equatable, Sendable {
         seed: Int64,
         sampler: String,
         modelPath: String,
-        createdAt: Date
+        createdAt: Date,
+        kept: Bool = false,
+        provider: String? = nil
     ) {
         self.prompt = prompt
         self.negativePrompt = negativePrompt
@@ -514,5 +525,26 @@ public struct GeneratedImageMetadata: Codable, Equatable, Sendable {
         self.sampler = sampler
         self.modelPath = modelPath
         self.createdAt = createdAt
+        self.kept = kept
+        self.provider = provider
+    }
+
+    /// Custom decoder so older sidecars (written before `kept` /
+    /// `provider` existed) decode cleanly with sane defaults rather
+    /// than throwing. All other fields use the synthesized behaviour.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.prompt = try c.decode(String.self, forKey: .prompt)
+        self.negativePrompt = try c.decode(String.self, forKey: .negativePrompt)
+        self.width = try c.decode(Int.self, forKey: .width)
+        self.height = try c.decode(Int.self, forKey: .height)
+        self.steps = try c.decode(Int.self, forKey: .steps)
+        self.cfgScale = try c.decode(Double.self, forKey: .cfgScale)
+        self.seed = try c.decode(Int64.self, forKey: .seed)
+        self.sampler = try c.decode(String.self, forKey: .sampler)
+        self.modelPath = try c.decode(String.self, forKey: .modelPath)
+        self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+        self.kept = try c.decodeIfPresent(Bool.self, forKey: .kept) ?? false
+        self.provider = try c.decodeIfPresent(String.self, forKey: .provider)
     }
 }

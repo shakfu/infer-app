@@ -42,6 +42,10 @@ struct SidebarView: View {
     /// each slider tick from re-initialising the model.
     @State var draft: InferSettings = .defaults
     @State var showSystemPrompt = false
+    /// Cloud-parameters disclosure. Closed by default — most users won't
+    /// touch reasoning_effort / penalties / cache keys, and an open
+    /// section makes the sidebar feel busy.
+    @State var showCloudParams = false
     @State var didSeed = false
     /// Controls the "Set API Key…" sheet for the cloud backend. Owned
     /// here (not the VM) because it's transient UI state with no
@@ -66,6 +70,9 @@ struct SidebarView: View {
                     case .model:
                         modelSection
                         parametersSection
+                        if vm.backend == .cloud {
+                            cloudParamsSection
+                        }
                     case .agents:
                         agentsLibrarySection
                     case .image:
