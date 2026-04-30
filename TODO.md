@@ -4,6 +4,8 @@ Roughly prioritized by user-facing impact / effort ratio. Items within a tier ar
 
 ## P0 — small, high value
 
+- [ ] **Hardware-tier gate for heavy SD models (Z-Image-Turbo Q6_K).** On low-end Apple Silicon (M1-class base chip and/or <=8 GB unified memory), loading `z_image_turbo-Q6_K.gguf` saturates GPU + memory enough to freeze the WindowServer (mouse/keyboard stalls, screen freeze) on M1 Air-class machines. At model load in `StableDiffusionRunner`, detect host capability — `ProcessInfo.processInfo.physicalMemory` for RAM, `sysctlbyname("hw.model")` / `machdep.cpu.brand_string` for chip family — and refuse to load Q6_K on the low tier with a dialog pointing at a lighter quant (Q4_K_S / Q4_0). Allow override via an explicit "I understand the risk" toggle in the SD panel that persists per-model so the warning isn't repeated. Pair with shipping a smaller default quant so the bad path is opt-in rather than the default. Caveat on detection: keying purely on "M1" false-positives M1 Pro/Max 16GB+ — combine chip-family check with the memory threshold rather than chip alone. Related: the out-of-process SD execution item under P2 is the deeper fix; this gate is the cheap defensive layer that should land regardless.
+
 ## P1 — feature completeness
 
 - [ ] **Timestamps per message.** Stash `Date` on each `ChatMessage`, show as `HH:mm` in the gutter. Helps when triaging long sessions.

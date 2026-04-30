@@ -109,22 +109,23 @@ extension CloudProvider {
 public enum CloudRecommendedModels {
     /// As of 2026-04. OpenAI's id scheme has shifted twice in two years;
     /// confirm against `api.openai.com/v1/models` if the user reports a
-    /// 404 from a listed entry.
+    /// 404 from a listed entry. `gpt-5.4-nano` is the default — listed
+    /// first so the picker surfaces it as the first suggestion.
     public static let openai: [String] = [
-        "gpt-5",
-        "gpt-5-mini",
-        "gpt-4.1",
-        "gpt-4o",
-        "o3",
-        "o3-mini",
+        "gpt-5.4-nano",
+        "gpt-5.4-mini",
+        "gpt-5.4",
+        "gpt-5.4-pro",
+        "gpt-5.5",
+        "gpt-5.5-pro",
     ]
-    /// As of 2026-04. Claude 4.x family ids are dated for the Haiku
-    /// branch and undated for Opus / Sonnet — Anthropic has been
-    /// inconsistent about this. Both forms accepted by the API.
+    /// As of 2026-04. Undated official aliases — Anthropic accepts both
+    /// the alias and the dated snapshot id; the alias auto-tracks the
+    /// latest snapshot of that minor version.
     public static let anthropic: [String] = [
         "claude-opus-4-7",
         "claude-sonnet-4-6",
-        "claude-haiku-4-5-20251001",
+        "claude-haiku-4-5",
     ]
 
     public static func suggestions(for provider: CloudProvider) -> [String] {

@@ -106,11 +106,10 @@ public struct OpenAIClient: CloudClient {
                         "stream": true,
                         "temperature": temperature,
                         "top_p": topP,
-                        // `max_tokens` is the legacy name;
-                        // `max_completion_tokens` is preferred for o-series.
-                        // Chat completions still accepts the legacy form
-                        // everywhere, so keep one knob.
-                        "max_tokens": maxTokens,
+                        // o-series and GPT-5 reject `max_tokens` outright;
+                        // `max_completion_tokens` is accepted by all current
+                        // chat-completions models, so use it unconditionally.
+                        "max_completion_tokens": maxTokens,
                         "messages": messages.map {
                             ["role": $0.role.rawValue, "content": $0.content]
                         },
@@ -211,11 +210,15 @@ public struct AnthropicClient: CloudClient {
                         ["role": $0.role.rawValue, "content": $0.content]
                     }
 
+                    // Anthropic rejects sending both `temperature` and
+                    // `top_p` for Claude 4.x models. We send `temperature`
+                    // only; `topP` is intentionally ignored here until the
+                    // UI grows a segmented "which sampler" control.
+                    _ = topP
                     var body: [String: Any] = [
                         "model": model,
                         "stream": true,
                         "temperature": temperature,
-                        "top_p": topP,
                         "max_tokens": maxTokens,
                         "messages": convo,
                     ]
