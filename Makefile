@@ -50,13 +50,13 @@ INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 all: build
 
 clean:
-	rm -rf $(BUILD_DIR)
+	@rm -rf $(BUILD_DIR)
 
 # Remove only the xcodebuild derived-data for the Infer scheme. Faster
 # than `clean` when you want a fresh build without also blowing away the
 # bundled .app.
 clean-infer:
-	rm -rf $(INFER_BUILD_DIR)
+	@rm -rf $(INFER_BUILD_DIR)
 
 # Delete the Hugging Face cache (MLX model downloads). Grows unbounded —
 # 20 GB+ after heavy experimentation. Requires explicit confirmation since
@@ -85,7 +85,7 @@ clean-mlx-cache:
 # nothing changed. `build` depends on this so a stale Package.swift never reaches
 # xcodebuild.
 plugins-gen:
-	./scripts/gen_plugins.py
+	@./scripts/gen_plugins.py
 
 # CI guard: regenerate, then assert the working tree is clean. Catches the
 # "edited plugins.json, forgot to regenerate" case in review rather than at
@@ -98,8 +98,8 @@ plugins-gen-check: plugins-gen
 	fi
 
 test: plugins-gen
-	cd $(INFER_DIR) && swift test --skip ExternalTests
-	cd projects/plugin-api && swift test --skip ExternalTests
+	@cd $(INFER_DIR) && swift test --skip ExternalTests
+	@cd projects/plugin-api && swift test --skip ExternalTests
 	@for plugin_pkg in projects/plugins/plugin_*; do \
 		if [ -f "$$plugin_pkg/Package.swift" ]; then \
 			echo "==> swift test --skip ExternalTests in $$plugin_pkg"; \
@@ -114,7 +114,7 @@ test: plugins-gen
 # (e.g. Quarto not on PATH), so this target is safe to run on CI
 # machines that don't install every external dep.
 test-integration:
-	cd $(INFER_DIR) && swift test --filter ExternalTests
+	@cd $(INFER_DIR) && swift test --filter ExternalTests
 	@for plugin_pkg in projects/plugins/plugin_*; do \
 		if [ -f "$$plugin_pkg/Package.swift" ]; then \
 			echo "==> swift test --filter ExternalTests in $$plugin_pkg"; \
@@ -126,7 +126,7 @@ test-integration:
 # pre-commit / pre-release. Slower than `make test` by however long
 # the external suites take.
 test-all:
-	cd $(INFER_DIR) && swift test
+	@cd $(INFER_DIR) && swift test
 
 # --- Infer app (SwiftPM + ggml-stack frameworks + MLX) ---
 
@@ -140,7 +140,7 @@ test-all:
 STACK_MARKER := thirdparty/.stack-$(STACK_VERSION)
 
 $(STACK_MARKER):
-	./scripts/manage.py fetch stack --set version=$(STACK_VERSION)
+	@./scripts/manage.py fetch stack --set version=$(STACK_VERSION)
 	@touch $@
 
 $(GGML_XCFRAMEWORK): $(STACK_MARKER)
@@ -171,12 +171,12 @@ BUILD_STACK_SETS += --set sd_version=$(SD_VER)
 endif
 
 build-stack:
-	./scripts/manage.py build stack $(BUILD_STACK_SETS)
+	@./scripts/manage.py build stack $(BUILD_STACK_SETS)
 	@touch $(STACK_MARKER)
 	@echo "build-stack: installed locally-built xcframeworks into thirdparty/"
 
 $(WEBASSETS_MARKER):
-	./scripts/manage.py fetch webassets
+	@./scripts/manage.py fetch webassets
 
 fetch-webassets: $(WEBASSETS_MARKER)
 
@@ -190,7 +190,7 @@ fetch-webassets: $(WEBASSETS_MARKER)
 # triggers a re-fetch+re-patch. The bash fetch path predated this and
 # silently skipped patch edits.
 $(SQLITEVEC_MARKER): $(wildcard scripts/patches/sqlitevec/*)
-	./scripts/manage.py fetch sqlitevec --set tag=$(SQLITEVEC_TAG)
+	@./scripts/manage.py fetch sqlitevec --set tag=$(SQLITEVEC_TAG)
 
 fetch-sqlitevec: $(SQLITEVEC_MARKER)
 
@@ -201,24 +201,24 @@ fetch-sqlitevec: $(SQLITEVEC_MARKER)
 # package set with PY_PKGS, e.g.:
 #   make fetch-python PY_PKGS="openai anthropic pandas matplotlib"
 fetch-python:
-	./scripts/manage.py fetch python$(if $(PY_PKGS), --set py_pkgs="$(PY_PKGS)")
+	@./scripts/manage.py fetch python$(if $(PY_PKGS), --set py_pkgs="$(PY_PKGS)")
 
 build: $(GGML_XCFRAMEWORK) $(LLAMACPP_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SD_XCFRAMEWORK) $(SQLITEVEC_MARKER) plugins-gen
-	xcodebuild $(INFER_XCODE_FLAGS) build
+	@xcodebuild $(INFER_XCODE_FLAGS) build
 
 bundle: build $(INFER_DIR)/Resources/AppIcon.icns $(WEBASSETS_MARKER)
-	rm -rf $(INFER_APP_BUNDLE)
-	mkdir -p $(INFER_APP_BUNDLE)/Contents/MacOS
-	mkdir -p $(INFER_APP_BUNDLE)/Contents/Resources
-	mkdir -p $(INFER_APP_BUNDLE)/Contents/Frameworks
-	cp $(INFER_BIN) $(INFER_APP_BUNDLE)/Contents/MacOS/Infer
-	cp $(INFER_DIR)/Sources/Infer/Info.plist $(INFER_APP_BUNDLE)/Contents/Info.plist
-	cp $(INFER_DIR)/Resources/AppIcon.icns $(INFER_APP_BUNDLE)/Contents/Resources/AppIcon.icns
-	cp -R $(GGML_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/Ggml.framework
-	cp -R $(LLAMACPP_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/LlamaCpp.framework
-	cp -R $(WHISPER_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/Whisper.framework
-	cp -R $(SD_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/StableDiffusion.framework
-	cp -R $(WEBASSETS_DIR) $(INFER_APP_BUNDLE)/Contents/Resources/WebAssets
+	@rm -rf $(INFER_APP_BUNDLE)
+	@mkdir -p $(INFER_APP_BUNDLE)/Contents/MacOS
+	@mkdir -p $(INFER_APP_BUNDLE)/Contents/Resources
+	@mkdir -p $(INFER_APP_BUNDLE)/Contents/Frameworks
+	@cp $(INFER_BIN) $(INFER_APP_BUNDLE)/Contents/MacOS/Infer
+	@cp $(INFER_DIR)/Sources/Infer/Info.plist $(INFER_APP_BUNDLE)/Contents/Info.plist
+	@cp $(INFER_DIR)/Resources/AppIcon.icns $(INFER_APP_BUNDLE)/Contents/Resources/AppIcon.icns
+	@cp -R $(GGML_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/Ggml.framework
+	@cp -R $(LLAMACPP_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/LlamaCpp.framework
+	@cp -R $(WHISPER_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/Whisper.framework
+	@cp -R $(SD_FRAMEWORK) $(INFER_APP_BUNDLE)/Contents/Frameworks/StableDiffusion.framework
+	@cp -R $(WEBASSETS_DIR) $(INFER_APP_BUNDLE)/Contents/Resources/WebAssets
 	@if [ -d "thirdparty/Python.framework" ]; then \
 		echo "  bundling Python.framework"; \
 		rm -rf "$(INFER_APP_BUNDLE)/Contents/Frameworks/Python.framework"; \
@@ -233,7 +233,7 @@ bundle: build $(INFER_DIR)/Resources/AppIcon.icns $(WEBASSETS_MARKER)
 	@echo "Built $(INFER_APP_BUNDLE)"
 
 run: bundle
-	open $(INFER_APP_BUNDLE)
+	@open $(INFER_APP_BUNDLE)
 
 # --- Release-configuration shortcuts ---
 #
@@ -264,6 +264,6 @@ release: bundle-release
 # needs to run when the design changes. Requires /usr/bin/iconutil (ships
 # with macOS).
 $(INFER_DIR)/Resources/AppIcon.icns: scripts/generate_app_icon.swift
-	swift scripts/generate_app_icon.swift
+	@swift scripts/generate_app_icon.swift
 
 generate-icon: $(INFER_DIR)/Resources/AppIcon.icns

@@ -36,6 +36,11 @@ extension ChatView {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .background(Color(.textBackgroundColor))
+            .overlay(alignment: .center) {
+                if vm.messages.isEmpty {
+                    emptyTranscriptState
+                }
+            }
             .onChange(of: vm.messages.last?.text) { _, _ in
                 if pinnedToBottom, let last = vm.messages.last {
                     proxy.scrollTo(last.id, anchor: .bottom)
@@ -76,6 +81,28 @@ extension ChatView {
             }
             .animation(.easeInOut(duration: 0.15), value: pinnedToBottom)
         }
+    }
+
+    /// Centered placeholder shown over the empty transcript on first
+    /// launch / after Reset. Adapts the headline to whether a model is
+    /// loaded so the user's next-step is unambiguous: no model →
+    /// "Load…"; model loaded → "Type a message…". Mirrors the pattern
+    /// used by `GalleryWindow.emptyState`. No buttons or modifier chains
+    /// — anything decorated with `.help(...)` here would risk the
+    /// modifier-chain landmine documented elsewhere.
+    @ViewBuilder
+    private var emptyTranscriptState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "bubble.left.and.bubble.right")
+                .font(.system(size: 40))
+                .foregroundStyle(.tertiary)
+            Text(vm.modelLoaded
+                ? "Type a message below to start"
+                : "Load a model from the sidebar to start")
+                .font(.headline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// True when the message at `idx` is the last assistant turn, preceded

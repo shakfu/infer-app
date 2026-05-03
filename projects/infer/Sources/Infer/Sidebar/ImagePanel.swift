@@ -536,7 +536,7 @@ struct GalleryOpenButton: View {
         Button {
             openWindow(id: galleryWindowID)
         } label: {
-            Label("Open Gallery", systemImage: "photo.stack")
+            Label("Open gallery", systemImage: "photo.stack")
                 .labelStyle(.iconOnly)
         }
         .buttonStyle(.borderless)

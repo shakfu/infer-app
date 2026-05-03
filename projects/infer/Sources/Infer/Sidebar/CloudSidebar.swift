@@ -89,7 +89,7 @@ extension SidebarView {
                 Button {
                     showingCloudKeySheet = true
                 } label: {
-                    Label("Set Key…", systemImage: "key")
+                    Label("Set API key…", systemImage: "key")
                 }
                 .disabled(vm.isGenerating)
             }
