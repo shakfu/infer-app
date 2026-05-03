@@ -105,17 +105,7 @@ extension SidebarView {
     @ViewBuilder
     private var cloudKeyStatusRow: some View {
         let status = currentCloudKeyStatus()
-        HStack(spacing: 4) {
-            Image(systemName: status.icon)
-                .foregroundStyle(status.tint)
-                .font(.caption)
-            Text(status.label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer()
-        }
+        InlineStatusBadge(icon: status.icon, label: status.label, tint: status.tint)
     }
 
     private struct KeyStatus {

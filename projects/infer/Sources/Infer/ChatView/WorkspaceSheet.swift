@@ -210,48 +210,19 @@ struct WorkspaceSheet: View {
     @ViewBuilder
     private var rerankerModelStatus: some View {
         if vm.rerankerModelDownloading {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Downloading \(RerankerModelRef.displayName)…")
-                        .font(.caption)
-                }
-                ProgressView(value: vm.rerankerModelDownloadProgress)
-                    .progressViewStyle(.linear)
-            }
-            .padding(8)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.06)))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.accentColor.opacity(0.3)))
+            ModelDownloadStatus(state: .downloading(
+                name: RerankerModelRef.displayName,
+                progress: vm.rerankerModelDownloadProgress
+            ))
         } else if !vm.rerankerModelPresent {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Text("Reranker model missing")
-                        .font(.callout).fontWeight(.medium)
-                }
-                Text("Rerank requires the `\(RerankerModelRef.displayName)` model (≈315 MB). It will be stored alongside your chat models.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button {
-                    vm.downloadRerankerModel()
-                } label: {
-                    Label("Download from Hugging Face", systemImage: "arrow.down.circle")
-                }
-                .controlSize(.small)
-            }
-            .padding(8)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.08)))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.orange.opacity(0.3)))
+            ModelDownloadStatus(state: .missing(
+                title: "Reranker model missing",
+                description: "Rerank requires the `\(RerankerModelRef.displayName)` model (≈315 MB). It will be stored alongside your chat models.",
+                ctaLabel: "Download from Hugging Face",
+                action: { vm.downloadRerankerModel() }
+            ))
         } else {
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                Text("Reranker model ready")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            ModelDownloadStatus(state: .ready(label: "Reranker model ready"))
         }
     }
 
@@ -312,60 +283,21 @@ struct WorkspaceSheet: View {
     @ViewBuilder
     private var embeddingModelStatus: some View {
         if vm.embeddingModelDownloading {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Downloading \(EmbeddingModelRef.displayName)…")
-                        .font(.caption)
-                }
-                ProgressView(value: vm.embeddingModelDownloadProgress)
-                    .progressViewStyle(.linear)
-            }
-            .padding(8)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.accentColor.opacity(0.06))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.accentColor.opacity(0.3))
-            )
+            ModelDownloadStatus(state: .downloading(
+                name: EmbeddingModelRef.displayName,
+                progress: vm.embeddingModelDownloadProgress
+            ))
         } else if !vm.embeddingModelPresent {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Text("Embedding model missing")
-                        .font(.callout).fontWeight(.medium)
-                }
-                Text("RAG requires the `\(EmbeddingModelRef.displayName)` model (≈130 MB). It will be stored alongside your chat models.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Button {
-                    vm.downloadEmbeddingModel()
-                } label: {
-                    Label("Download from Hugging Face", systemImage: "arrow.down.circle")
-                }
-                .controlSize(.small)
-            }
-            .padding(8)
-            .background(
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.orange.opacity(0.08))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.orange.opacity(0.3))
-            )
+            ModelDownloadStatus(state: .missing(
+                title: "Embedding model missing",
+                description: "RAG requires the `\(EmbeddingModelRef.displayName)` model (≈130 MB). It will be stored alongside your chat models.",
+                ctaLabel: "Download from Hugging Face",
+                action: { vm.downloadEmbeddingModel() }
+            ))
         } else {
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                Text("Embedding model ready: \(EmbeddingModelRef.displayName)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            ModelDownloadStatus(state: .ready(
+                label: "Embedding model ready: \(EmbeddingModelRef.displayName)"
+            ))
         }
     }
 

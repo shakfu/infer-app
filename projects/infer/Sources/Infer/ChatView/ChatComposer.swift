@@ -53,6 +53,14 @@ extension ChatView {
         }
         .padding(10)
         .animation(.easeInOut(duration: 0.15), value: composerExpanded)
+        .onAppear {
+            // Drop the user straight into the composer on launch so they
+            // can start typing without a click. Fires on every appear (not
+            // just first); harmless because the composer reappears only
+            // when the whole chat view does, not on every transcript
+            // re-render.
+            composerFocused = true
+        }
     }
 
     var sendEnabled: Bool {
@@ -147,7 +155,12 @@ extension ChatView {
     }
 
     var collapsedField: some View {
-        TextField("Message", text: $vm.input, axis: .vertical)
+        // Placeholder doubles as the discoverability surface for the
+        // otherwise-invisible Shift+Return-for-newline behaviour. Kept
+        // short so it doesn't dominate the empty-field state; the
+        // expanded editor's "Cmd+Return to send" overlay carries the
+        // submit-side of the contract.
+        TextField("Message  (⇧↵ newline)", text: $vm.input, axis: .vertical)
             .textFieldStyle(.roundedBorder)
             .lineLimit(1...6)
             .font(.body)

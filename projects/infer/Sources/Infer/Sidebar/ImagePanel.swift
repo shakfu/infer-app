@@ -77,26 +77,17 @@ struct SDImagePanel: View {
     private var cloudOpenAIBackendStatus: some View {
         VStack(alignment: .leading, spacing: 6) {
             SectionHeader(icon: "cloud", title: "OpenAI gpt-image-1")
-            HStack(spacing: 6) {
-                let resolved = APIKeyStore.resolve(for: .openai)
-                if let resolved {
-                    Image(systemName: "checkmark.circle")
-                        .foregroundStyle(.green)
-                        .font(.caption)
-                    Text(resolved.source == .keychain
-                        ? "Key in keychain"
-                        : "Key from \(CloudProvider.openai.envVarName ?? "env")")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Image(systemName: "exclamationmark.circle")
-                        .foregroundStyle(.orange)
-                        .font(.caption)
-                    Text("No OpenAI API key — set one via the Model tab.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
+            if let resolved = APIKeyStore.resolve(for: .openai) {
+                let source: String = resolved.source == .keychain
+                    ? "Key in keychain"
+                    : "Key from \(CloudProvider.openai.envVarName ?? "env")"
+                InlineStatusBadge(icon: "checkmark.circle", label: source, tint: .green)
+            } else {
+                InlineStatusBadge(
+                    icon: "exclamationmark.circle",
+                    label: "No OpenAI API key — set one via the Model tab.",
+                    tint: .orange
+                )
             }
         }
     }
