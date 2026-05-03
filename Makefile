@@ -43,7 +43,7 @@ INFER_PRODUCT_DIR := $(INFER_BUILD_DIR)/Build/Products/$(INFER_CONFIG)
 INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 
 .PHONY: all build bundle run clean clean-infer clean-mlx-cache test
-.PHONY: fetch-stack fetch-webassets fetch-sqlitevec fetch-python generate-icon
+.PHONY: fetch-stack build-stack fetch-webassets fetch-sqlitevec fetch-python generate-icon
 .PHONY: build-release bundle-release run-release
 .PHONY: plugins-gen plugins-gen-check
 
@@ -149,6 +149,35 @@ $(WHISPER_XCFRAMEWORK): $(STACK_MARKER)
 $(SD_XCFRAMEWORK): $(STACK_MARKER)
 
 fetch-stack: $(STACK_MARKER)
+
+# Local build counterpart to fetch-stack. Clones llama.cpp / whisper.cpp /
+# stable-diffusion.cpp at their pinned tags into build/, builds shared dylibs,
+# stages the four .frameworks, runs xcodebuild -create-xcframework, then
+# overwrites the four thirdparty/*.xcframework dirs with the freshly built
+# copies. Touches $(STACK_MARKER) so a subsequent `make fetch-stack` does
+# not re-download. Override versions: `make build-stack LLAMA_VER=bXXXX`.
+LLAMA_VER ?=
+WHISPER_VER ?=
+SD_VER ?=
+BUILD_STACK_FLAGS := --no-zip --stack-version $(STACK_VERSION)
+ifneq ($(LLAMA_VER),)
+BUILD_STACK_FLAGS += --llama-version $(LLAMA_VER)
+endif
+ifneq ($(WHISPER_VER),)
+BUILD_STACK_FLAGS += --whisper-version $(WHISPER_VER)
+endif
+ifneq ($(SD_VER),)
+BUILD_STACK_FLAGS += --sd-version $(SD_VER)
+endif
+
+build-stack:
+	./scripts/build_xcframeworks.py $(BUILD_STACK_FLAGS)
+	@for fw in Ggml LlamaCpp Whisper StableDiffusion; do \
+		rm -rf thirdparty/$$fw.xcframework; \
+		cp -R dist/$$fw.xcframework thirdparty/$$fw.xcframework; \
+	done
+	@touch $(STACK_MARKER)
+	@echo "build-stack: installed locally-built xcframeworks into thirdparty/"
 
 $(WEBASSETS_MARKER):
 	./scripts/fetch_webassets.sh
