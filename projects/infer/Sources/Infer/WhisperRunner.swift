@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import CWhisperBridge
+import InferCore
 
 enum WhisperError: Error, CustomStringConvertible {
     case modelLoadFailed(String)
@@ -20,31 +21,56 @@ enum WhisperError: Error, CustomStringConvertible {
     }
 }
 
-/// Multilingual ggml whisper models hosted on the canonical HF repo. All of
-/// these support both transcription and translation-to-English. The `.en`
-/// variants are English-only (can't translate) and intentionally omitted.
-enum WhisperModelChoice: String, CaseIterable, Identifiable, Sendable {
-    case tiny = "ggml-tiny.bin"
-    case base = "ggml-base.bin"
-    case small = "ggml-small.bin"
+/// Façade over `LocalModels.WhisperSpec` preserving the call-site API
+/// the rest of the app uses (`allCases`, `init?(rawValue:)`, `.label`,
+/// `.approxSize`, `.remoteURL`, `.isDownloaded()`). Backed by
+/// `local-models.json` so users can extend the picker with custom
+/// whisper variants (medium-en, large-v3, fine-tunes hosted on other
+/// HF repos via the optional `remoteURL` field).
+///
+/// Wire-compat with the previous enum: `rawValue` is the filename
+/// (e.g. `"ggml-base.bin"`), so existing UserDefaults entries
+/// round-trip via `init?(rawValue:)` against the current JSON.
+struct WhisperModelChoice: Identifiable, Sendable, Hashable {
+    let spec: LocalModels.WhisperSpec
 
-    var id: String { rawValue }
-    var label: String {
-        switch self {
-        case .tiny: return "tiny"
-        case .base: return "base"
-        case .small: return "small"
-        }
+    var id: String { spec.id }
+    /// Wire-compat: the filename, as the previous enum's String
+    /// rawValue. UserDefaults stores this; `init?(rawValue:)` reverses.
+    var rawValue: String { spec.filename }
+    var label: String { spec.resolvedDisplayName }
+    var approxSize: String { spec.resolvedApproxSize }
+    var remoteURL: URL { spec.resolvedRemoteURL }
+
+    /// Available choices in display order. Pulls from `LocalModels.whisper`;
+    /// list is guaranteed non-empty by the loader (hardcoded fallback
+    /// supplies tiny/base/small if all JSON paths fail).
+    static var allCases: [WhisperModelChoice] {
+        LocalModels.whisper.map { WhisperModelChoice(spec: $0) }
     }
-    var approxSize: String {
-        switch self {
-        case .tiny: return "75 MB"
-        case .base: return "142 MB"
-        case .small: return "466 MB"
-        }
+
+    init(spec: LocalModels.WhisperSpec) {
+        self.spec = spec
     }
-    var remoteURL: URL {
-        URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/\(rawValue)")!
+
+    /// Round-trip from UserDefaults. Returns nil when the persisted
+    /// filename no longer matches any entry in the current config —
+    /// caller should substitute `defaultChoice` and re-persist.
+    init?(rawValue: String) {
+        guard let spec = LocalModels.whisper.first(where: { $0.filename == rawValue })
+        else { return nil }
+        self.spec = spec
+    }
+
+    /// Picked when persistence is empty or stale. Prefers the second
+    /// entry (mirroring the previous "base" default — the original
+    /// list was tiny/base/small, and `base` is the sweet spot for
+    /// most users); otherwise the first entry. Never nil because
+    /// `allCases` is guaranteed non-empty.
+    static var defaultChoice: WhisperModelChoice {
+        let cases = allCases
+        if cases.count >= 2 { return cases[1] }
+        return cases[0]
     }
 
     static func localDirectory() throws -> URL {
@@ -245,7 +271,10 @@ final class WhisperModelManager {
            let m = WhisperModelChoice(rawValue: raw) {
             self.selected = m
         } else {
-            self.selected = .base
+            // Persisted value missing or no longer matches an entry in
+            // the current `local-models.json`. Re-seed from the
+            // default — the loader guarantees a non-empty whisper list.
+            self.selected = WhisperModelChoice.defaultChoice
         }
         self.translate = UserDefaults.standard.bool(forKey: WhisperPersistKey.translate)
     }

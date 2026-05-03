@@ -181,7 +181,25 @@ extension ChatViewModel {
         switch cloudProviderKind {
         case .openai: return .openai
         case .anthropic: return .anthropic
+        case .openrouter: return .openrouter
         case .openaiCompatible:
+            // Preset path: id is non-empty AND resolves to a preloaded
+            // entry from cloud-providers.json. Bypass the free-form
+            // name/URL fields entirely so a preset's identity stays
+            // pinned to its JSON-defined values (and so the keychain
+            // slot derived from the preset's slug doesn't collide with
+            // a same-named ad-hoc entry the user typed earlier).
+            if !cloudCompatPresetId.isEmpty {
+                let entry = CloudProviderRegistry.find(id: cloudCompatPresetId)
+                if let preset = entry.preset,
+                   CloudEndpointPolicy.isAcceptable(preset.baseURL) {
+                    return .openaiCompatible(name: preset.name, baseURL: preset.baseURL)
+                }
+                // Stale preset id (user removed the entry from JSON
+                // since last launch). Fall through to the free-form
+                // fields; the picker will reset the selection on
+                // first render.
+            }
             let name = cloudCompatName.trimmingCharacters(in: .whitespacesAndNewlines)
             let urlStr = cloudCompatURL.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !name.isEmpty,
@@ -199,6 +217,7 @@ extension ChatViewModel {
         switch cloudProviderKind {
         case .openai: return cloudOpenAIModel
         case .anthropic: return cloudAnthropicModel
+        case .openrouter: return cloudOpenRouterModel
         case .openaiCompatible: return cloudCompatModel
         }
     }

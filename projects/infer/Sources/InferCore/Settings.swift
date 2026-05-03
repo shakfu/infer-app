@@ -88,7 +88,14 @@ public enum PersistKey {
     public static let cloudProviderKind = "infer.cloud.providerKind"
     public static let cloudOpenAIModel = "infer.cloud.openai.model"
     public static let cloudAnthropicModel = "infer.cloud.anthropic.model"
+    public static let cloudOpenRouterModel = "infer.cloud.openrouter.model"
     public static let cloudCompatModel = "infer.cloud.compat.model"
+    /// Preset id (`compat:<slug>`) when the active picker selection is
+    /// a preloaded compat endpoint from `cloud-providers.json`. Empty
+    /// string = no preset (the user typed a name + URL by hand into
+    /// the OpenAI-compatible (custom) entry). Read alongside
+    /// `cloudProviderKind` to disambiguate.
+    public static let cloudCompatPresetId = "infer.cloud.compat.presetId"
     public static let cloudCompatName = "infer.cloud.compat.name"
     public static let cloudCompatURL = "infer.cloud.compat.url"
 

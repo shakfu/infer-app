@@ -30,21 +30,27 @@ extension SidebarView {
                     }
                 }
             } else {
-                if vm.vaultRecents.isEmpty {
-                    Text("No saved conversations yet.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                } else {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(vm.vaultRecents) { conv in
-                            VaultConversationRow(
-                                conv: conv,
-                                onOpen: { vm.loadVaultConversation(id: conv.id) },
-                                onDelete: { vm.deleteVaultConversation(id: conv.id) },
-                                onAddTag: { vm.addTag($0, to: conv.id) },
-                                onRemoveTag: { vm.removeTag($0, from: conv.id) },
-                                onToggleTagFilter: { vm.toggleTagFilter($0) }
-                            )
+                FoldableSection(
+                    icon: "clock.arrow.circlepath",
+                    title: "Recents",
+                    storageKey: "sidebar.fold.history.recents"
+                ) {
+                    if vm.vaultRecents.isEmpty {
+                        Text("No saved conversations yet.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 4) {
+                            ForEach(vm.vaultRecents) { conv in
+                                VaultConversationRow(
+                                    conv: conv,
+                                    onOpen: { vm.loadVaultConversation(id: conv.id) },
+                                    onDelete: { vm.deleteVaultConversation(id: conv.id) },
+                                    onAddTag: { vm.addTag($0, to: conv.id) },
+                                    onRemoveTag: { vm.removeTag($0, from: conv.id) },
+                                    onToggleTagFilter: { vm.toggleTagFilter($0) }
+                                )
+                            }
                         }
                     }
                 }
@@ -128,9 +134,12 @@ extension SidebarView {
     // MARK: Parameters
 
     var parametersSection: some View {
+        FoldableSection(
+            icon: "slider.horizontal.3",
+            title: "Parameters",
+            storageKey: "sidebar.fold.model.parameters"
+        ) {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(icon: "slider.horizontal.3", title: "Parameters")
-
             ParamRow(label: "Temperature",
                      value: String(format: "%.2f", draft.temperature)) {
                 Slider(value: $draft.temperature, in: 0...2, step: 0.05)
@@ -192,6 +201,7 @@ extension SidebarView {
                     .disabled(draftMatchesCurrent)
             }
             .padding(.top, 4)
+        }
         }
     }
 
@@ -268,6 +278,12 @@ extension SidebarView {
     /// `setTTSEnabled` / `setContinuousVoice` already cascade their
     /// effects correctly on each toggle.
     var speechSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+        FoldableSection(
+            icon: "mic.circle",
+            title: "Realtime Speech",
+            storageKey: "sidebar.fold.voice.realtime"
+        ) {
         VStack(alignment: .leading, spacing: 10) {
             Toggle("Read responses aloud", isOn: Binding(
                 get: { vm.ttsEnabled },
@@ -405,6 +421,8 @@ extension SidebarView {
             case .idle, .recording:
                 EmptyView()
             }
+        }
+        }  // FoldableSection (realtime speech)
 
             Divider().padding(.vertical, 4)
 
@@ -413,10 +431,16 @@ extension SidebarView {
     }
 
     var whisperSubsection: some View {
+        FoldableSection(
+            icon: "waveform",
+            title: "File Transcription",
+            storageKey: "sidebar.fold.voice.fileTranscription",
+            // Closed by default — secondary surface most users don't
+            // touch every session. Cold-launch users still see the
+            // header; first click reveals the controls.
+            defaultExpanded: false
+        ) {
         VStack(alignment: .leading, spacing: 8) {
-            Text("File transcription (whisper.cpp)")
-                .font(.caption).foregroundStyle(.secondary)
-
             HStack {
                 Text("Model").font(.caption)
                 Spacer()
@@ -467,7 +491,7 @@ extension SidebarView {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Text("Record from the mic or drop audio/video files onto the window. Transcripts are inserted into the composer.")
+            Text("Record from the mic or drop audio/video files onto the window. Transcripts are inserted into the composer (whisper.cpp).")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -519,6 +543,7 @@ extension SidebarView {
                 }
             }
         }
+        }  // FoldableSection (file transcription)
     }
 
     static func formatDuration(_ t: TimeInterval) -> String {
@@ -600,15 +625,32 @@ extension SidebarView {
             } else {
                 modelPicker
 
-                TextField(
-                    vm.backend == .mlx
-                        ? "HF repo id (empty = default)"
-                        : ".gguf path, filename, or https:// URL",
-                    text: $vm.modelInput
-                )
-                .textFieldStyle(.roundedBorder)
-                .disabled(vm.isLoadingModel || vm.isGenerating)
-                .onSubmit { vm.loadCurrentBackend() }
+                HStack(spacing: 4) {
+                    TextField(
+                        vm.backend == .mlx
+                            ? "HF repo id (empty = default)"
+                            : ".gguf path, filename, or https:// URL",
+                        text: $vm.modelInput
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(vm.isLoadingModel || vm.isGenerating)
+                    .onSubmit { vm.loadCurrentBackend() }
+
+                    let suggestions = localModelSuggestions(for: vm.backend)
+                    if !suggestions.isEmpty {
+                        Menu {
+                            ForEach(suggestions, id: \.self) { id in
+                                Button(id) { vm.modelInput = id }
+                            }
+                        } label: {
+                            Image(systemName: "list.bullet")
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
+                        .help("Recommended models for \(vm.backend.label)")
+                        .disabled(vm.isLoadingModel || vm.isGenerating)
+                    }
+                }
 
                 HStack(spacing: 6) {
                     if vm.isLoadingModel {
@@ -711,4 +753,17 @@ extension SidebarView {
     // Appearance tab (`appearanceSection`) moved to the Settings
     // window in P3. See `Sources/Infer/Settings/VoiceSettingsView.swift`
     // and `Sources/Infer/Settings/AppearanceSettingsView.swift`.
+
+    /// Recommended-model suggestion list for the local-backend model
+    /// picker. Pulls from `LocalModels.<kind>Suggestions` via the JSON
+    /// loader; empty for `.cloud` (cloud has its own dedicated picker
+    /// wired through `cloudConfigRows`). Empty list = hide the
+    /// dropdown affordance entirely.
+    func localModelSuggestions(for backend: Backend) -> [String] {
+        switch backend {
+        case .llama: return LocalModels.llamaSuggestions
+        case .mlx: return LocalModels.mlxSuggestions
+        case .cloud: return []
+        }
+    }
 }

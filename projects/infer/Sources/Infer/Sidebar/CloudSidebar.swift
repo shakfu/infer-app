@@ -17,6 +17,7 @@ extension SidebarView {
                 switch vm.cloudProviderKind {
                 case .openai: return vm.cloudOpenAIModel
                 case .anthropic: return vm.cloudAnthropicModel
+                case .openrouter: return vm.cloudOpenRouterModel
                 case .openaiCompatible: return vm.cloudCompatModel
                 }
             },
@@ -24,23 +25,55 @@ extension SidebarView {
                 switch vm.cloudProviderKind {
                 case .openai: vm.cloudOpenAIModel = newValue
                 case .anthropic: vm.cloudAnthropicModel = newValue
+                case .openrouter: vm.cloudOpenRouterModel = newValue
                 case .openaiCompatible: vm.cloudCompatModel = newValue
                 }
             }
         )
     }
 
+    /// The picker drives a `CloudProviderChoice.id` rather than a bare
+    /// `CloudProviderKind` so it can surface preloaded compat presets
+    /// (loaded from `cloud-providers.json`) as their own rows alongside
+    /// the four fixed entries. On set, both `cloudProviderKind` and
+    /// `cloudCompatPresetId` are updated atomically — the latter is
+    /// what `makeCloudProvider()` reads to choose between preset-derived
+    /// and free-form name/URL.
+    private var providerChoiceBinding: Binding<String> {
+        Binding(
+            get: {
+                if vm.cloudProviderKind == .openaiCompatible,
+                   !vm.cloudCompatPresetId.isEmpty {
+                    return vm.cloudCompatPresetId
+                }
+                return vm.cloudProviderKind.rawValue
+            },
+            set: { newId in
+                let entry = CloudProviderRegistry.find(id: newId)
+                vm.cloudProviderKind = entry.kind
+                vm.cloudCompatPresetId = (entry.preset != nil) ? entry.id : ""
+            }
+        )
+    }
+
+    /// True when the picker is on the free-form "OpenAI-compatible
+    /// (custom)…" entry — the only situation where the user types
+    /// name + URL by hand. Presets bypass those fields.
+    private var isCustomCompatActive: Bool {
+        vm.cloudProviderKind == .openaiCompatible && vm.cloudCompatPresetId.isEmpty
+    }
+
     @ViewBuilder
     var cloudConfigRows: some View {
-        Picker("Provider", selection: $vm.cloudProviderKind) {
-            ForEach(CloudProviderKind.allCases) { kind in
-                Text(kind.label).tag(kind)
+        Picker("Provider", selection: providerChoiceBinding) {
+            ForEach(CloudProviderRegistry.all()) { entry in
+                Text(entry.label).tag(entry.id)
             }
         }
         .pickerStyle(.menu)
         .disabled(vm.isLoadingModel || vm.isGenerating)
 
-        if vm.cloudProviderKind == .openaiCompatible {
+        if isCustomCompatActive {
             TextField("Endpoint name (e.g. Ollama)", text: $vm.cloudCompatName)
                 .textFieldStyle(.roundedBorder)
                 .disabled(vm.isLoadingModel || vm.isGenerating)
@@ -66,7 +99,7 @@ extension SidebarView {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .help("Recommended models for \(vm.cloudProviderKind.label)")
+                .help("Recommended models for \(vm.makeCloudProvider()?.displayName ?? vm.cloudProviderKind.label)")
             }
         }
 
@@ -138,11 +171,13 @@ extension SidebarView {
     }
 
     private func recommendedModelsForCurrentProvider() -> [String] {
-        switch vm.cloudProviderKind {
-        case .openai: return CloudRecommendedModels.openai
-        case .anthropic: return CloudRecommendedModels.anthropic
-        case .openaiCompatible: return []
-        }
+        // Reuses the layered loader (user override → bundled JSON →
+        // hardcoded fallback) via `suggestions(for:)`. Don't resurrect
+        // the per-provider static accessors that lived here previously
+        // — they bypassed the loader and would diverge from the picker
+        // dropdown's other surfaces.
+        guard let provider = vm.makeCloudProvider() else { return [] }
+        return CloudRecommendedModels.suggestions(for: provider)
     }
 
     // MARK: Cloud parameters
@@ -154,20 +189,35 @@ extension SidebarView {
     /// sees the controls relevant to the active provider.
     @ViewBuilder
     var cloudParamsSection: some View {
-        DisclosureGroup(isExpanded: $showCloudParams) {
+        FoldableSection(
+            icon: "cloud",
+            title: "Cloud parameters",
+            storageKey: "sidebar.fold.model.cloudParameters",
+            // Closed by default — most users don't touch reasoning
+            // effort, prompt-cache keys, or service tier; expanding it
+            // is the explicit "I want to tune this provider" gesture.
+            // Persisting collapsed state means once a user finds the
+            // controls they care about, they don't have to expand on
+            // every relaunch.
+            defaultExpanded: false
+        ) {
             VStack(alignment: .leading, spacing: 10) {
                 stopSequencesRow
 
                 switch vm.cloudProviderKind {
-                case .openai, .openaiCompatible:
+                case .openai, .openrouter, .openaiCompatible:
+                    // OpenRouter uses the OpenAI wire format; the same
+                    // parameter rows apply (stop sequences, reasoning
+                    // effort, prompt-cache key, etc.). OpenRouter
+                    // additionally accepts provider-routing knobs not
+                    // surfaced here yet — free-text JSON is the escape
+                    // hatch via the existing extra-args path.
                     openAICloudParamRows
                 case .anthropic:
                     anthropicCloudParamRows
                 }
             }
             .padding(.top, 6)
-        } label: {
-            SectionHeader(icon: "cloud", title: "Cloud parameters")
         }
     }
 

@@ -96,9 +96,12 @@ struct SDImagePanel: View {
 
     @ViewBuilder
     private var cloudOpenAIParamsRow: some View {
+        FoldableSection(
+            icon: "slider.horizontal.3",
+            title: "Parameters",
+            storageKey: "sidebar.fold.image.cloudParameters"
+        ) {
         VStack(alignment: .leading, spacing: 8) {
-            SectionHeader(icon: "slider.horizontal.3", title: "Parameters")
-
             HStack {
                 Text("Size").font(.caption)
                 Spacer()
@@ -150,6 +153,7 @@ struct SDImagePanel: View {
             }
             .help("Transparent only takes effect with PNG or WebP output.")
         }
+        }
     }
 
     // MARK: - Model row
@@ -186,7 +190,8 @@ struct SDImagePanel: View {
             componentField(
                 label: "All-in-one model",
                 placeholder: ".safetensors / https URL / namespace/name/file.ext",
-                binding: $vm.sdModelInput
+                binding: $vm.sdModelInput,
+                suggestions: LocalModels.stableDiffusionSuggestions
             )
 
             DisclosureGroup(
@@ -256,7 +261,8 @@ struct SDImagePanel: View {
     private func componentField(
         label: String,
         placeholder: String,
-        binding: Binding<String>
+        binding: Binding<String>,
+        suggestions: [String] = []
     ) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label).font(.caption2).foregroundStyle(.secondary)
@@ -265,6 +271,19 @@ struct SDImagePanel: View {
                     .textFieldStyle(.roundedBorder)
                     .disabled(vm.sdIsLoadingModel)
                     .onSubmit { vm.loadStableDiffusion() }
+                if !suggestions.isEmpty {
+                    Menu {
+                        ForEach(suggestions, id: \.self) { id in
+                            Button(id) { binding.wrappedValue = id }
+                        }
+                    } label: {
+                        Image(systemName: "list.bullet")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Recommended models for \(label)")
+                    .disabled(vm.sdIsLoadingModel)
+                }
                 Button {
                     if let url = FileDialogs.openFile(
                         message: "Select \(label)",
@@ -498,26 +517,31 @@ struct SDImagePanel: View {
     @ViewBuilder
     private var galleryRow: some View {
         if !vm.sdGallery.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    SectionHeader(icon: "photo.on.rectangle", title: "Recent")
-                    Spacer()
-                    GalleryOpenButton()
-                        .help("Browse, curate, and delete images (⇧⌘G).")
-                }
-
-                let recent = Array(vm.sdGallery.prefix(4))
-                HStack(spacing: 6) {
-                    ForEach(recent) { entry in
-                        SDGalleryThumbnail(vm: vm, entry: entry)
+            FoldableSection(
+                icon: "photo.on.rectangle",
+                title: "Recent",
+                storageKey: "sidebar.fold.image.recent"
+            ) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Spacer()
+                        GalleryOpenButton()
+                            .help("Browse, curate, and delete images (⇧⌘G).")
                     }
-                    Spacer()
-                }
 
-                if vm.sdGallery.count > recent.count {
-                    Text("\(vm.sdGallery.count) total — open Gallery to see them all.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                    let recent = Array(vm.sdGallery.prefix(4))
+                    HStack(spacing: 6) {
+                        ForEach(recent) { entry in
+                            SDGalleryThumbnail(vm: vm, entry: entry)
+                        }
+                        Spacer()
+                    }
+
+                    if vm.sdGallery.count > recent.count {
+                        Text("\(vm.sdGallery.count) total — open gallery to see them all.")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
             }
         }

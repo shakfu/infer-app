@@ -1,22 +1,27 @@
 import Foundation
 import HuggingFace
+import InferCore
 
-/// Canonical reference to the embedding model the app ships with by
-/// default. Single source of truth for the HF repo id, the GGUF
-/// filename, and the expected dimension. If we switch models later
-/// (e.g. to `nomic-embed-text-v1.5`), this is the only place that
-/// needs updating — call sites don't hard-code the numbers.
+/// Façade over `LocalModels.embedding` preserving the call-site API
+/// the rest of the app uses (`EmbeddingModelRef.filename`, etc.).
+/// Backed by `local-models.json` (with hardcoded fallback) so users
+/// can swap to a different embedding model — multilingual,
+/// higher-dimensional, etc. — without rebuilding.
 ///
-/// Dimension is stamped here rather than read from the loaded model
-/// so the UI can show "384-d" hints before download; the
-/// `EmbeddingRunner.dimension` post-load is the authoritative value
-/// used by the vector store.
+/// `expectedDimension` returns the JSON-stamped value when present and
+/// falls back to a sentinel when absent. Pre-download UI hints rely on
+/// it; runtime authoritative dimension still comes from the loaded
+/// model via `EmbeddingRunner.dimension`.
 enum EmbeddingModelRef {
-    static let repoId: String = "CompendiumLabs/bge-small-en-v1.5-gguf"
-    static let filename: String = "bge-small-en-v1.5-q8_0.gguf"
-    static let expectedDimension: Int = 384
-    static let approxBytes: Int64 = 140_000_000  // ~130 MB quantized
-    static let displayName: String = "bge-small-en-v1.5 (q8_0)"
+    static var repoId: String { LocalModels.embedding.repoId }
+    static var filename: String { LocalModels.embedding.filename }
+    /// Falls back to 0 when the JSON omits it — callers using this for
+    /// a UI hint should treat 0 as "unknown" and either skip the hint
+    /// or wait for the runner to load and report the real dimension.
+    static var expectedDimension: Int { LocalModels.embedding.expectedDimension ?? 0 }
+    /// Falls back to 0 when the JSON omits it — UI shows no size hint.
+    static var approxBytes: Int64 { LocalModels.embedding.approxBytes ?? 0 }
+    static var displayName: String { LocalModels.embedding.resolvedDisplayName }
 }
 
 extension ChatViewModel {

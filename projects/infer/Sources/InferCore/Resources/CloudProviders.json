@@ -1,0 +1,7 @@
+{
+  "_schema": "v1",
+  "_doc": "User-preloaded OpenAI-compatible endpoints. Each entry surfaces as a row in the cloud-provider picker, with its own keychain slot keyed by the (normalized) name. Loopback HTTP allowed for local runtimes (Ollama, LM Studio); remote endpoints must use https. Override this file at `~/Library/Application Support/Infer/cloud-providers.json` — the user file replaces the bundled file wholesale (no per-key merging, since the entries are a list rather than a per-provider dict). Empty list shipped by default; the existing 'OpenAI-compatible (custom)…' picker entry stays as the manual escape hatch.",
+
+  "providers": [
+  ]
+}

@@ -48,12 +48,16 @@ final class ChatViewModel {
     /// must enter a model before Load. Defaults seeded from the
     /// `CloudRecommendedModels` first entry.
     var cloudOpenAIModel: String = UserDefaults.standard.string(forKey: PersistKey.cloudOpenAIModel)
-        ?? CloudRecommendedModels.openai.first ?? "" {
+        ?? CloudRecommendedModels.defaultModelId(for: .openai) {
         didSet { UserDefaults.standard.set(cloudOpenAIModel, forKey: PersistKey.cloudOpenAIModel) }
     }
     var cloudAnthropicModel: String = UserDefaults.standard.string(forKey: PersistKey.cloudAnthropicModel)
-        ?? CloudRecommendedModels.anthropic.first ?? "" {
+        ?? CloudRecommendedModels.defaultModelId(for: .anthropic) {
         didSet { UserDefaults.standard.set(cloudAnthropicModel, forKey: PersistKey.cloudAnthropicModel) }
+    }
+    var cloudOpenRouterModel: String = UserDefaults.standard.string(forKey: PersistKey.cloudOpenRouterModel)
+        ?? CloudRecommendedModels.defaultModelId(for: .openrouter) {
+        didSet { UserDefaults.standard.set(cloudOpenRouterModel, forKey: PersistKey.cloudOpenRouterModel) }
     }
     var cloudCompatModel: String = UserDefaults.standard.string(forKey: PersistKey.cloudCompatModel) ?? "" {
         didSet { UserDefaults.standard.set(cloudCompatModel, forKey: PersistKey.cloudCompatModel) }
@@ -69,6 +73,15 @@ final class ChatViewModel {
     /// `http://localhost`.
     var cloudCompatURL: String = UserDefaults.standard.string(forKey: PersistKey.cloudCompatURL) ?? "" {
         didSet { UserDefaults.standard.set(cloudCompatURL, forKey: PersistKey.cloudCompatURL) }
+    }
+    /// Preset id (`compat:<slug>`) identifying which preloaded
+    /// OpenAI-compatible endpoint from `cloud-providers.json` is
+    /// active. Empty string = no preset (the user typed name + URL
+    /// by hand). Only meaningful when `cloudProviderKind` is
+    /// `.openaiCompatible`. `makeCloudProvider()` reads this to choose
+    /// between preset-derived and free-form name/URL.
+    var cloudCompatPresetId: String = UserDefaults.standard.string(forKey: PersistKey.cloudCompatPresetId) ?? "" {
+        didSet { UserDefaults.standard.set(cloudCompatPresetId, forKey: PersistKey.cloudCompatPresetId) }
     }
 
     // MARK: - Stable Diffusion state

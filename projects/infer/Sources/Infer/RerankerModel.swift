@@ -1,19 +1,19 @@
 import Foundation
 import HuggingFace
+import InferCore
 
-/// Canonical reference to the reranker model the app ships with.
-/// Mirrors `EmbeddingModelRef` — single source of truth for the HF
-/// repo, the GGUF filename, and approximate size. Switching models
-/// later means editing one enum (and re-downloading).
-///
-/// bge-reranker-v2-m3 is multilingual and the strongest small
-/// open-weight cross-encoder as of this writing; Q8_0 quant trades
-/// ~0.5 point of reranker accuracy for half the download size.
+/// Façade over `LocalModels.reranker` preserving the call-site API
+/// the rest of the app uses. Backed by `local-models.json` with the
+/// hardcoded fallback `bge-reranker-v2-m3-Q8_0` mirroring the value
+/// that lived here before the JSON migration. bge-reranker-v2-m3 is
+/// multilingual and the strongest small open-weight cross-encoder
+/// for retrieval at the time of this writing; Q8_0 quant trades
+/// ~0.5 point of accuracy for half the download size.
 enum RerankerModelRef {
-    static let repoId: String = "gpustack/bge-reranker-v2-m3-GGUF"
-    static let filename: String = "bge-reranker-v2-m3-Q8_0.gguf"
-    static let approxBytes: Int64 = 330_000_000  // ~315 MB
-    static let displayName: String = "bge-reranker-v2-m3 (q8_0)"
+    static var repoId: String { LocalModels.reranker.repoId }
+    static var filename: String { LocalModels.reranker.filename }
+    static var approxBytes: Int64 { LocalModels.reranker.approxBytes ?? 0 }
+    static var displayName: String { LocalModels.reranker.resolvedDisplayName }
 }
 
 extension ChatViewModel {

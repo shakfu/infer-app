@@ -1,0 +1,39 @@
+{
+  "_schema": "v1",
+  "_doc": "Recommended-model lists per cloud provider. Surfaced in the cloud picker as the dropdown half of the hybrid model field; free-text input remains the canonical path. Keyed by CloudProviderKind.rawValue. Missing keys fall back to the hardcoded defaults in CloudRecommendedModels.swift; empty arrays render as an empty dropdown (a deliberate user choice). User override at `~/Library/Application Support/Infer/cloud-models.json` replaces this file wholesale when present.",
+
+  "openai": [
+    "gpt-5.4-nano",
+    "gpt-5.4-mini",
+    "gpt-5.4",
+    "gpt-5.4-pro",
+    "gpt-5.5",
+    "gpt-5.5-pro"
+  ],
+
+  "anthropic": [
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5"
+  ],
+
+  "openrouter": [
+    "deepseek/deepseek-v3.2",
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-pro",
+    "google/gemini-2.5-flash",
+    "google/gemini-2.5-flash-lite",
+    "google/gemini-3-flash-preview",
+    "google/gemma-4-26b-a4b-it:free",
+    "google/gemma-4-31b-it:free",
+    "moonshotai/kimi-k2.5",
+    "moonshotai/kimi-k2.6",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "openrouter/owl-alpha",
+    "qwen/qwen3-235b-a22b-2507",
+    "qwen/qwen3.5-flash-02-23",
+    "qwen/qwen3.6-plus",
+    "x-ai/grok-4.1-fast",
+    "x-ai/grok-4.3"
+  ]
+}

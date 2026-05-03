@@ -61,7 +61,18 @@ let package = Package(
         // under `swift test` without the Metal Toolchain or fetched xcframeworks.
         .target(
             name: "InferCore",
-            path: "Sources/InferCore"
+            path: "Sources/InferCore",
+            resources: [
+                // Bundled JSON config files. Loaded via Bundle.module
+                // at runtime; user can override per-file by dropping
+                // a same-named JSON in `~/Library/Application Support/
+                // Infer/`. See `CloudRecommendedModels` for the loader
+                // pattern that should be repeated for any future
+                // configurable-via-JSON entity (providers, etc.).
+                .process("Resources/CloudModels.json"),
+                .process("Resources/CloudProviders.json"),
+                .process("Resources/LocalModels.json"),
+            ]
         ),
         .testTarget(
             name: "InferCoreTests",

@@ -18,8 +18,12 @@ private struct AgentsLibraryBody: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SectionHeader(icon: "person.crop.circle", title: "Agents")
-
+        FoldableSection(
+            icon: "person.crop.circle",
+            title: "Agents",
+            storageKey: "sidebar.fold.agents.library"
+        ) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Button { vm.revealUserAgentsFolder() } label: {
                     Label("Reveal folder", systemImage: "folder")
@@ -119,6 +123,9 @@ private struct AgentsLibraryBody: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
+
+        }  // VStack inside FoldableSection
+        }  // FoldableSection (agents library)
 
             // MCP servers section. Sits underneath the agents library
             // because MCP-backed tools land in the same registry the

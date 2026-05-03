@@ -18,50 +18,54 @@ struct MCPServersSection: View {
     @Bindable var vm: ChatViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeader(icon: "network", title: "MCP servers")
-
-            HStack(spacing: 8) {
-                Button { vm.revealMCPFolder() } label: {
-                    Label("Reveal folder", systemImage: "folder")
-                }
-                .controlSize(.small)
-                .help("Open the MCP config folder. Drop a *.json file here per server.")
-
-                Button {
-                    Task { await vm.reloadMCPServers() }
-                } label: {
-                    if vm.mcpReloading {
-                        HStack(spacing: 4) {
-                            ProgressView().controlSize(.mini)
-                            Text("Reloading…")
-                        }
-                    } else {
-                        Label("Reload", systemImage: "arrow.clockwise")
+        FoldableSection(
+            icon: "network",
+            title: "MCP servers",
+            storageKey: "sidebar.fold.agents.mcpServers"
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Button { vm.revealMCPFolder() } label: {
+                        Label("Reveal folder", systemImage: "folder")
                     }
+                    .controlSize(.small)
+                    .help("Open the MCP config folder. Drop a *.json file here per server.")
+
+                    Button {
+                        Task { await vm.reloadMCPServers() }
+                    } label: {
+                        if vm.mcpReloading {
+                            HStack(spacing: 4) {
+                                ProgressView().controlSize(.mini)
+                                Text("Reloading…")
+                            }
+                        } else {
+                            Label("Reload", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .controlSize(.small)
+                    .disabled(vm.mcpReloading)
+                    .help("Re-scan the MCP folder, restart approved servers, refresh the tool catalog.")
+
+                    Spacer()
                 }
-                .controlSize(.small)
-                .disabled(vm.mcpReloading)
-                .help("Re-scan the MCP folder, restart approved servers, refresh the tool catalog.")
 
-                Spacer()
-            }
-
-            if !vm.mcpDiagnostics.isEmpty {
-                MCPDiagnosticsBanner(diagnostics: vm.mcpDiagnostics)
-            }
-
-            if vm.mcpServers.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("No MCP servers configured. Drop a `<id>.json` file in the MCP folder describing a server (id, command, args). Servers must be approved before they launch — see the Reveal-folder button above.")
-                    Text("Examples ready to copy: `docs/examples/mcp/{filesystem,github,sqlite}.json`. Schema reference: `docs/dev/mcp-config.md`.")
+                if !vm.mcpDiagnostics.isEmpty {
+                    MCPDiagnosticsBanner(diagnostics: vm.mcpDiagnostics)
                 }
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .fixedSize(horizontal: false, vertical: true)
-            } else {
-                ForEach(vm.mcpServers) { server in
-                    MCPServerRow(vm: vm, server: server)
+
+                if vm.mcpServers.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("No MCP servers configured. Drop a `<id>.json` file in the MCP folder describing a server (id, command, args). Servers must be approved before they launch — see the Reveal-folder button above.")
+                        Text("Examples ready to copy: `docs/examples/mcp/{filesystem,github,sqlite}.json`. Schema reference: `docs/dev/mcp-config.md`.")
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(vm.mcpServers) { server in
+                        MCPServerRow(vm: vm, server: server)
+                    }
                 }
             }
         }

@@ -49,6 +49,12 @@ public actor CloudRunner {
             return OpenAIClient(apiKey: apiKey)
         case .anthropic:
             return AnthropicClient(apiKey: apiKey)
+        case .openrouter:
+            // OpenRouter ships an OpenAI-shaped wire format at a fixed
+            // base URL. Reuses the OpenAI client unmodified — the only
+            // OpenRouter-specific logic lives in the picker UI and the
+            // recommended-models list.
+            return OpenAIClient(apiKey: apiKey, baseURL: CloudProvider.openRouterBaseURL)
         case .openaiCompatible(_, let baseURL):
             return OpenAIClient(apiKey: apiKey, baseURL: baseURL)
         }
