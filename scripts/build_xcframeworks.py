@@ -51,10 +51,10 @@ from pathlib import Path
 # Default upstream tags. These are the same versions the cyllama 0.2.14
 # release zip was cut against, so a build at the defaults is drop-in
 # compatible with what `make fetch-stack` currently installs.
-DEFAULT_LLAMA_VERSION = "b8931"
+DEFAULT_LLAMA_VERSION = "b9010"
 DEFAULT_WHISPER_VERSION = "v1.8.4"
-DEFAULT_SD_VERSION = "master-587-b8bdffc"
-DEFAULT_STACK_VERSION = "0.2.14"
+DEFAULT_SD_VERSION = "master-593-3d6064b"
+DEFAULT_STACK_VERSION = "0.2.16"
 
 LLAMA_REPO = "https://github.com/ggml-org/llama.cpp.git"
 WHISPER_REPO = "https://github.com/ggml-org/whisper.cpp.git"
@@ -98,9 +98,23 @@ class Component:
     deps: list[str] = field(default_factory=list)  # other Component.name strings
 
 
+def _first_existing(*candidates: Path) -> Path:
+    """Return the first existing path; fall back to the first candidate
+    so downstream code can fail with a useful 'missing header' message
+    instead of a confusing path-not-found earlier."""
+    for c in candidates:
+        if c.exists():
+            return c
+    return candidates[0]
+
+
 def build_components() -> list[Component]:
     """Build the component list. Deferred so source paths reflect the
     cloned trees that exist after `clone_sources` runs."""
+    # SD moved stable-diffusion.h from repo root to include/ between
+    # master-587 (root) and master-593 (include/). Probe at runtime so
+    # we transparently support both tags.
+    sd_header_dir = _first_existing(SD_SRC / "include", SD_SRC)
     return [
         Component(
             name="Ggml",
@@ -148,7 +162,7 @@ def build_components() -> list[Component]:
             bundle_id="com.cyllama.stablediffusion",
             src_dyn_dir=SD_DYN,
             lib_stems=["libstable-diffusion"],
-            header_sources=[(SD_SRC, ["stable-diffusion.h"])],
+            header_sources=[(sd_header_dir, ["stable-diffusion.h"])],
             deps=["Ggml"],
         ),
     ]

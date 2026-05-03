@@ -44,7 +44,7 @@ INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 
 .PHONY: all build bundle run clean clean-infer clean-mlx-cache test
 .PHONY: fetch-stack build-stack fetch-webassets fetch-sqlitevec fetch-python generate-icon
-.PHONY: build-release bundle-release run-release
+.PHONY: build-release bundle-release run-release release
 .PHONY: plugins-gen plugins-gen-check
 
 all: build
@@ -257,6 +257,8 @@ bundle-release:
 
 run-release:
 	$(MAKE) run INFER_CONFIG=Release
+
+release: bundle-release
 
 # Regenerate the placeholder app icon. The .icns is committed, so this only
 # needs to run when the design changes. Requires /usr/bin/iconutil (ships

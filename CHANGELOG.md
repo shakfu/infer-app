@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`make build-stack` — local build of the four ggml-stack xcframeworks, decoupled from cyllama's release cadence.** New `scripts/build_xcframeworks.py` clones llama.cpp / whisper.cpp / stable-diffusion.cpp at user-pinnable tags, builds shared dylibs (Metal + CPU + BLAS, `GGML_BACKEND_DL=OFF` so the umbrella's `-reexport_library` step gets real `MH_DYLIB` output, `GGML_MAX_NAME=128` propagated everywhere so SD's ggml_tensor layout matches llama.cpp's), stages four versioned `.framework` bundles with canonical `@rpath/<Name>.framework/Versions/A/...` install names + cross-framework `#include "ggml.h"` rewritten to `<Ggml/ggml.h>` for Clang-module resolution, then runs `xcodebuild -create-xcframework` and copies the result into `thirdparty/`. **Coexists** with `make fetch-stack` — fetch is still the default fast path (~30 s download), build-stack is the from-source alternative (~15 min clean, seconds when dylibs are cached) for upgrading past the cyllama release pin. Override via `make build-stack LLAMA_VER=bXXXX WHISPER_VER=vX.Y.Z SD_VER=master-N-hash`. Defaults track stable upstream tags rather than cyllama's `STACK_VERSION`; the Makefile's `STACK_VERSION` only gates the marker file and the (skipped) zip name. Replaces the cyllama-vendored `manage.py` (3500 lines, mostly wheel/Cython/HF-cache pipeline) + `make_xcframework.py` (700 lines) with a single ~600-line script — the strip dropped everything outside the xcframework path, so future llama.cpp build-flag additions need to be mirrored manually rather than re-vendored.
+
+### Fixed
+
+- **`StableDiffusion.xcframework` Headers directory now actually populated.** The cyllama 0.2.14 release zip shipped `StableDiffusion.xcframework/.../Headers/` empty — Swift's `import StableDiffusion` couldn't see `sd_set_progress_callback`, `free_sd_ctx`, or any of the C API even though the dylib exported them. `build_xcframeworks.py` probes both `include/stable-diffusion.h` (master-593-3d6064b and later) and the legacy repo-root path (master-587-b8bdffc and earlier), so either pinned SD tag stages headers correctly. After `make build-stack`, the freshly-built framework supersedes the broken fetched one.
+
 ## [0.1.10]
 
 ### Added
