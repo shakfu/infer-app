@@ -721,16 +721,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+def build_all(
+    llama_version: str = DEFAULT_LLAMA_VERSION,
+    whisper_version: str = DEFAULT_WHISPER_VERSION,
+    sd_version: str = DEFAULT_SD_VERSION,
+    stack_version: str = DEFAULT_STACK_VERSION,
+    no_zip: bool = False,
+) -> list[Path]:
+    """Programmatic entry point. Returns the four built xcframework paths."""
     if sys.platform != "darwin":
         fail("xcframework target is macOS-only")
-
-    args = parse_args()
 
     STAGE.mkdir(parents=True, exist_ok=True)
 
     print("\n=== cloning sources ===")
-    clone_sources(args.llama_version, args.whisper_version, args.sd_version)
+    clone_sources(llama_version, whisper_version, sd_version)
 
     print("\n=== building shared dylibs ===")
     build_dylibs()
@@ -750,10 +755,23 @@ def main() -> None:
     for p in built:
         print(f"  {p}")
 
-    if not args.no_zip:
+    if not no_zip:
         print("\n=== packaging zip ===")
-        zip_path = package_zip(built, args.stack_version)
+        zip_path = package_zip(built, stack_version)
         print(f"\npackaged:\n  {zip_path}")
+
+    return built
+
+
+def main() -> None:
+    args = parse_args()
+    build_all(
+        llama_version=args.llama_version,
+        whisper_version=args.whisper_version,
+        sd_version=args.sd_version,
+        stack_version=args.stack_version,
+        no_zip=args.no_zip,
+    )
 
 
 if __name__ == "__main__":

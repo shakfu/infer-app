@@ -140,7 +140,7 @@ test-all:
 STACK_MARKER := thirdparty/.stack-$(STACK_VERSION)
 
 $(STACK_MARKER):
-	./scripts/fetch_combined_framework.sh $(STACK_VERSION)
+	./scripts/manage.py fetch stack --set version=$(STACK_VERSION)
 	@touch $@
 
 $(GGML_XCFRAMEWORK): $(STACK_MARKER)
@@ -159,28 +159,24 @@ fetch-stack: $(STACK_MARKER)
 LLAMA_VER ?=
 WHISPER_VER ?=
 SD_VER ?=
-BUILD_STACK_FLAGS := --no-zip --stack-version $(STACK_VERSION)
+BUILD_STACK_SETS :=
 ifneq ($(LLAMA_VER),)
-BUILD_STACK_FLAGS += --llama-version $(LLAMA_VER)
+BUILD_STACK_SETS += --set llama_version=$(LLAMA_VER)
 endif
 ifneq ($(WHISPER_VER),)
-BUILD_STACK_FLAGS += --whisper-version $(WHISPER_VER)
+BUILD_STACK_SETS += --set whisper_version=$(WHISPER_VER)
 endif
 ifneq ($(SD_VER),)
-BUILD_STACK_FLAGS += --sd-version $(SD_VER)
+BUILD_STACK_SETS += --set sd_version=$(SD_VER)
 endif
 
 build-stack:
-	./scripts/build_xcframeworks.py $(BUILD_STACK_FLAGS)
-	@for fw in Ggml LlamaCpp Whisper StableDiffusion; do \
-		rm -rf thirdparty/$$fw.xcframework; \
-		cp -R dist/$$fw.xcframework thirdparty/$$fw.xcframework; \
-	done
+	./scripts/manage.py build stack $(BUILD_STACK_SETS)
 	@touch $(STACK_MARKER)
 	@echo "build-stack: installed locally-built xcframeworks into thirdparty/"
 
 $(WEBASSETS_MARKER):
-	./scripts/fetch_webassets.sh
+	./scripts/manage.py fetch webassets
 
 fetch-webassets: $(WEBASSETS_MARKER)
 
@@ -189,8 +185,12 @@ fetch-webassets: $(WEBASSETS_MARKER)
 # clone from upstream and patch — see docs/patches/sqlitevec.md for
 # the full rationale on why each patch exists. Bump $(SQLITEVEC_TAG)
 # to upgrade; rerun this target to re-clone and re-apply.
-$(SQLITEVEC_MARKER):
-	./scripts/fetch_sqlitevec.sh $(SQLITEVEC_TAG)
+# Patch files declared as prereqs so editing any patch under
+# scripts/patches/sqlitevec/ updates its mtime past Package.swift's and
+# triggers a re-fetch+re-patch. The bash fetch path predated this and
+# silently skipped patch edits.
+$(SQLITEVEC_MARKER): $(wildcard scripts/patches/sqlitevec/*)
+	./scripts/manage.py fetch sqlitevec --set tag=$(SQLITEVEC_TAG)
 
 fetch-sqlitevec: $(SQLITEVEC_MARKER)
 
@@ -201,7 +201,7 @@ fetch-sqlitevec: $(SQLITEVEC_MARKER)
 # package set with PY_PKGS, e.g.:
 #   make fetch-python PY_PKGS="openai anthropic pandas matplotlib"
 fetch-python:
-	./scripts/fetch_python_framework.sh
+	./scripts/manage.py fetch python$(if $(PY_PKGS), --set py_pkgs="$(PY_PKGS)")
 
 build: $(GGML_XCFRAMEWORK) $(LLAMACPP_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SD_XCFRAMEWORK) $(SQLITEVEC_MARKER) plugins-gen
 	xcodebuild $(INFER_XCODE_FLAGS) build

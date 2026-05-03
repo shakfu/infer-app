@@ -1,12 +1,18 @@
 # infer
 
-A macOS SwiftUI chat app with two local inference backends selectable at runtime:
+A macOS SwiftUI chat application that puts local and cloud LLM backends behind one interface, alongside speech, image generation, conversation persistence, document export, and a sandboxed tool-calling runtime extensible via plugins.
 
-- **llama.cpp** via `llama.xcframework`
+- **Chat backends** — pick at runtime via the header picker: local **llama.cpp** (via `LlamaCpp.framework`), local **MLX** (via `mlx-swift-lm`), or **cloud** — OpenAI, Anthropic, or any OpenAI-compatible endpoint (Ollama, LM Studio, Groq, Together, Fireworks, OpenRouter, …).
 
-- **MLX** via `mlx-swift-lm`
+- **Image generation** — local Stable Diffusion via `stable-diffusion.cpp` (SD-1.x / SDXL / Z-Image / Flux multi-file workflows) or cloud `gpt-image-1`; persistent gallery with multi-select curation.
 
-Plus, local speech-to-text via `whisper.cpp` (file drop and in-app recording), on-device dictation via `SFSpeechRecognizer`, TTS, a searchable SQLite vault of all conversations, Markdown/PDF/HTML transcript export, document rendering via an external Quarto installation, a sandboxed [tool runtime](#built-in-agent-tools) (filesystem read/write/list, PDF text extraction, XLSX read + write, CSV/TSV writing, clipboard, math, vault + Wikipedia + web search, HTTP fetch with allowlist, plus MCP-server tools), and a [compile-time plugin system](#plugins) (Python execution via an embedded interpreter, more to come).
+- **[Speech](#speech)** — file + in-app-recording transcription via `whisper.cpp`, on-device dictation via `SFSpeechRecognizer`, TTS via `AVSpeechSynthesizer`, optional hands-free voice loop with barge-in.
+
+- **Persistence + export** — searchable SQLite [conversation vault](#conversation-vault), Markdown / PDF / HTML [transcript export](#conversation-actions), document rendering via an [external Quarto installation](#quarto-rendering).
+
+- **[Tool runtime](#built-in-agent-tools)** — sandboxed built-ins (filesystem read/write/list, PDF text extraction, XLSX read + write, CSV/TSV writing, clipboard, math, vault + Wikipedia + web search, HTTP fetch with allowlist), plus arbitrary MCP-server tools.
+
+- **[Plugins](#plugins)** — compile-time plugin system; today Python execution via an embedded interpreter, more to come.
 
 Built with Swift Package Manager and `xcodebuild`.
 
@@ -31,9 +37,10 @@ Status: uninstalled
 # then
 xcodebuild -downloadComponent MetalToolchain
 
-# First run downloads llama.xcframework, whisper.xcframework, and
-# KaTeX + highlight.js (for offline math/syntax rendering in PDF/print)
-# into thirdparty/.
+# First run downloads the ggml-stack xcframeworks (Ggml + LlamaCpp +
+# Whisper + StableDiffusion as one shared release), vendors SQLiteVec
+# with local patches, and grabs KaTeX + highlight.js (for offline
+# math/syntax rendering in PDF/print) into thirdparty/.
 make
 ```
 
@@ -50,7 +57,7 @@ make run-release
 
 Debug is the default because it's what active development wants (fast incremental rebuilds, full debug symbols). Release turns on `-O` and strips symbols; the two bundles coexist under `build/Debug/` and `build/Release/` so switching configs doesn't force a rebuild of the other side.
 
-`make build` uses `xcodebuild` (not `swift build`) because mlx-swift's Metal kernels can only be compiled by Xcode's Metal toolchain. The `llama.xcframework` is fetched by `scripts/fetch_llama_framework.sh` from the [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases); override the tag with `make build LLAMA_TAG=bXXXX`. The `whisper.xcframework` is fetched by `scripts/fetch_whisper_framework.sh` from the [whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases); override with `WHISPER_TAG=vX.Y.Z`. `KaTeX` + `highlight.js` are fetched by `scripts/fetch_webassets.sh` (override versions via `KATEX_VERSION` / `HLJS_VERSION`) into `thirdparty/webassets/` and bundled into `Infer.app/Contents/Resources/WebAssets/` — no CDNs at runtime.
+`make build` uses `xcodebuild` (not `swift build`) because mlx-swift's Metal kernels can only be compiled by Xcode's Metal toolchain. All native dependencies (the four ggml-stack xcframeworks, SQLiteVec, KaTeX + highlight.js, and the optional embedded `Python.framework`) flow through one CLI: `scripts/manage.py`. It owns hash-based caching at `thirdparty/.cache/<kind>-<target>.json`, so re-running any fetch is a no-op when inputs are unchanged — including patch contents under `scripts/patches/sqlitevec/` (editing a patch invalidates the SQLiteVec cache automatically). Two paths produce the ggml-stack: `make fetch-stack` downloads a prebuilt release zip from [shakfu/cyllama releases](https://github.com/shakfu/cyllama/releases) (~30 s), `make build-stack` clones llama.cpp / whisper.cpp / stable-diffusion.cpp at user-pinnable tags and compiles locally (~15 min clean, override via `LLAMA_VER=bXXXX WHISPER_VER=vX.Y.Z SD_VER=master-N-hash`). The bundled `KaTeX` + `highlight.js` (override versions via `KATEX_VERSION` / `HLJS_VERSION`) land in `thirdparty/webassets/` and are copied into `Infer.app/Contents/Resources/WebAssets/` — no CDNs at runtime.
 
 Other native deps come in via SPM and compile from source on first build: `libxlsxwriter` (BSD-2-Clause, used by `xlsx.write` — adds `-lz` link, no fetch script, no binary blob), `CoreXLSX` (Apache-2.0, used by `xlsx.read`; pulls XMLCoder + ZIPFoundation transitively), and `SQLiteVec` (MIT, vendored at `thirdparty/SQLiteVec/`, used by the RAG vector store).
 
@@ -220,7 +227,7 @@ make clean              # Remove build/
 | Target | Description |
 |---|---|
 | `build` | Build the Infer chat app via `xcodebuild` (Debug by default; override with `INFER_CONFIG=Release`) |
-| `bundle` | Bundle as `build/$(INFER_CONFIG)/Infer.app` (embeds `llama.framework`, `whisper.framework`, MLX resource bundles including `default.metallib`, `AppIcon.icns`, and `WebAssets/` with KaTeX + highlight.js) |
+| `bundle` | Bundle as `build/$(INFER_CONFIG)/Infer.app` (embeds `Ggml.framework` / `LlamaCpp.framework` / `Whisper.framework` / `StableDiffusion.framework`, MLX resource bundles including `default.metallib`, `AppIcon.icns`, and `WebAssets/` with KaTeX + highlight.js) |
 | `run` | Bundle and open |
 | `build-release` / `bundle-release` / `run-release` | Same as above but with `INFER_CONFIG=Release` — optimized bundle at `build/Release/Infer.app` |
 | `test` | Fast test path — `swift test --skip ExternalTests`. Runs every suite whose name does NOT end in `ExternalTests`. Sub-3-second run; suitable for tight inner loops. |
@@ -229,8 +236,9 @@ make clean              # Remove build/
 | `clean` | Remove `build/` |
 | `clean-infer` | Remove only `build/infer-xcode` (xcodebuild derived data) |
 | `clean-mlx-cache` | Remove `$HF_HOME/hub` (MLX model cache) after confirmation |
-| `fetch-llama` | Download `thirdparty/llama.xcframework` (tag via `LLAMA_TAG=...`) |
-| `fetch-whisper` | Download `thirdparty/whisper.xcframework` (tag via `WHISPER_TAG=...`) |
+| `fetch-stack` | Download the four ggml-stack xcframeworks (`Ggml` + `LlamaCpp` + `Whisper` + `StableDiffusion`) into `thirdparty/` from a single shakfu/cyllama release zip (`STACK_VERSION=...` to bump). |
+| `build-stack` | Local-build counterpart to `fetch-stack` — clones llama.cpp / whisper.cpp / stable-diffusion.cpp at pinned tags, builds shared dylibs + frameworks, runs `xcodebuild -create-xcframework`, copies into `thirdparty/`. Decouples from the cyllama release cadence. Override versions: `LLAMA_VER=bXXXX WHISPER_VER=vX.Y.Z SD_VER=master-N-hash`. ~15 min clean, seconds when cached |
+| `fetch-sqlitevec` | Vendor `thirdparty/SQLiteVec/` from upstream + apply local patches (`SQLITEVEC_TAG=...`). Patch contents participate in the cache hash, so editing any file under `scripts/patches/sqlitevec/` invalidates the cache and re-runs the fetch |
 | `fetch-webassets` | Download KaTeX + highlight.js to `thirdparty/webassets/` (versions via `KATEX_VERSION=...` / `HLJS_VERSION=...`) |
 | `fetch-python` | Build `thirdparty/Python.framework` via `scripts/buildpy.py` (one-time, ~5 min; opts in to `plugin_python_tools`'s `python.run` / `python.eval`). Override the bundled package set with `PY_PKGS="openai anthropic pandas matplotlib"` |
 | `plugins-gen` | Regenerate plugin glue (`Package.swift` marker sections + `Sources/Infer/GeneratedPlugins.swift`) from `projects/plugins/plugins.json`. `build` depends on this so a stale `Package.swift` never reaches `xcodebuild`. Idempotent — re-running with no input change is a no-op |
