@@ -8,7 +8,13 @@ extension ChatViewModel {
     /// Root directory under which user-authored JSON personas/agents live.
     /// `~/Library/Application Support/Infer/`. Subdirectories `personas/`
     /// and `agents/` are scanned individually; both are optional.
-    static func userAgentsRootDirectory() -> URL {
+    ///
+    /// `nonisolated` because the body is pure `FileManager` + `NSHomeDirectory`
+    /// — no main-actor state is read — so callers off the main actor
+    /// (notably `DefaultSandboxResolver` in `PluginHostServices.swift`)
+    /// can resolve the same path the host uses without bouncing. Same
+    /// rationale for the three directory helpers below.
+    nonisolated static func userAgentsRootDirectory() -> URL {
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory())
@@ -17,13 +23,13 @@ extension ChatViewModel {
     }
 
     /// `~/Library/Application Support/Infer/personas/`.
-    static func userPersonasDirectory() -> URL {
+    nonisolated static func userPersonasDirectory() -> URL {
         userAgentsRootDirectory()
             .appendingPathComponent("personas", isDirectory: true)
     }
 
     /// `~/Library/Application Support/Infer/agents/`.
-    static func userAgentsDirectory() -> URL {
+    nonisolated static func userAgentsDirectory() -> URL {
         userAgentsRootDirectory()
             .appendingPathComponent("agents", isDirectory: true)
     }
@@ -32,7 +38,7 @@ extension ChatViewModel {
     /// `MCPServerConfig` JSON per server. Missing directory is fine
     /// (no servers configured); per-file errors surface as Console
     /// diagnostics.
-    static func userMCPDirectory() -> URL {
+    nonisolated static func userMCPDirectory() -> URL {
         userAgentsRootDirectory()
             .appendingPathComponent("mcp", isDirectory: true)
     }
@@ -216,35 +222,12 @@ extension ChatViewModel {
                         .appendingPathComponent("Documents", isDirectory: true),
                     Self.userAgentsRootDirectory(),
                 ]),
-                // Spreadsheet writers — same sandbox as fs.write.
-                // csv.write covers the broad "any spreadsheet program"
-                // workflow; tsv.write is the right shape for paste-
-                // into-cells flows; xlsx.write produces a real Excel
-                // workbook with multi-sheet, formulas, and bold-header
-                // formatting via libxlsxwriter.
-                CSVWriteTool(allowedRoots: [
-                    URL(fileURLWithPath: NSHomeDirectory())
-                        .appendingPathComponent("Documents", isDirectory: true),
-                    Self.userAgentsRootDirectory(),
-                ]),
-                TSVWriteTool(allowedRoots: [
-                    URL(fileURLWithPath: NSHomeDirectory())
-                        .appendingPathComponent("Documents", isDirectory: true),
-                    Self.userAgentsRootDirectory(),
-                ]),
-                XlsxWriteTool(allowedRoots: [
-                    URL(fileURLWithPath: NSHomeDirectory())
-                        .appendingPathComponent("Documents", isDirectory: true),
-                    Self.userAgentsRootDirectory(),
-                ]),
-                // Pure-Swift xlsx reader (CoreXLSX). Pairs with
-                // xlsx.write for the round-trip — libxlsxwriter is
-                // write-only, CoreXLSX is read-only, so we use both.
-                XlsxReadTool(allowedRoots: [
-                    URL(fileURLWithPath: NSHomeDirectory())
-                        .appendingPathComponent("Documents", isDirectory: true),
-                    Self.userAgentsRootDirectory(),
-                ]),
+                // csv.write / tsv.write / xlsx.write / xlsx.read live
+                // in plugin_spreadsheet_tools and register through the
+                // plugin path below; they're sandboxed under the same
+                // userDocuments + agentsRoot policy via the host's
+                // SandboxResolver.
+
                 // PDF text extraction. Same sandbox as `fs.read` —
                 // PDFs the user wants the agent to read live in
                 // ~/Documents most of the time; persona-bundled PDFs
@@ -304,10 +287,16 @@ extension ChatViewModel {
             let pluginInvoker: ToolInvoker = { name, args in
                 try await registry.invoke(name: name, arguments: args)
             }
+            // Single host-services instance shared across every plugin's
+            // register call. The sandbox resolver pins plugin filesystem
+            // policy to the same statics built-in tools above use, so a
+            // future widening / tightening propagates in lockstep.
+            let pluginHost = PluginHostServices(sandbox: DefaultSandboxResolver())
             let pluginResult = await PluginLoader.loadAll(
                 types: allPluginTypes,
                 configs: pluginConfigs,
-                invoker: pluginInvoker
+                invoker: pluginInvoker,
+                host: pluginHost
             )
             for (id, contrib) in pluginResult.contributions {
                 for tool in contrib.tools {

@@ -4,12 +4,14 @@ import Foundation
 import PluginAPI
 import plugin_hacker_news
 import plugin_python_tools
+import plugin_spreadsheet_tools
 
 /// Order matches `plugins.json`. The loader iterates this array and
 /// looks up each plugin's `config` in `pluginConfigs` by `Plugin.id`.
 public let allPluginTypes: [any Plugin.Type] = [
     HackerNewsPlugin.self,
     PythonToolsPlugin.self,
+    SpreadsheetToolsPlugin.self,
 ]
 
 /// JSON-encoded `config` blob per plugin id, mirroring the `config`
@@ -17,4 +19,5 @@ public let allPluginTypes: [any Plugin.Type] = [
 public let pluginConfigs: [String: PluginConfig] = [
     "hacker_news": PluginConfig(json: Data("{}".utf8)),
     "python_tools": PluginConfig(json: Data("{}".utf8)),
+    "spreadsheet_tools": PluginConfig(json: Data("{}".utf8)),
 ]

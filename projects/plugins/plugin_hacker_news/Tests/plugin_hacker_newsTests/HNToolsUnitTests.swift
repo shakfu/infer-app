@@ -2,6 +2,15 @@ import XCTest
 @testable import PluginAPI
 @testable import plugin_hacker_news
 
+/// No-op `HostServices` for fixtures that don't exercise the sandbox
+/// resolver. Returns empty for every category — fail-closed default.
+private struct NoopHost: HostServices {
+    struct EmptySandbox: SandboxResolver {
+        func roots(for _: SandboxRootCategory) -> [URL] { [] }
+    }
+    let sandbox: any SandboxResolver = EmptySandbox()
+}
+
 /// Fast-path unit tests with stubbed HTTP. The real-API tests live
 /// in `HackerNewsExternalTests` and skip on CI / offline boxes.
 final class HNToolsUnitTests: XCTestCase {
@@ -11,7 +20,8 @@ final class HNToolsUnitTests: XCTestCase {
     func testRegisterContributesThreeTools() async throws {
         let contrib = try await HackerNewsPlugin.register(
             config: .empty,
-            invoker: { _, _ in ToolResult(output: "") }
+            invoker: { _, _ in ToolResult(output: "") },
+            host: NoopHost()
         )
         let names = contrib.tools.map(\.name).sorted()
         XCTAssertEqual(names, ["hn.item", "hn.search", "hn.user"])
@@ -22,7 +32,8 @@ final class HNToolsUnitTests: XCTestCase {
         do {
             _ = try await HackerNewsPlugin.register(
                 config: cfg,
-                invoker: { _, _ in ToolResult(output: "") }
+                invoker: { _, _ in ToolResult(output: "") },
+                host: NoopHost()
             )
             XCTFail("expected throw")
         } catch let error as HackerNewsError {
@@ -38,7 +49,8 @@ final class HNToolsUnitTests: XCTestCase {
         let cfg = PluginConfig(json: Data(#"{"api_base":"https://example.test/api"}"#.utf8))
         _ = try await HackerNewsPlugin.register(
             config: cfg,
-            invoker: { _, _ in ToolResult(output: "") }
+            invoker: { _, _ in ToolResult(output: "") },
+            host: NoopHost()
         )
     }
 

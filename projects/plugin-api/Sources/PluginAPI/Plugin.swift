@@ -34,9 +34,17 @@ public protocol Plugin: Sendable {
     /// closure dispatches against the registry as it stands at call
     /// time, not at register time, so plugin B can use it to reach
     /// plugin A even when A registers later in the load order.
+    ///
+    /// `host` exposes services the host owns — currently the
+    /// `SandboxResolver` for filesystem-root policy. Plugins that
+    /// construct sandboxed tools call `host.sandbox.roots(for:)`
+    /// rather than recomputing roots from `NSHomeDirectory()`, so a
+    /// host-side policy change propagates without per-plugin edits.
+    /// Plugins that don't need any host service ignore the parameter.
     static func register(
         config: PluginConfig,
-        invoker: @escaping ToolInvoker
+        invoker: @escaping ToolInvoker,
+        host: any HostServices
     ) async throws -> PluginContributions
 }
 

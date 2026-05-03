@@ -1,5 +1,6 @@
 import Foundation
 import CoreXLSX
+import PluginAPI
 
 /// Read tabular data out of a local `.xlsx` file via CoreXLSX
 /// (CoreOffice, Apache-2.0; pure Swift, parse-only). Pairs with

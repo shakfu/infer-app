@@ -101,8 +101,14 @@ final class PythonToolsUnitTests: XCTestCase {
         let noopInvoker: ToolInvoker = { _, _ in
             ToolResult(output: "", error: "no invoker wired in this test")
         }
+        struct NoopHost: HostServices {
+            struct EmptySandbox: SandboxResolver {
+                func roots(for _: SandboxRootCategory) -> [URL] { [] }
+            }
+            let sandbox: any SandboxResolver = EmptySandbox()
+        }
         do {
-            _ = try await PythonToolsPlugin.register(config: cfg, invoker: noopInvoker)
+            _ = try await PythonToolsPlugin.register(config: cfg, invoker: noopInvoker, host: NoopHost())
             XCTFail("expected register to throw")
         } catch let error as PythonToolsError {
             guard case .configuredPythonMissing = error else {

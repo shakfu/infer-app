@@ -1,4 +1,5 @@
 import Foundation
+import PluginAPI
 
 /// Three sibling tools for writing tabular data to disk: `csv.write`,
 /// `tsv.write`, `xlsx.write`. They share the sandbox / argument

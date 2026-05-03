@@ -9,6 +9,11 @@
             "id": "python_tools",
             "enabled": true,
             "config": {}
+        },
+        {
+            "id": "spreadsheet_tools",
+            "enabled": true,
+            "config": {}
         }
     ]
 }

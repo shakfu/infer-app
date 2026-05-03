@@ -1,5 +1,5 @@
 import XCTest
-@testable import InferAgents
+@testable import plugin_spreadsheet_tools
 
 final class SpreadsheetWriteToolsTests: XCTestCase {
     private var sandbox: URL!

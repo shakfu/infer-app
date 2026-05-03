@@ -227,10 +227,44 @@ public actor QuartoRunner {
             return
         }
 
-        let outputURL = workDir.appendingPathComponent("input.\(outputExtension(for: output))")
-        guard fm.fileExists(atPath: outputURL.path) else {
+        // Scan workDir for the rendered file rather than assuming
+        // `input.<ext>`. Quarto honors `--output X.pptx` / `-o X.pptx`
+        // from extraArgs, and earlier versions of this code that
+        // hardcoded the input name reported "render reported success
+        // but output file is missing" whenever the model passed
+        // --output. Filtering by extension is enough: input.qmd is
+        // .qmd, not the output extension, and any sibling artifacts
+        // Quarto leaves (input_files/, .tex, image scratch) carry
+        // different extensions or aren't files.
+        let ext = outputExtension(for: output)
+        let outputURL: URL
+        do {
+            let contents = try fm.contentsOfDirectory(
+                at: workDir,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsSubdirectoryDescendants, .skipsHiddenFiles]
+            )
+            let matches = contents.filter { $0.pathExtension == ext }
+            // If multiple candidates somehow exist (Quarto writes the
+            // intended output and a stale leftover from an earlier
+            // run), pick the newest by mtime so we hand back the file
+            // this invocation produced.
+            guard let newest = matches.max(by: { a, b in
+                let aMod = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let bMod = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return aMod < bMod
+            }) else {
+                continuation.yield(.failed(
+                    message: "render reported success but no .\(ext) output found in \(workDir.lastPathComponent)",
+                    log: combinedLog
+                ))
+                continuation.finish()
+                return
+            }
+            outputURL = newest
+        } catch {
             continuation.yield(.failed(
-                message: "render reported success but output file is missing",
+                message: "could not enumerate workDir to locate output: \(error.localizedDescription)",
                 log: combinedLog
             ))
             continuation.finish()
@@ -238,10 +272,13 @@ public actor QuartoRunner {
         }
 
         // Move the output out of the about-to-be-deleted temp dir into a
-        // stable per-render location under the user's caches.
+        // stable per-render location under the user's caches. Filename
+        // is `YYMMDD-<slug>.<ext>`; slug derived from the markdown's
+        // YAML `title:` so users skimming the cache in Finder can tell
+        // entries apart by topic.
         let stableURL: URL
         do {
-            stableURL = try Self.moveToCaches(outputURL)
+            stableURL = try Self.moveToCaches(outputURL, slug: Self.deriveSlug(from: markdown))
         } catch {
             continuation.yield(.failed(
                 message: "could not stage output: \(error.localizedDescription)",
@@ -269,13 +306,97 @@ public actor QuartoRunner {
         }
     }
 
-    private static func moveToCaches(_ source: URL) throws -> URL {
+    /// Move the rendered file into the cache directory under
+    /// `YYMMDD-<slug>.<ext>`. If a same-day same-slug render already
+    /// exists (re-rendering the same titled doc on the same day),
+    /// append `-2`, `-3`, … to avoid clobbering. Worth bounding the
+    /// retry loop so a permission / mount issue on the cache dir
+    /// doesn't spin forever — 1000 attempts is plenty for the "user
+    /// renders the same doc many times in one day" case.
+    private static func moveToCaches(_ source: URL, slug: String) throws -> URL {
         let fm = FileManager.default
         let caches = try cacheDirectory()
         try fm.createDirectory(at: caches, withIntermediateDirectories: true)
-        let dest = caches.appendingPathComponent("\(UUID().uuidString)-\(source.lastPathComponent)")
-        try fm.moveItem(at: source, to: dest)
-        return dest
+        let prefix = datePrefix()
+        let ext = source.pathExtension
+        let base = "\(prefix)-\(slug)"
+        for attempt in 0..<1000 {
+            let suffix = attempt == 0 ? "" : "-\(attempt + 1)"
+            let name = ext.isEmpty ? "\(base)\(suffix)" : "\(base)\(suffix).\(ext)"
+            let dest = caches.appendingPathComponent(name)
+            if !fm.fileExists(atPath: dest.path) {
+                try fm.moveItem(at: source, to: dest)
+                return dest
+            }
+        }
+        throw RenderError.spawnFailed(
+            "could not find a free cache filename under \(caches.path) for \(base).\(ext)"
+        )
+    }
+
+    /// `YYMMDD` in the user's local time zone. POSIX locale so the
+    /// digits are ASCII regardless of the user's regional settings.
+    private static func datePrefix(date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyMMdd"
+        return formatter.string(from: date)
+    }
+
+    /// Pull a slug out of the markdown's YAML frontmatter `title:` if
+    /// present, slugify it, and bound the length. Falls back to
+    /// `untitled` for documents with no frontmatter or no `title:` —
+    /// the date prefix still disambiguates same-day renders, and the
+    /// collision-suffix loop in `moveToCaches` handles the case where
+    /// several `untitled` renders happen in one day.
+    static func deriveSlug(from markdown: String) -> String {
+        let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false)
+        // Frontmatter must open with `---` on the first non-empty line.
+        // Anything else is treated as no-frontmatter -> untitled.
+        guard let firstNonEmpty = lines.first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
+              firstNonEmpty.trimmingCharacters(in: .whitespaces) == "---" else {
+            return "untitled"
+        }
+        var sawOpener = false
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if !sawOpener {
+                if trimmed == "---" { sawOpener = true }
+                continue
+            }
+            if trimmed == "---" { break }                    // closer; no title found
+            guard trimmed.hasPrefix("title:") else { continue }
+            let raw = trimmed.dropFirst("title:".count).trimmingCharacters(in: .whitespaces)
+            // Strip surrounding quotes (single, double, or smart) — Quarto
+            // accepts unquoted, "double", and 'single' forms equally.
+            let unquoted = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\"'\u{2018}\u{2019}\u{201C}\u{201D}"))
+            let slug = slugify(unquoted)
+            return slug.isEmpty ? "untitled" : slug
+        }
+        return "untitled"
+    }
+
+    /// Lowercase, collapse non-alphanumeric runs into single hyphens,
+    /// strip leading/trailing hyphens, cap at 60 chars. Filesystem-safe
+    /// across HFS+ / APFS / NTFS / ext4. Doesn't try to be locale-aware
+    /// (no transliteration of accented characters or CJK — those just
+    /// get reduced to runs of hyphens, which is acceptable for a cache
+    /// hint; the YYMMDD prefix carries the disambiguating weight).
+    static func slugify(_ s: String) -> String {
+        var out = ""
+        var lastWasDash = false
+        for ch in s.lowercased() {
+            if ch.isLetter || ch.isNumber {
+                out.append(ch)
+                lastWasDash = false
+            } else if !lastWasDash, !out.isEmpty {
+                out.append("-")
+                lastWasDash = true
+            }
+        }
+        let trimmed = out.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return String(trimmed.prefix(60))
     }
 
     /// Directory under `~/Library/Caches/` where successful renders are

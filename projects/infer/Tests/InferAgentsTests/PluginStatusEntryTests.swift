@@ -53,15 +53,15 @@ private struct StatusFixture {
 
 private enum AlphaPlugin: Plugin {
     static let id = "alpha"
-    static func register(config _: PluginConfig, invoker _: ToolInvoker) async throws -> PluginContributions { .none }
+    static func register(config _: PluginConfig, invoker _: ToolInvoker, host _: any HostServices) async throws -> PluginContributions { .none }
 }
 private enum BetaPlugin: Plugin {
     static let id = "beta"
-    static func register(config _: PluginConfig, invoker _: ToolInvoker) async throws -> PluginContributions { .none }
+    static func register(config _: PluginConfig, invoker _: ToolInvoker, host _: any HostServices) async throws -> PluginContributions { .none }
 }
 private enum GammaPlugin: Plugin {
     static let id = "gamma"
-    static func register(config _: PluginConfig, invoker _: ToolInvoker) async throws -> PluginContributions { .none }
+    static func register(config _: PluginConfig, invoker _: ToolInvoker, host _: any HostServices) async throws -> PluginContributions { .none }
 }
 
 private struct FixtureTool: BuiltinTool {

@@ -34,21 +34,23 @@ public struct PluginLoadResult: Sendable {
 public enum PluginLoader {
     /// Run every plugin's `register`, looking up each plugin's config
     /// in `configs` by `Plugin.id` and threading `invoker` so plugins
-    /// can dispatch other tools by name at call time. Catches
-    /// per-plugin errors and returns them on `result.failures`;
+    /// can dispatch other tools by name at call time. `host` carries
+    /// host-owned services (sandbox-root resolution today; more later).
+    /// Catches per-plugin errors and returns them on `result.failures`;
     /// remaining plugins still register. Order in `types` is preserved
     /// (the generator emits the order from `plugins.json`).
     public static func loadAll(
         types: [any Plugin.Type],
         configs: [String: PluginConfig],
-        invoker: @escaping ToolInvoker
+        invoker: @escaping ToolInvoker,
+        host: any HostServices
     ) async -> PluginLoadResult {
         var result = PluginLoadResult()
         for pluginType in types {
             let id = pluginType.id
             let config = configs[id] ?? .empty
             do {
-                let contrib = try await pluginType.register(config: config, invoker: invoker)
+                let contrib = try await pluginType.register(config: config, invoker: invoker, host: host)
                 result.contributions[id] = contrib
             } catch {
                 result.failures.append(PluginFailureRecord(

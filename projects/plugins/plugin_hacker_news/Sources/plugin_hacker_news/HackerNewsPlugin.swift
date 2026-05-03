@@ -16,7 +16,8 @@ public enum HackerNewsPlugin: Plugin {
 
     public static func register(
         config: PluginConfig,
-        invoker _: ToolInvoker
+        invoker _: ToolInvoker,
+        host _: any HostServices
     ) async throws -> PluginContributions {
         let cfg: Config = (try? config.decode(Config.self)) ?? Config()
         let baseString = cfg.apiBase ?? "https://hn.algolia.com/api/v1"

@@ -34,9 +34,21 @@ enum LoaderFixturePlugins {
         ToolResult(output: "", error: "no invoker wired in this test")
     }
 
+    /// No-op `HostServices` for fixtures that don't exercise the
+    /// sandbox resolver. Returns an empty list for every category;
+    /// any tool that dereferences these would fail closed, which is
+    /// the correct default for an unfeatured test.
+    struct NoopHost: HostServices {
+        struct EmptySandbox: SandboxResolver {
+            func roots(for _: SandboxRootCategory) -> [URL] { [] }
+        }
+        let sandbox: any SandboxResolver = EmptySandbox()
+    }
+    static let noopHost: any HostServices = NoopHost()
+
     enum NoOpPlugin: Plugin {
         static let id = "noop"
-        static func register(config _: PluginConfig, invoker _: ToolInvoker) async throws -> PluginContributions {
+        static func register(config _: PluginConfig, invoker _: ToolInvoker, host _: any HostServices) async throws -> PluginContributions {
             .none
         }
     }
@@ -47,14 +59,14 @@ enum LoaderFixturePlugins {
 
     enum FailingPlugin: Plugin {
         static let id = "failing"
-        static func register(config _: PluginConfig, invoker _: ToolInvoker) async throws -> PluginContributions {
+        static func register(config _: PluginConfig, invoker _: ToolInvoker, host _: any HostServices) async throws -> PluginContributions {
             throw PluginRegisteredError(id: id)
         }
     }
 
     enum ToolContributingPlugin: Plugin {
         static let id = "contributes"
-        static func register(config _: PluginConfig, invoker _: ToolInvoker) async throws -> PluginContributions {
+        static func register(config _: PluginConfig, invoker _: ToolInvoker, host _: any HostServices) async throws -> PluginContributions {
             PluginContributions(tools: [MarkerTool()])
         }
     }
@@ -76,7 +88,7 @@ enum LoaderFixturePlugins {
     enum CapturingPlugin: Plugin {
         static let id = "capture"
         nonisolated(unsafe) static var sink: ConfigCapture?
-        static func register(config: PluginConfig, invoker _: ToolInvoker) async throws -> PluginContributions {
+        static func register(config: PluginConfig, invoker _: ToolInvoker, host _: any HostServices) async throws -> PluginContributions {
             await sink?.set(config.json)
             return .none
         }
@@ -95,7 +107,7 @@ enum LoaderFixturePlugins {
     enum InvokerCapturingPlugin: Plugin {
         static let id = "invoker_capture"
         nonisolated(unsafe) static var sink: InvokerCapture?
-        static func register(config _: PluginConfig, invoker: @escaping ToolInvoker) async throws -> PluginContributions {
+        static func register(config _: PluginConfig, invoker: @escaping ToolInvoker, host _: any HostServices) async throws -> PluginContributions {
             await sink?.set(invoker)
             return .none
         }
@@ -108,7 +120,8 @@ final class PluginLoaderTests: XCTestCase {
             types: [LoaderFixturePlugins.NoOpPlugin.self,
                     LoaderFixturePlugins.ToolContributingPlugin.self],
             configs: [:],
-            invoker: LoaderFixturePlugins.noopInvoker
+            invoker: LoaderFixturePlugins.noopInvoker,
+            host: LoaderFixturePlugins.noopHost
         )
         XCTAssertTrue(result.failures.isEmpty)
         XCTAssertEqual(result.contributions["noop"]?.tools.count, 0)
@@ -121,7 +134,8 @@ final class PluginLoaderTests: XCTestCase {
             types: [LoaderFixturePlugins.FailingPlugin.self,
                     LoaderFixturePlugins.ToolContributingPlugin.self],
             configs: [:],
-            invoker: LoaderFixturePlugins.noopInvoker
+            invoker: LoaderFixturePlugins.noopInvoker,
+            host: LoaderFixturePlugins.noopHost
         )
         XCTAssertEqual(result.failures.count, 1)
         XCTAssertEqual(result.failures.first?.pluginID, "failing")
@@ -137,7 +151,8 @@ final class PluginLoaderTests: XCTestCase {
         _ = await PluginLoader.loadAll(
             types: [LoaderFixturePlugins.CapturingPlugin.self],
             configs: ["capture": cfg],
-            invoker: LoaderFixturePlugins.noopInvoker
+            invoker: LoaderFixturePlugins.noopInvoker,
+            host: LoaderFixturePlugins.noopHost
         )
         let observed = await captured.get()
         XCTAssertEqual(observed, cfg.json)
@@ -146,7 +161,8 @@ final class PluginLoaderTests: XCTestCase {
         _ = await PluginLoader.loadAll(
             types: [LoaderFixturePlugins.CapturingPlugin.self],
             configs: [:],
-            invoker: LoaderFixturePlugins.noopInvoker
+            invoker: LoaderFixturePlugins.noopInvoker,
+            host: LoaderFixturePlugins.noopHost
         )
         let fallback = await captured.get()
         XCTAssertEqual(fallback, PluginConfig.empty.json)
@@ -183,7 +199,8 @@ final class PluginLoaderTests: XCTestCase {
         _ = await PluginLoader.loadAll(
             types: [LoaderFixturePlugins.InvokerCapturingPlugin.self],
             configs: [:],
-            invoker: invoker
+            invoker: invoker,
+            host: LoaderFixturePlugins.noopHost
         )
 
         // *Now* register the tool — simulating the host's

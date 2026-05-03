@@ -22,7 +22,8 @@ public enum PythonToolsPlugin: Plugin {
 
     public static func register(
         config: PluginConfig,
-        invoker _: ToolInvoker
+        invoker _: ToolInvoker,
+        host _: any HostServices
     ) async throws -> PluginContributions {
         let cfg: Config = (try? config.decode(Config.self)) ?? Config()
         let pythonPath = try resolvePythonPath(override: cfg.pythonPath)

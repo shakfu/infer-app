@@ -1,5 +1,5 @@
 import XCTest
-@testable import InferAgents
+@testable import plugin_spreadsheet_tools
 
 /// Round-trip tests: `xlsx.write` produces a fixture, `xlsx.read`
 /// reads it back. Validates that both tools agree on the wire format
