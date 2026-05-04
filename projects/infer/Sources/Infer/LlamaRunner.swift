@@ -53,6 +53,11 @@ actor LlamaRunner {
     private var vocab: OpaquePointer?
 
     private var modelPath: String?
+    /// `n_ctx_train` of the loaded model — the maximum context the
+    /// model was trained on. Surfaced to the host so the Settings UI
+    /// can cap the user-configurable `nCtx` slider per-model. Nil when
+    /// no model is loaded.
+    private var modelContextTrainLimit: Int?
     private var chatTemplate: String?
     private var systemPrompt: String?
     private var samplerTemperature: Float = 0.8
@@ -108,6 +113,7 @@ actor LlamaRunner {
         messages.removeAll()
         prevFormattedLen = 0
         modelPath = nil
+        modelContextTrainLimit = nil
         chatTemplate = nil
         isGenerating = false
     }
@@ -169,9 +175,18 @@ actor LlamaRunner {
         cancelFlag.set()
     }
 
+    /// The loaded model's training context limit (`n_ctx_train`). Nil
+    /// when no model is loaded. Read by the Settings UI to clamp the
+    /// user-facing context-size slider so users can't pick a value the
+    /// model wasn't trained on.
+    func contextTrainLimit() -> Int? {
+        modelContextTrainLimit
+    }
+
     func load(
         path: String,
-        nCtx: UInt32 = 4096,
+        nCtx: UInt32 = 8192,
+        nBatch: UInt32 = 2048,
         nGpuLayers: Int32 = 999,
         systemPrompt: String? = nil,
         temperature: Float = 0.8,
@@ -196,6 +211,7 @@ actor LlamaRunner {
         messages.removeAll()
         prevFormattedLen = 0
         chatTemplate = nil
+        modelContextTrainLimit = nil
 
         var mparams = llama_model_default_params()
         mparams.n_gpu_layers = nGpuLayers
@@ -205,14 +221,14 @@ actor LlamaRunner {
         }
         self.model = m
         self.vocab = llama_model_get_vocab(m)
+        self.modelContextTrainLimit = Int(llama_model_n_ctx_train(m))
 
         var cparams = llama_context_default_params()
         cparams.n_ctx = nCtx
-        // Raised from 512 so prefill batches for longer histories (esp.
-        // after KV compaction, which re-submits the whole visible
-        // transcript) fit without needing many chunks. `setHistory`
-        // still chunks defensively in case a single turn exceeds this.
-        cparams.n_batch = 2048
+        // Caller-supplied; default 2048. `setHistory` still chunks
+        // defensively, and `runDecodeLoop` chunks the per-turn delta
+        // for the same reason — see the comment in either path.
+        cparams.n_batch = nBatch
 
         guard let c = llama_init_from_model(m, cparams) else {
             llama_model_free(m); self.model = nil; self.vocab = nil
@@ -839,10 +855,24 @@ actor LlamaRunner {
         var tokens = try tokenize(vocab: vocab, text: prompt, addSpecial: false)
         guard !tokens.isEmpty else { return }
 
+        // Chunk the prefill into `n_batch`-sized pieces. llama.cpp aborts
+        // (`GGML_ASSERT(n_tokens_all <= cparams.n_batch)`) inside
+        // `llama_decode` if a single `llama_batch_get_one` exceeds the
+        // configured batch size — `setHistory` already chunks for the
+        // same reason; this path is the per-turn delta and was missing
+        // it. Hits when the first-turn formatted prompt (system + tool
+        // catalog injection + user message) is longer than `n_batch`.
+        let nBatch = Swift.max(1, Int(llama_n_batch(ctx)))
         try tokens.withUnsafeMutableBufferPointer { buf in
-            let batch = llama_batch_get_one(buf.baseAddress, Int32(buf.count))
-            let rc = llama_decode(ctx, batch)
-            if rc != 0 { throw LlamaError.decodeFailed(rc) }
+            guard let base = buf.baseAddress else { return }
+            var offset = 0
+            while offset < buf.count {
+                let chunk = Swift.min(nBatch, buf.count - offset)
+                let batch = llama_batch_get_one(base.advanced(by: offset), Int32(chunk))
+                let rc = llama_decode(ctx, batch)
+                if rc != 0 { throw LlamaError.decodeFailed(rc) }
+                offset += chunk
+            }
         }
 
         // UTF-8 byte buffer: holds the tail of a multi-byte sequence

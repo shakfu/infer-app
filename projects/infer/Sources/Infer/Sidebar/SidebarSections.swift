@@ -192,6 +192,8 @@ extension SidebarView {
                 Text("System prompt").font(.caption).foregroundStyle(.secondary)
             }
 
+            modelLoadParamsGroup
+
             HStack {
                 Button("Reset") { draft = .defaults }
                     .controlSize(.small)
@@ -202,6 +204,61 @@ extension SidebarView {
             }
             .padding(.top, 4)
         }
+        }
+    }
+
+    /// llama.cpp load-time parameters (context size, batch size). The
+    /// runner reads these once at `load()`, so changes only take effect
+    /// after the next reload — `applySettings` surfaces a toast in that
+    /// case. Cap on the context slider matches the loaded model's
+    /// `n_ctx_train` when known; otherwise a generous fallback so the
+    /// no-model state stays editable.
+    var modelLoadParamsGroup: some View {
+        DisclosureGroup(isExpanded: $showModelLoadParams) {
+            VStack(alignment: .leading, spacing: 8) {
+                let trainCap = vm.modelContextTrainLimit ?? 32768
+                let nCtxMax = Swift.max(1024, trainCap)
+                ParamRow(
+                    label: "Context size",
+                    value: "\(draft.nCtx)"
+                ) {
+                    Slider(
+                        value: Binding(
+                            get: { Double(Swift.min(draft.nCtx, nCtxMax)) },
+                            set: { draft.nCtx = Int($0) }
+                        ),
+                        in: 1024...Double(nCtxMax),
+                        step: 512
+                    )
+                }
+                .help(vm.modelContextTrainLimit
+                    .map { "Capped at the model's training context (\($0))." }
+                    ?? "Load a model to clamp at its training context.")
+
+                ParamRow(
+                    label: "Batch size",
+                    value: "\(draft.nBatch)"
+                ) {
+                    Slider(
+                        value: Binding(
+                            get: { Double(draft.nBatch) },
+                            set: { draft.nBatch = Int($0) }
+                        ),
+                        in: 64...8192,
+                        step: 64
+                    )
+                }
+                .help("Llama.cpp prefill batch size. Advanced. Larger = faster prefill, more memory.")
+
+                Text("Reload the model to apply.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.top, 4)
+        } label: {
+            Text("Model load (requires reload)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -260,6 +317,8 @@ extension SidebarView {
             && s.maxTokens == draft.maxTokens
             && s.thinkingBudget == draft.thinkingBudget
             && s.seed == draft.seed
+            && s.nCtx == draft.nCtx
+            && s.nBatch == draft.nBatch
             && s.stopSequences == draft.stopSequences
             && s.reasoningEffort == draft.reasoningEffort
             && s.verbosity == draft.verbosity

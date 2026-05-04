@@ -174,7 +174,11 @@ public struct WikipediaSearchTool: BuiltinTool, @unchecked Sendable {
 public struct WikipediaArticleTool: BuiltinTool, @unchecked Sendable {
     public let name: ToolName = "wikipedia.article"
 
-    public static let maxBytes = 256 * 1024
+    /// Legacy fallback cap. Used when no `maxBytesProvider` is wired
+    /// (tests, ad-hoc construction). The host registers with a closure
+    /// that reads from `InferSettings`, so production callers see the
+    /// user-configured value.
+    public static let defaultMaxBytes = 256 * 1024
     public static let defaultLang = "en"
     public static let timeoutSeconds: TimeInterval = 30
 
@@ -189,16 +193,28 @@ public struct WikipediaArticleTool: BuiltinTool, @unchecked Sendable {
                 Returns the article body as plain text without HTML chrome — sidebar, \
                 infobox, edit links, references-as-superscripts are all stripped. \
                 Use after `wikipedia.search` has identified the right title. Output is \
-                capped at \(Self.maxBytes) bytes; truncated articles end with a marker \
-                so the model knows to re-call with `lead: true` for just the intro.
+                truncated to a configurable byte cap (default \(Self.defaultMaxBytes)); \
+                truncated articles end with a marker so the model knows to re-call \
+                with `lead: true` for just the intro.
                 """
         )
     }
 
     public let session: URLSession
+    /// Cap snapshot at registration time. The host re-registers the
+    /// tool on settings change (mirrors the `web.search` /
+    /// `quarto.render` pattern) so an edit in the Tools settings panel
+    /// flows through on Apply. `0` disables the cap; negative coerces
+    /// to the legacy default to avoid surprising "tiny output" outcomes
+    /// from a corrupted setting.
+    public let maxBytes: Int
 
-    public init(session: URLSession = .shared) {
+    public init(
+        session: URLSession = .shared,
+        maxBytes: Int = WikipediaArticleTool.defaultMaxBytes
+    ) {
         self.session = session
+        self.maxBytes = maxBytes
     }
 
     private struct Args: Decodable {
@@ -297,10 +313,14 @@ public struct WikipediaArticleTool: BuiltinTool, @unchecked Sendable {
         // matches the contract (and so a single character with a
         // long UTF-8 representation can't smuggle past). Reserve
         // headroom for the marker; size it from the marker itself
-        // rather than guessing a magic number.
-        if extract.utf8.count > Self.maxBytes {
-            let marker = "\n\n[... truncated at \(Self.maxBytes) bytes; re-call with lead: true for the intro only ...]"
-            let budget = Self.maxBytes - marker.utf8.count
+        // rather than guessing a magic number. `maxBytes == 0`
+        // disables the cap entirely; negative values coerce to the
+        // legacy default so a corrupted setting can't truncate to
+        // zero.
+        let cap: Int = maxBytes == 0 ? Int.max : (maxBytes < 0 ? Self.defaultMaxBytes : maxBytes)
+        if extract.utf8.count > cap {
+            let marker = "\n\n[... truncated at \(cap) bytes; re-call with lead: true for the intro only ...]"
+            let budget = cap - marker.utf8.count
             var truncated = extract
             while truncated.utf8.count > budget {
                 truncated.removeLast()

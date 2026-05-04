@@ -270,7 +270,7 @@ final class WikipediaToolsTests: XCTestCase {
         let tool = WikipediaArticleTool(session: session)
         let result = try await tool.invoke(arguments: ##"{"title": "Big"}"##)
         XCTAssertNil(result.error)
-        XCTAssertLessThanOrEqual(result.output.utf8.count, WikipediaArticleTool.maxBytes)
+        XCTAssertLessThanOrEqual(result.output.utf8.count, WikipediaArticleTool.defaultMaxBytes)
         XCTAssertTrue(result.output.contains("truncated at"))
     }
 }

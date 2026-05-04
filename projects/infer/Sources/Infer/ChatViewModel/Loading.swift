@@ -128,6 +128,7 @@ extension ChatViewModel {
 
         isLoadingModel = true
         modelLoaded = false
+        modelContextTrainLimit = nil
         modelStatus = "Configuring \(provider.displayName)…"
         errorMessage = nil
         loadTask = Task {
@@ -336,6 +337,7 @@ extension ChatViewModel {
         guard !isLoadingModel else { return }
         isLoadingModel = true
         modelLoaded = false
+        modelContextTrainLimit = nil
         downloadProgress = 0
         modelStatus = "Downloading \(url.lastPathComponent)…"
         errorMessage = nil
@@ -390,6 +392,7 @@ extension ChatViewModel {
         guard !isLoadingModel else { return }
         isLoadingModel = true
         modelLoaded = false
+        modelContextTrainLimit = nil
         downloadProgress = nil
         modelStatus = "Loading \((path as NSString).lastPathComponent)…"
         errorMessage = nil
@@ -400,6 +403,8 @@ extension ChatViewModel {
                 try Task.checkCancellation()
                 try await runner.load(
                     path: path,
+                    nCtx: UInt32(Swift.max(1024, s.nCtx)),
+                    nBatch: UInt32(Swift.max(64, s.nBatch)),
                     systemPrompt: s.systemPrompt,
                     temperature: Float(s.temperature),
                     topP: Float(s.topP),
@@ -408,12 +413,14 @@ extension ChatViewModel {
                 )
                 try Task.checkCancellation()
                 let detected = await runner.detectedTemplateFamily()
+                let trainLimit = await runner.contextTrainLimit()
                 await MainActor.run {
                     self.modelLoaded = true
                     self.modelStatus = "llama: \((path as NSString).lastPathComponent)"
                     self.isLoadingModel = false
                     self.loadTask = nil
                     self.currentModelId = path
+                    self.modelContextTrainLimit = trainLimit
                     // Tell the agent layer what tool-call template the
                     // newly-loaded GGUF speaks. Drives the picker's
                     // template-family compatibility check + per-family
@@ -449,6 +456,7 @@ extension ChatViewModel {
         guard !isLoadingModel else { return }
         isLoadingModel = true
         modelLoaded = false
+        modelContextTrainLimit = nil
         // Start as nil so statusView shows an indeterminate spinner during
         // the HF metadata/resolution phase (before any byte-level progress
         // callback fires). A stale 0% is misleading when the repo name is

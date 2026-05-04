@@ -19,6 +19,15 @@ extension ChatViewModel {
         settings = new
         new.save()
 
+        // Llama load-time params (nCtx, nBatch) only take effect on the
+        // next model load. Surface a toast rather than silently drop the
+        // edit, so the user knows the slider isn't live. MLX/cloud
+        // backends ignore these fields entirely.
+        let loadParamsChanged = previous.nCtx != new.nCtx || previous.nBatch != new.nBatch
+        if loadParamsChanged && backend == .llama && modelLoaded {
+            toasts.show("Reload model to apply context/batch changes.")
+        }
+
         let effects = agentController.applySettings(new, previous: previous)
         apply(effects)
 
@@ -62,6 +71,20 @@ extension ChatViewModel {
             Task {
                 await registry.unregister(name: "web.search")
                 await registry.register(WebSearchTool(searxngEndpoint: endpoint))
+            }
+        }
+
+        // Tool output cap may have changed (global default or the
+        // wikipedia.article-specific override). Re-register the
+        // affected tool so the next call sees the new value. Same
+        // re-construction pattern as web.search above.
+        let prevWikiCap = previous.toolOutputCap(for: "wikipedia.article")
+        let newWikiCap = new.toolOutputCap(for: "wikipedia.article")
+        if prevWikiCap != newWikiCap {
+            let registry = self.toolRegistry
+            Task {
+                await registry.unregister(name: "wikipedia.article")
+                await registry.register(WikipediaArticleTool(maxBytes: newWikiCap))
             }
         }
     }

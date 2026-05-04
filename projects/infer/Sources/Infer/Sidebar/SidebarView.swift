@@ -42,6 +42,7 @@ struct SidebarView: View {
     /// each slider tick from re-initialising the model.
     @State var draft: InferSettings = .defaults
     @State var showSystemPrompt = false
+    @State var showModelLoadParams = false
     @State var didSeed = false
     /// Controls the "Set API Key…" sheet for the cloud backend. Owned
     /// here (not the VM) because it's transient UI state with no

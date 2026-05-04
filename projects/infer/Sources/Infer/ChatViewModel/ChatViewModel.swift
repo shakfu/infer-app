@@ -235,6 +235,11 @@ final class ChatViewModel {
     var settings: InferSettings = InferSettings.load()
     var downloadProgress: Double? = nil
     var tokenUsage: TokenUsage? = nil
+    /// `n_ctx_train` of the currently-loaded llama model. Nil for MLX,
+    /// cloud, and the no-model state. Surfaced so the Settings UI can
+    /// clamp the user-facing `nCtx` slider to what the model was
+    /// actually trained on. Refreshed at load time.
+    var modelContextTrainLimit: Int? = nil
     /// Number of stream pieces received for the current or most-recent
     /// generation. For both backends, stream pieces correspond 1:1 with
     /// sampled tokens in the common case (they may merge for multi-byte UTF-8

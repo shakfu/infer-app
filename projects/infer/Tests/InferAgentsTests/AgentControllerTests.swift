@@ -77,7 +77,7 @@ final class AgentControllerTests: XCTestCase {
         )
 
         let ids = c.availableAgents.map(\.id)
-        XCTAssertEqual(ids, [DefaultAgent.id, "fp.good"])
+        XCTAssertEqual(ids, [DefaultAgent.id, ReActAgent.id, "fp.good"])
 
         // The registered agent is tagged first-party, not user.
         let entry = await c.registry.entry(id: "fp.good")
@@ -199,7 +199,7 @@ final class AgentControllerTests: XCTestCase {
         await c.bootstrap(settings: .defaults, personasDirectory: tmp)
 
         let ids = c.availableAgents.map(\.id)
-        XCTAssertEqual(ids, [DefaultAgent.id, "loaded"])
+        XCTAssertEqual(ids, [DefaultAgent.id, ReActAgent.id, "loaded"])
     }
 
     // MARK: - refreshListings ordering
@@ -214,9 +214,9 @@ final class AgentControllerTests: XCTestCase {
         let c = AgentController(registry: reg)
         await c.refreshListings()
 
-        // Expected: Default, then user (sorted by name), then plugin, then firstParty.
+        // Expected: Default, then synthetic ReAct, then user (sorted by name), then plugin, then firstParty.
         let ids = c.availableAgents.map(\.id)
-        XCTAssertEqual(ids, [DefaultAgent.id, "a-user", "b-user", "a-plug", "z-first"])
+        XCTAssertEqual(ids, [DefaultAgent.id, ReActAgent.id, "a-user", "b-user", "a-plug", "z-first"])
     }
 
     // MARK: - Compatibility

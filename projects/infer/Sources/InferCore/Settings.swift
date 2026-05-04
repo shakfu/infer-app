@@ -10,6 +10,21 @@ public enum PersistKey {
     public static let maxTokens = "infer.maxTokens"
     public static let thinkingBudget = "infer.thinkingBudget"
     public static let seed = "infer.seed"
+    /// llama.cpp context window for the chat runner. Persisted as Int.
+    /// Default 8192. Reload-required: changes only take effect on the
+    /// next `LlamaRunner.load`.
+    public static let nCtx = "infer.nCtx"
+    /// llama.cpp prefill batch size. Persisted as Int. Default 2048.
+    /// Reload-required.
+    public static let nBatch = "infer.nBatch"
+    /// Global default cap (in bytes) on tool output that is fed back to
+    /// the model. Per-tool overrides live under
+    /// `toolOutputOverrides`. Default 16384 — generous for prose,
+    /// tight enough that a 4k-context model survives a few cycles.
+    public static let toolOutputDefaultMaxBytes = "infer.toolOutputDefaultMaxBytes"
+    /// Per-tool override map for the cap above. Stored as a JSON
+    /// `[String: Int]` in UserDefaults so absent keys = use default.
+    public static let toolOutputOverrides = "infer.toolOutputOverrides"
     /// Newline-separated list of stop sequences; empty / missing key
     /// means "no stop sequences". Newline is used as the separator
     /// because it's the one byte that can't appear inside a stop
@@ -200,6 +215,17 @@ public struct InferSettings: Equatable, Sendable {
     /// output on a given backend. Stored as a string in UserDefaults since
     /// `UserDefaults` has no native `UInt64` path.
     public var seed: UInt64?
+    /// Llama.cpp chat-runner context window. Reload-required. Default
+    /// 8192; the UI clamps to the loaded model's `n_ctx_train`.
+    public var nCtx: Int
+    /// Llama.cpp prefill batch size. Reload-required. Default 2048.
+    public var nBatch: Int
+    /// Default cap on a tool's output bytes when no per-tool override
+    /// is set. Default 16 KB.
+    public var toolOutputDefaultMaxBytes: Int
+    /// Per-tool overrides keyed by `ToolName`. Empty = every tool uses
+    /// the default. A value of 0 means "no cap".
+    public var toolOutputOverrides: [String: Int]
     /// Optional override for the `quarto` executable used by the Quarto
     /// render tool. `nil` (or empty) means "auto-detect" via PATH and
     /// common install locations. Stored as a String so the field can
@@ -237,6 +263,10 @@ public struct InferSettings: Equatable, Sendable {
         thinkingBudget: Int = 4096,
         maxAgentSteps: Int = 8,
         seed: UInt64? = nil,
+        nCtx: Int = 8192,
+        nBatch: Int = 2048,
+        toolOutputDefaultMaxBytes: Int = 16_384,
+        toolOutputOverrides: [String: Int] = [:],
         quartoPath: String? = nil,
         searxngEndpoint: String? = nil,
         stopSequences: [String] = [],
@@ -256,6 +286,10 @@ public struct InferSettings: Equatable, Sendable {
         self.thinkingBudget = thinkingBudget
         self.maxAgentSteps = maxAgentSteps
         self.seed = seed
+        self.nCtx = nCtx
+        self.nBatch = nBatch
+        self.toolOutputDefaultMaxBytes = toolOutputDefaultMaxBytes
+        self.toolOutputOverrides = toolOutputOverrides
         self.quartoPath = quartoPath
         self.searxngEndpoint = searxngEndpoint
         self.stopSequences = stopSequences
@@ -298,6 +332,11 @@ public struct InferSettings: Equatable, Sendable {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let cacheKeyRaw = defaults.string(forKey: PersistKey.promptCacheKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let toolOverridesRaw = defaults.string(forKey: PersistKey.toolOutputOverrides)
+        let toolOverrides: [String: Int] = toolOverridesRaw
+            .flatMap { $0.data(using: .utf8) }
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Int] }
+            ?? [:]
         return InferSettings(
             systemPrompt: defaults.string(forKey: PersistKey.systemPrompt) ?? "",
             temperature: defaults.object(forKey: PersistKey.temperature) as? Double ?? Self.defaults.temperature,
@@ -306,6 +345,10 @@ public struct InferSettings: Equatable, Sendable {
             thinkingBudget: defaults.object(forKey: PersistKey.thinkingBudget) as? Int ?? Self.defaults.thinkingBudget,
             maxAgentSteps: defaults.object(forKey: PersistKey.maxAgentSteps) as? Int ?? Self.defaults.maxAgentSteps,
             seed: seed,
+            nCtx: defaults.object(forKey: PersistKey.nCtx) as? Int ?? Self.defaults.nCtx,
+            nBatch: defaults.object(forKey: PersistKey.nBatch) as? Int ?? Self.defaults.nBatch,
+            toolOutputDefaultMaxBytes: defaults.object(forKey: PersistKey.toolOutputDefaultMaxBytes) as? Int ?? Self.defaults.toolOutputDefaultMaxBytes,
+            toolOutputOverrides: toolOverrides,
             quartoPath: (quartoRaw?.isEmpty == false) ? quartoRaw : nil,
             searxngEndpoint: (searxngRaw?.isEmpty == false) ? searxngRaw : nil,
             stopSequences: stops,
@@ -331,6 +374,15 @@ public struct InferSettings: Equatable, Sendable {
             defaults.set(String(seed), forKey: PersistKey.seed)
         } else {
             defaults.removeObject(forKey: PersistKey.seed)
+        }
+        defaults.set(nCtx, forKey: PersistKey.nCtx)
+        defaults.set(nBatch, forKey: PersistKey.nBatch)
+        defaults.set(toolOutputDefaultMaxBytes, forKey: PersistKey.toolOutputDefaultMaxBytes)
+        if toolOutputOverrides.isEmpty {
+            defaults.removeObject(forKey: PersistKey.toolOutputOverrides)
+        } else if let data = try? JSONSerialization.data(withJSONObject: toolOutputOverrides),
+                  let s = String(data: data, encoding: .utf8) {
+            defaults.set(s, forKey: PersistKey.toolOutputOverrides)
         }
         if let quartoPath, !quartoPath.isEmpty {
             defaults.set(quartoPath, forKey: PersistKey.quartoPath)
@@ -379,6 +431,17 @@ public struct InferSettings: Equatable, Sendable {
         }
         defaults.set(anthropicPromptCaching, forKey: PersistKey.anthropicPromptCaching)
         defaults.set(cloudExtendedThinkingEnabled, forKey: PersistKey.cloudExtendedThinkingEnabled)
+    }
+
+    /// Resolve the byte cap that should apply to a given tool's
+    /// output. Per-tool override wins; otherwise the global default.
+    /// `0` is the user-visible "no cap" sentinel and is propagated
+    /// verbatim — tools interpret it.
+    public func toolOutputCap(for toolName: String) -> Int {
+        if let override = toolOutputOverrides[toolName] {
+            return override
+        }
+        return toolOutputDefaultMaxBytes
     }
 
     /// Project these settings into a `CloudGenerationParams` for the

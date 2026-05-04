@@ -298,6 +298,16 @@ public final class AgentController {
             }
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
+        let reactListing = AgentListing(
+            id: ReActAgent.id,
+            name: "ReAct",
+            description: "Reason-Act-Observe loop: the model emits a Thought before each tool call and a Final Answer when done.",
+            source: .firstParty,
+            backend: .any,
+            templateFamily: nil,
+            kind: .agent,
+            isDefault: false
+        )
         let defaultListing = AgentListing(
             id: DefaultAgent.id,
             name: "Default",
@@ -308,7 +318,7 @@ public final class AgentController {
             kind: .persona,
             isDefault: true
         )
-        self.availableAgents = [defaultListing] + registered
+        self.availableAgents = [defaultListing, reactListing] + registered
     }
 
     /// Classify any `Agent` conformance for the listing UI. JSON-backed
@@ -445,6 +455,8 @@ public final class AgentController {
         let agent: any Agent
         if agentId == DefaultAgent.id {
             agent = DefaultAgent(settings: settings)
+        } else if agentId == ReActAgent.id {
+            agent = ReActAgent(settings: settings)
         } else if let resolved = await registry.agent(id: agentId) {
             agent = resolved
         } else {

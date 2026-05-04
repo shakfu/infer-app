@@ -265,7 +265,7 @@ extension ChatViewModel {
                 // chrome-stripped article text where `http.fetch`
                 // returns the full HTML and truncates at 256 KB.
                 WikipediaSearchTool(),
-                WikipediaArticleTool(),
+                WikipediaArticleTool(maxBytes: settings.toolOutputCap(for: "wikipedia.article")),
                 VaultSearchTool(retriever: retriever),
             ])
             // Plugins (compile-time, generated from
@@ -714,6 +714,8 @@ extension ChatViewModel {
         let agent: (any Agent)?
         if listing.id == DefaultAgent.id {
             agent = DefaultAgent(settings: settings)
+        } else if listing.id == ReActAgent.id {
+            agent = ReActAgent(settings: settings)
         } else {
             agent = await agentController.registry.agent(id: listing.id)
         }
