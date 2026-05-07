@@ -204,25 +204,18 @@ struct WikiSidebar: View {
     @ViewBuilder
     private var footer: some View {
         if let stats = vm.wikiContextStats {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Image(systemName: "pin.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                    Text("\(stats.pageCount) page\(stats.pageCount == 1 ? "" : "s") · ~\(formattedTokens(stats.approximateTokens)) tokens")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                if stats.droppedCount > 0 {
-                    Text("\(stats.droppedCount) page\(stats.droppedCount == 1 ? "" : "s") dropped (over budget)")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                        .help("Unpinned pages reachable through wikilinks that exceeded the budget. Pin them to force inclusion, or raise the wiki budget.")
-                }
+            HStack(spacing: 4) {
+                Image(systemName: "pin.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                Text("\(stats.pageCount)/\(WikiStore.maxPinCount) pinned · ~\(formattedTokens(stats.approximateTokens)) tok every turn")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
+            .help("Pinned pages always inject. The rest of the wiki is searchable via RAG (when the embedding model is downloaded).")
         } else {
             EmptyView()
         }
@@ -297,6 +290,13 @@ struct WikiTreeRow: View {
                 depth: depth,
                 onOpen: { vm.openWikiPage(page.id) },
                 onTogglePin: { vm.toggleWikiPin(page.id) },
+                onRename: { newBasename in
+                    // Rename = move to the same parent under the new
+                    // basename. Cross-folder moves go through drag.
+                    let parent = (page.id as NSString).deletingLastPathComponent
+                    let newId = parent.isEmpty ? newBasename : parent + "/" + newBasename
+                    vm.moveWikiPage(from: page.id, to: newId)
+                },
                 onDelete: { vm.deleteWikiPage(page.id) }
             )
         }
@@ -320,6 +320,8 @@ struct WikiFolderRow: View {
     @State private var newPageName = ""
     @State private var promptingNewSubfolder = false
     @State private var newSubfolderName = ""
+    @State private var promptingRename = false
+    @State private var renameInput = ""
     @State private var confirmingDelete = false
 
     init(folderId: String, name: String, children: [WikiTreeNode], depth: Int, vm: ChatViewModel) {
@@ -384,8 +386,25 @@ struct WikiFolderRow: View {
             .contextMenu {
                 Button("New page in “\(name)”") { promptingNewPage = true }
                 Button("New folder in “\(name)”") { promptingNewSubfolder = true }
+                Button("Rename folder") {
+                    renameInput = name
+                    promptingRename = true
+                }
                 Divider()
                 Button("Delete folder", role: .destructive) { confirmingDelete = true }
+            }
+            .alert("Rename folder", isPresented: $promptingRename) {
+                TextField("folder name", text: $renameInput)
+                Button("Rename") {
+                    let trimmed = renameInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty, trimmed != name else { return }
+                    let parent = (folderId as NSString).deletingLastPathComponent
+                    let newPath = parent.isEmpty ? trimmed : parent + "/" + trimmed
+                    vm.moveWikiFolder(from: folderId, to: newPath)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Enter a new name (basename only — to move into a different parent folder, drag the folder).")
             }
             .alert("New page in “\(name)”", isPresented: $promptingNewPage) {
                 TextField("page name", text: $newPageName)
@@ -494,9 +513,12 @@ private struct WikiPageRow: View {
     let depth: Int
     let onOpen: () -> Void
     let onTogglePin: () -> Void
+    let onRename: (String) -> Void
     let onDelete: () -> Void
 
     @State private var hovering = false
+    @State private var promptingRename = false
+    @State private var renameInput = ""
 
     var body: some View {
         HStack(spacing: 0) {
@@ -537,8 +559,23 @@ private struct WikiPageRow: View {
         .contextMenu {
             Button("Open", action: onOpen)
             Button(pinned ? "Unpin" : "Pin", action: onTogglePin)
+            Button("Rename") {
+                renameInput = displayName
+                promptingRename = true
+            }
             Divider()
             Button("Delete", role: .destructive, action: onDelete)
+        }
+        .alert("Rename page", isPresented: $promptingRename) {
+            TextField("page name", text: $renameInput)
+            Button("Rename") {
+                let trimmed = renameInput.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty, trimmed != displayName else { return }
+                onRename(trimmed)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Enter a new name (basename only — to move between folders, drag the page).")
         }
         // Drag the page id; folder rows + the trailing root drop
         // target handle the move via `vm.moveWikiPage`.

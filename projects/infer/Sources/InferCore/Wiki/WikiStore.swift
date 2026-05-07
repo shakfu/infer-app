@@ -523,16 +523,19 @@ public actor WikiStore {
 
     /// Build the always-inject context for one chat turn.
     ///
-    /// Roots are the pinned pages. From each root, we walk every
-    /// `[[wikilink]]` transitively (BFS, deduped by lowercased id).
-    /// Pages not reachable from any pinned root are not included —
-    /// pinning is the explicit opt-in signal.
+    /// Phase 5 split: pins now mean "always inject *this exact page*"
+    /// — no transitive `[[wikilink]]` closure is performed here. The
+    /// rest of the wiki (and the workspace's `data_folder`, when set)
+    /// is reachable through RAG retrieval, which composes alongside
+    /// this channel at `Generation.swift:127`. This makes the inject
+    /// cost predictable: it scales linearly with the pin count, never
+    /// silently truncates wikilinks the user didn't directly pin, and
+    /// pairs cleanly with the vector index for everything else.
     ///
-    /// Budget cap: stop adding pages once `approximateTokens` would
-    /// exceed `budgetTokens`. Uses a cheap chars/4 estimate (good
-    /// enough — the runner counts real tokens later). Pages dropped
-    /// by the budget surface in `droppedPageIds` so the UI can show
-    /// "12 pages / 8.2k tokens injected, 3 dropped."
+    /// `budgetTokens` is informational here (used to drive the
+    /// sidebar readout) — pages are not dropped to fit. The hard cap
+    /// is enforced on the pin set itself, not at injection time
+    /// (see `WikiStore.maxPinCount`).
     public func buildContext(
         workspaceId: Int64,
         budgetTokens: Int = 8000
@@ -540,56 +543,36 @@ public actor WikiStore {
         let pins = try loadPins(workspaceId: workspaceId)
         guard !pins.isEmpty else { return .empty }
 
-        // Build an index keyed by case-folded id so wikilinks resolve
-        // ignoring casing tweaks ([[my page]] finds "My Page").
-        let pages = try listPages(workspaceId: workspaceId)
-        let index = Dictionary(uniqueKeysWithValues: pages.map { ($0.id.lowercased(), $0) })
-
-        let traversal = WikiLinkResolver.transitiveClosure(
-            roots: Array(pins),
-            index: index
-        )
-
-        // Compose the body, pinned roots first (they're the user's
-        // primary intent), then reachable pages alphabetically. Apply
-        // the token budget breadth-first — pinned roots always make
-        // the cut so the user isn't surprised by a pinned page being
-        // dropped because it was alphabetically late.
-        let pinnedOrdered = traversal.included
-            .filter { pins.contains($0.id) }
-            .sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
-        let reachableOrdered = traversal.included
-            .filter { !pins.contains($0.id) }
-            .sorted { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
-        let candidates = pinnedOrdered + reachableOrdered
-
-        var included: [WikiPage] = []
-        var dropped: [String] = []
-        var runningTokens = 0
-        for page in candidates {
-            let pageTokens = WikiContext.estimateTokens(for: page)
-            if pins.contains(page.id) {
-                // Pinned roots bypass the cap — guarantee the user's
-                // explicit picks are present even if oversize.
-                included.append(page)
-                runningTokens += pageTokens
-                continue
+        // Load only the pinned pages — no full corpus listing.
+        var pinnedPages: [WikiPage] = []
+        for id in pins.sorted(by: {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }) {
+            if let page = try? loadPage(workspaceId: workspaceId, id: id) {
+                pinnedPages.append(page)
             }
-            if runningTokens + pageTokens > budgetTokens {
-                dropped.append(page.id)
-                continue
-            }
-            included.append(page)
-            runningTokens += pageTokens
+            // Missing pinned pages (deleted out from under the pin
+            // set, or moved without the pin index being updated)
+            // are silently skipped — the next pin-set sync will
+            // notice them.
         }
 
+        let total = pinnedPages.reduce(0) { $0 + WikiContext.estimateTokens(for: $1) }
         return WikiContext(
-            text: WikiContext.format(included),
-            pageIds: included.map { $0.id },
-            droppedPageIds: dropped,
-            approximateTokens: runningTokens
+            text: WikiContext.format(pinnedPages),
+            pageIds: pinnedPages.map { $0.id },
+            droppedPageIds: [],
+            approximateTokens: total
         )
     }
+
+    /// Hard cap on the pin set size. Inject cost grows linearly with
+    /// pinned pages; this cap prevents users from accidentally
+    /// pinning hundreds and silently bloating every chat turn. The
+    /// number is conservative — pinned pages are meant for
+    /// "must-have-in-every-prompt" docs (project briefs, persona,
+    /// glossary), not bulk reference. Bulk goes through RAG.
+    public static let maxPinCount = 20
 }
 
 extension WikiContext {

@@ -260,6 +260,15 @@ extension ChatViewModel {
         guard let workspaceId = activeWorkspaceId else { return }
         let store = self.wiki
         let isPinned = wikiPins.contains(id)
+        // Hard cap enforcement: refuse new pins past the limit so
+        // the always-inject cost stays bounded. Existing pins can
+        // always be removed (no cap on unpinning).
+        if !isPinned, wikiPins.count >= WikiStore.maxPinCount {
+            toasts.show(
+                "Pin limit reached (\(WikiStore.maxPinCount)). Unpin a page first, or rely on RAG retrieval for the rest of the wiki."
+            )
+            return
+        }
         // Optimistic local update — re-sync from disk after the
         // write completes in case another path also touched the
         // pin set.
@@ -503,7 +512,6 @@ extension ChatViewModel {
             do {
                 try await store.deleteFolder(workspaceId: workspaceId, path: path)
                 await MainActor.run {
-                    // Close any open tabs for pages under the folder.
                     if let self {
                         let prefix = path + "/"
                         let toClose = self.openTabs.compactMap { tab -> WikiTab? in

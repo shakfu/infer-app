@@ -12,7 +12,12 @@ extension ChatView {
             .help(wikiSidebarOpen ? "Hide wiki sidebar" : "Show wiki sidebar")
 
             statusView
-            WorkspacePickerMenu(vm: vm)
+            // Workspace picker lives in the wiki sidebar header now
+            // — the canonical "switch workspace" UI sits there. The
+            // chat header used to duplicate it for users who'd
+            // hidden the sidebar; that path is reachable via the
+            // sidebar toggle above (one click) so the duplication
+            // isn't load-bearing.
             AgentPickerMenu(vm: vm, sidebarOpen: $sidebarOpen)
             generationRateView
             contextPercentView

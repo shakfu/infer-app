@@ -26,6 +26,7 @@ struct WorkspaceSettingsInline: View {
     @State private var dataFolder: String = ""
     @State private var seededWorkspaceId: Int64 = -1
     @State private var confirmDelete: Bool = false
+    @State private var confirmReset: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -93,10 +94,16 @@ struct WorkspaceSettingsInline: View {
                 TextField("Workspace name", text: $name)
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.small)
+                    .disabled(vm.isDefaultWorkspace(workspace.id))
                     .onSubmit { applyNameIfChanged() }
                 Button("Apply") { applyNameIfChanged() }
                     .controlSize(.small)
-                    .disabled(!isNameDirty)
+                    .disabled(!isNameDirty || vm.isDefaultWorkspace(workspace.id))
+            }
+            if vm.isDefaultWorkspace(workspace.id) {
+                Text("The Default workspace can't be renamed.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
         }
     }
@@ -151,7 +158,33 @@ struct WorkspaceSettingsInline: View {
 
     @ViewBuilder
     private var deleteRow: some View {
-        if workspace.name != "Default" {
+        if vm.isDefaultWorkspace(workspace.id) {
+            // Default workspace: not deletable, but resettable so the
+            // user can wipe its content (wiki pages, RAG corpus)
+            // without losing the workspace row itself or any
+            // conversations assigned to it.
+            Button(role: .destructive) {
+                confirmReset = true
+            } label: {
+                Label("Reset workspace", systemImage: "arrow.counterclockwise")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .controlSize(.small)
+            .buttonStyle(.borderless)
+            .font(.caption)
+            .foregroundStyle(.orange)
+            .alert("Reset Default workspace?",
+                   isPresented: $confirmReset,
+                   actions: {
+                       Button("Reset", role: .destructive) {
+                           vm.resetWorkspace(id: workspace.id)
+                       }
+                       Button("Cancel", role: .cancel) {}
+                   },
+                   message: {
+                       Text("Removes every wiki page, folder, pin, and RAG corpus entry for this workspace. Conversations and the data folder setting stay.")
+                   })
+        } else {
             Button(role: .destructive) {
                 confirmDelete = true
             } label: {

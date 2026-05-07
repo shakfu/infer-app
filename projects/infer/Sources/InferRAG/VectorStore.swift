@@ -467,6 +467,51 @@ public actor VectorStore {
         return sourceId
     }
 
+    /// Delete every source row matching `uri` for this workspace,
+    /// along with its chunks + vec_items. Used by the wiki auto-
+    /// ingest path: re-saving a wiki page deletes the prior source
+    /// row before adding the new one, so the same page never
+    /// accumulates duplicate ingestions across edits.
+    ///
+    /// Returns the number of source rows deleted (0 if no match).
+    @discardableResult
+    public func deleteSourcesByURI(workspaceId: Int64, uri: String) async throws -> Int {
+        let db = try await db()
+        var count = 0
+        try await db.transaction {
+            let rows = try await db.query(
+                "SELECT id FROM sources WHERE workspace_id = ? AND uri = ?",
+                params: [workspaceId, uri]
+            )
+            for row in rows {
+                guard let sid = (row["id"] as? Int64) ?? (row["id"] as? Int).map(Int64.init)
+                else { continue }
+                let chunkRows = try await db.query(
+                    "SELECT id FROM chunks WHERE source_id = ?",
+                    params: [sid]
+                )
+                for chunkRow in chunkRows {
+                    guard let cid = (chunkRow["id"] as? Int64) ?? (chunkRow["id"] as? Int).map(Int64.init)
+                    else { continue }
+                    try await db.execute(
+                        "DELETE FROM vec_items WHERE rowid = ?",
+                        params: [cid]
+                    )
+                }
+                try await db.execute(
+                    "DELETE FROM chunks WHERE source_id = ?",
+                    params: [sid]
+                )
+                try await db.execute(
+                    "DELETE FROM sources WHERE id = ?",
+                    params: [sid]
+                )
+                count += 1
+            }
+        }
+        return count
+    }
+
     /// Delete a source and all its chunks + vec_items. Manual cascade
     /// since sqlite-vec virtual tables don't participate in FK chains.
     public func deleteSource(id sourceId: Int64) async throws {

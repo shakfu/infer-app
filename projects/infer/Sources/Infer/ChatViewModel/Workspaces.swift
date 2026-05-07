@@ -160,7 +160,58 @@ extension ChatViewModel {
     /// sources + chunks + vec_items — since that data is derived and
     /// specific to this workspace. The caller is responsible for
     /// confirmation.
+    /// True if the given workspace is the system-created Default —
+    /// the v4 schema backfill creates it as the lowest-id row, and
+    /// every subsequent workspace gets a higher id from the
+    /// AUTOINCREMENT sequence. The Default is protected against
+    /// deletion + rename so the app always has a fallback workspace
+    /// for unassigned conversations to land in.
+    func isDefaultWorkspace(_ id: Int64) -> Bool {
+        guard let lowest = workspaces.map(\.id).min() else { return false }
+        return id == lowest
+    }
+
+    /// Wipe a workspace's user-created content while keeping the row
+    /// itself (and any conversations assigned to it — those are
+    /// valuable history). Removes wiki pages + folders + pin index
+    /// and the RAG corpus entries; leaves `name`, `data_folder`, and
+    /// the conversation rows alone. Used by the Default workspace
+    /// (which can't be deleted) when the user wants a clean start.
+    func resetWorkspace(id: Int64) {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.vectorStore.deleteWorkspaceData(workspaceId: id)
+            } catch {
+                self.logs.logFromBackground(
+                    .warning,
+                    source: "vector",
+                    message: "reset: vector data delete failed",
+                    payload: String(describing: error)
+                )
+            }
+            // Wipe the wiki dir for this workspace. The on-disk
+            // delete is best-effort: if the dir is missing we just
+            // return, and a partial delete still surfaces in the
+            // refresh that follows.
+            let wikiDir = await self.wiki.wikiDirectory(for: id)
+            try? FileManager.default.removeItem(at: wikiDir)
+            await MainActor.run {
+                self.refreshWiki()
+                self.refreshCorpusStats(workspaceId: id)
+                self.toasts.show("Workspace reset.")
+            }
+        }
+    }
+
     func deleteWorkspace(id: Int64) {
+        // Refuse to delete the Default workspace; the caller (UI)
+        // shouldn't be offering this option but we guard at the VM
+        // layer too in case of a stale view or programmatic call.
+        if isDefaultWorkspace(id) {
+            toasts.show("The Default workspace can't be deleted. Use Reset to clear its data.")
+            return
+        }
         Task { [weak self] in
             guard let self else { return }
             do {

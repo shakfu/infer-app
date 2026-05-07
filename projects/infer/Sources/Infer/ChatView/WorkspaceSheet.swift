@@ -358,7 +358,7 @@ struct WorkspaceSheet: View {
 
     private var footer: some View {
         HStack(spacing: 8) {
-            if !isCreating, let ws = editingWorkspace, ws.name != "Default" {
+            if !isCreating, let ws = editingWorkspace, !vm.isDefaultWorkspace(ws.id) {
                 Button(role: .destructive) {
                     confirmDelete = true
                 } label: {

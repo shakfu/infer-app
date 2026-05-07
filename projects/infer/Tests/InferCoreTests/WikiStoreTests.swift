@@ -187,7 +187,10 @@ final class WikiStoreTests: XCTestCase {
         XCTAssertEqual(ctx, .empty)
     }
 
-    func testBuildContextIncludesPinnedAndTransitive() async throws {
+    func testBuildContextIncludesOnlyPinned() async throws {
+        // Phase 5: pins now mean "inject this exact page" — no
+        // transitive [[wikilink]] expansion at injection time. The
+        // rest of the wiki is reachable via RAG retrieval.
         _ = try await store.savePage(workspaceId: 5, id: "Pinned",
             content: "see [[Linked]] and [[Other]]")
         _ = try await store.savePage(workspaceId: 5, id: "Linked", content: "leaf [[Deep]]")
@@ -197,37 +200,33 @@ final class WikiStoreTests: XCTestCase {
         try await store.setPin(workspaceId: 5, id: "Pinned", pinned: true)
 
         let ctx = try await store.buildContext(workspaceId: 5)
-        XCTAssertEqual(Set(ctx.pageIds), Set(["Pinned", "Linked", "Other", "Deep"]))
+        XCTAssertEqual(Set(ctx.pageIds), Set(["Pinned"]))
+        XCTAssertFalse(ctx.pageIds.contains("Linked"))
         XCTAssertFalse(ctx.pageIds.contains("Unreachable"))
         XCTAssertTrue(ctx.text.contains("<wiki_context>"))
         XCTAssertTrue(ctx.text.contains("## Pinned"))
-        XCTAssertTrue(ctx.text.contains("## Deep"))
+        XCTAssertTrue(ctx.droppedPageIds.isEmpty,
+                      "no silent drops in the new model")
     }
 
-    func testBudgetCapDropsUnpinnedReachablePages() async throws {
-        // Pinned root + two unpinned reachables; budget tight enough
-        // that only one of the reachables fits. Pinned bypasses the cap.
-        let big = String(repeating: "x", count: 4000)  // ~1000 tokens each
-        _ = try await store.savePage(workspaceId: 6, id: "Pin",
-            content: "[[A]] [[B]]")
-        _ = try await store.savePage(workspaceId: 6, id: "A", content: big)
-        _ = try await store.savePage(workspaceId: 6, id: "B", content: big)
-        try await store.setPin(workspaceId: 6, id: "Pin", pinned: true)
-
-        let ctx = try await store.buildContext(workspaceId: 6, budgetTokens: 1500)
-        XCTAssertTrue(ctx.pageIds.contains("Pin"), "pinned root must always be included")
-        // One of A/B fits, the other gets dropped.
-        XCTAssertEqual(ctx.pageIds.count + ctx.droppedPageIds.count, 3)
-        XCTAssertEqual(ctx.droppedPageIds.count, 1)
-    }
-
-    func testPinnedPageBypassesBudget() async throws {
-        // A pinned page bigger than the budget should still be included.
-        let huge = String(repeating: "x", count: 80_000)  // ~20k tokens
+    func testBuildContextIgnoresBudgetForPinnedSet() async throws {
+        // Phase 5: budgetTokens is informational, not enforced. The
+        // hard cap is on the pin set itself (max 20). A pinned page
+        // bigger than `budgetTokens` is fully included.
+        let huge = String(repeating: "x", count: 80_000)
         _ = try await store.savePage(workspaceId: 7, id: "Big", content: huge)
         try await store.setPin(workspaceId: 7, id: "Big", pinned: true)
         let ctx = try await store.buildContext(workspaceId: 7, budgetTokens: 1000)
-        XCTAssertTrue(ctx.pageIds.contains("Big"))
+        XCTAssertEqual(ctx.pageIds, ["Big"])
+        XCTAssertTrue(ctx.droppedPageIds.isEmpty)
+    }
+
+    func testBuildContextSkipsMissingPinnedPages() async throws {
+        // Pin set persisted but the file was deleted out from under
+        // it — context build should skip silently rather than throw.
+        try await store.setPin(workspaceId: 8, id: "Phantom", pinned: true)
+        let ctx = try await store.buildContext(workspaceId: 8)
+        XCTAssertTrue(ctx.pageIds.isEmpty)
     }
 
     func testNestedPathSaveAndList() async throws {
@@ -483,13 +482,20 @@ final class WikiStoreTests: XCTestCase {
         XCTAssertEqual(c?.content, "no links here")
     }
 
-    func testWikilinksAreCaseInsensitive() async throws {
-        _ = try await store.savePage(workspaceId: 8, id: "Pinned",
-            content: "see [[lower case target]]")
-        _ = try await store.savePage(workspaceId: 8, id: "Lower Case Target",
-            content: "found")
-        try await store.setPin(workspaceId: 8, id: "Pinned", pinned: true)
-        let ctx = try await store.buildContext(workspaceId: 8)
-        XCTAssertTrue(ctx.pageIds.contains("Lower Case Target"))
+    func testWikilinksAreCaseInsensitive() {
+        // Phase 5 dropped transitive expansion from buildContext, but
+        // the resolver still does case-insensitive matching for
+        // autocomplete + future link-graph features. Test against the
+        // resolver directly rather than the no-longer-relevant inject
+        // path.
+        let pages = [
+            WikiPage(id: "Pinned", url: URL(fileURLWithPath: "/p.md"),
+                     content: "see [[lower case target]]"),
+            WikiPage(id: "Lower Case Target", url: URL(fileURLWithPath: "/t.md"),
+                     content: "found"),
+        ]
+        let index = Dictionary(uniqueKeysWithValues: pages.map { ($0.id.lowercased(), $0) })
+        let result = WikiLinkResolver.transitiveClosure(roots: ["Pinned"], index: index)
+        XCTAssertTrue(result.included.contains { $0.id == "Lower Case Target" })
     }
 }
