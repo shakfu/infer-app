@@ -263,15 +263,19 @@ struct MessageRow: View {
             } else if !message.text.isEmpty {
                 switch message.role {
                 case .assistant:
-                    Markdown(message.text)
-                        .markdownTheme(.gitHub)
-                        .markdownCodeSyntaxHighlighter(
-                            .splash(theme: .sundellsColors(withFont: .init(size: 14)))
-                        )
-                        .environment(\.openURL, OpenURLAction { url in
-                            NSWorkspace.shared.open(url)
-                            return .handled
-                        })
+                    if MessageMath.containsMath(message.text) {
+                        MathMessageView(text: message.text)
+                    } else {
+                        Markdown(message.text)
+                            .markdownTheme(.gitHub)
+                            .markdownCodeSyntaxHighlighter(
+                                .splash(theme: .sundellsColors(withFont: .init(size: 14)))
+                            )
+                            .environment(\.openURL, OpenURLAction { url in
+                                NSWorkspace.shared.open(url)
+                                return .handled
+                            })
+                    }
                 case .user, .system:
                     Text(message.text)
                 }
