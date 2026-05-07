@@ -4,7 +4,7 @@ Roughly prioritized by user-facing impact / effort ratio. Items within a tier ar
 
 ## P0 — small, high value
 
-- [ ] **Hardware-tier gate for heavy SD models (Z-Image-Turbo Q6_K).** On low-end Apple Silicon (M1-class base chip and/or <=8 GB unified memory), loading `z_image_turbo-Q6_K.gguf` saturates GPU + memory enough to freeze the WindowServer (mouse/keyboard stalls, screen freeze) on M1 Air-class machines. At model load in `StableDiffusionRunner`, detect host capability — `ProcessInfo.processInfo.physicalMemory` for RAM, `sysctlbyname("hw.model")` / `machdep.cpu.brand_string` for chip family — and refuse to load Q6_K on the low tier with a dialog pointing at a lighter quant (Q4_K_S / Q4_0). Allow override via an explicit "I understand the risk" toggle in the SD panel that persists per-model so the warning isn't repeated. Pair with shipping a smaller default quant so the bad path is opt-in rather than the default. Caveat on detection: keying purely on "M1" false-positives M1 Pro/Max 16GB+ — combine chip-family check with the memory threshold rather than chip alone. Related: the out-of-process SD execution item under P2 is the deeper fix; this gate is the cheap defensive layer that should land regardless.
+- [x] **Hardware-tier gate for heavy SD models (Z-Image-Turbo Q6_K).** Filename-heuristic gate fires before HF download on `.low`-tier hosts (base M1/M2 + ≤ 8 GB) for `q6_k` / `q8_0` / `f16` / `bf16` quants and `z_image` / `flux` model families. Override is a per-model "I understand the risk" button in the SD panel that persists the trimmed primary input into `PersistKey.sdAcknowledgedHeavyModels`. `HardwareTier` + `SDHardwareGate` in `InferCore`; 16 unit tests cover classifier + decision. Out-of-process SD execution under P2 is still the deeper fix; this is the cheap defensive layer.
 
 ## P1 — feature completeness
 
@@ -30,17 +30,11 @@ Roughly prioritized by user-facing impact / effort ratio. Items within a tier ar
 
 ## P1 — RAG quality
 
-Surfaced by the first end-to-end tests of Phase 5 RAG on real corpora. The pipeline is correct; these items all target retrieval / presentation quality, which dense-embedding-only search leaves on the table. Ordered roughly by payoff.
-
-- [ ] **Hybrid retrieval (vector + FTS5).** Dense retrieval misses passages where the query uses generic terms (e.g. "vector database") but the answer uses proper nouns ("SQLiteVec", "vec0") or vice versa. Add an FTS5 virtual table over `chunks.content` (same `content='chunks', content_rowid='id'` pattern the vault already uses on messages), run keyword search in parallel with vector search, fuse via Reciprocal Rank Fusion (k=60, equal weights). Deduplicate by chunk id, return top-K by fused score. Requires a one-shot backfill for existing stores. ~2 days. **Highest leverage on the first-test failures.**
+Hybrid retrieval (vector + FTS5 + RRF), HyDE query reformulation, and cross-encoder reranking all shipped — see CHANGELOG. Remaining quality work:
 
 - [ ] **Larger chunks for prose.** 512 chars ≈ one paragraph; a scene or section spans 3–5. For narrative or argumentative documents, 1024/100 often retrieves better context. Changes existing indexes, forces re-ingest. Could be a per-workspace setting later; for MVP, bump the default and leave the workspace metadata's `chunk_size` column as the source of truth.
 
 - [ ] **Structural / section metadata.** Detect markdown `## Heading` boundaries during ingestion and store heading paths alongside chunks (e.g. `rag.plan.md > 3.1 Schema`). Inject the path as a prefix in the prompt's context block so the model sees "chunk from section X of file Y" — dramatically improves orientation on "summarize" / "where in X" queries. For plain `.txt` novels, detect `Chapter N` or `PART N` markers with a fallback regex. Medium effort; changes the chunk schema.
-
-- [ ] **Query reformulation (HyDE-style).** "Summarize the book" embeds poorly against any single chunk because the query has no specific vocabulary overlap with the body. Rewrite the query through the chat model before embedding: generate a hypothetical ideal answer, embed *that*, use it for retrieval. Big quality bump on broad questions; adds one LLM call per query. Gate behind a per-workspace setting so users can opt out for latency-sensitive flows.
-
-- [ ] **Reranking.** Pull top-30 by fused hybrid retrieval, rerank with a cross-encoder (`bge-reranker-base`, ~280 MB, downloadable through the same HF flow as the embedder). Cross-encoders read both query and chunk *together* and score true relevance, catching the "topical-but-not-answerful" chunks the similarity-based path keeps surfacing. ~3 days including UI for model download; highest ceiling but most cost (~200 ms per query).
 
 ## P1 — Reasoning model handling
 

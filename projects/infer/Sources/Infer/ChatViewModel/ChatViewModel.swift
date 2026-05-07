@@ -223,6 +223,27 @@ final class ChatViewModel {
     var sdProgress: SDProgress? = nil
     var sdDownloadProgress: Double? = nil
     var sdErrorMessage: String? = nil
+    /// Set when the heavy-model gate refused a load. Carries the
+    /// human-readable reason and the acknowledgement key that
+    /// `acknowledgeHeavySDModelAndLoad()` would persist. Cleared on the
+    /// next successful load attempt.
+    var sdHeavyModelGate: SDHeavyModelGate? = nil
+    /// Identifiers (trimmed primary inputs) the user has explicitly
+    /// acknowledged. Persisted as a JSON-encoded `[String]` under
+    /// `PersistKey.sdAcknowledgedHeavyModels` so the warning isn't
+    /// repeated on subsequent loads of the same model.
+    var sdAcknowledgedHeavyModels: [String] = {
+        guard let data = UserDefaults.standard.data(forKey: PersistKey.sdAcknowledgedHeavyModels),
+              let list = try? JSONDecoder().decode([String].self, from: data)
+        else { return [] }
+        return list
+    }() {
+        didSet {
+            if let data = try? JSONEncoder().encode(sdAcknowledgedHeavyModels) {
+                UserDefaults.standard.set(data, forKey: PersistKey.sdAcknowledgedHeavyModels)
+            }
+        }
+    }
     /// Persistent gallery, sorted newest-first. Built at launch by scanning
     /// the output directory's PNG + JSON sidecar pairs and appended to as
     /// each new generation completes.

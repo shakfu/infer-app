@@ -251,6 +251,33 @@ struct SDImagePanel: View {
                 }
             }
             .buttonStyle(.bordered)
+
+            if let gate = vm.sdHeavyModelGate {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text(gate.reason)
+                            .font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Button {
+                        vm.acknowledgeHeavySDModelAndLoad()
+                    } label: {
+                        Label("Load anyway (I understand the risk)",
+                              systemImage: "checkmark.shield")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                .padding(8)
+                .background(.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(.orange.opacity(0.4), lineWidth: 1)
+                )
+            }
         }
     }
 

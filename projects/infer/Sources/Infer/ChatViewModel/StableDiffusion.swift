@@ -4,6 +4,14 @@ import HuggingFace
 import InferCore
 import UniformTypeIdentifiers
 
+/// VM-level mirror of `SDHardwareGate.Decision.block`. Carries the
+/// human-readable reason for the panel banner plus the identifier the
+/// "Load anyway" button should add to the acknowledged-models list.
+struct SDHeavyModelGate: Equatable, Sendable {
+    let reason: String
+    let acknowledgementKey: String
+}
+
 extension ChatViewModel {
     /// Default output directory for generated images. Lives under
     /// Application Support so the user can browse there in Finder if
@@ -60,6 +68,7 @@ extension ChatViewModel {
     /// silently prefer `model_path` and the user's intent would be lost.
     func loadStableDiffusion() {
         sdErrorMessage = nil
+        sdHeavyModelGate = nil
 
         var components: [SDComponent] = []
         let pairs: [(String, SDComponentKind, String)] = [
@@ -88,6 +97,28 @@ extension ChatViewModel {
         if hasAllInOne && hasMulti {
             sdErrorMessage = "Pick *either* an all-in-one checkpoint *or* the multi-file components. Not both."
             return
+        }
+
+        // Heavy-model gate: refuse Q6_K / Q8_0 / fp16 / Z-Image / Flux on
+        // base M1/M2-class machines with ≤ 8 GB unified memory. Runs
+        // before any HF download so users don't pay GB of bandwidth to
+        // hit the refusal. The primary component is the all-in-one
+        // checkpoint when present, otherwise the diffusion model — those
+        // are the dominant memory consumers; ancillary VAE / encoder
+        // files don't push past the threshold on their own.
+        let primaryComponent = components.first { $0.kind == .allInOne }
+            ?? components.first { $0.kind == .diffusion }
+        if let primary = primaryComponent {
+            let decision = SDHardwareGate.evaluate(
+                primaryInput: primary.input,
+                tier: HardwareTier.current(),
+                acknowledged: Set(sdAcknowledgedHeavyModels)
+            )
+            if case .block(let reason, let key) = decision {
+                sdHeavyModelGate = SDHeavyModelGate(reason: reason, acknowledgementKey: key)
+                sdModelStatus = "Heavy model — confirm to load"
+                return
+            }
         }
 
         sdIsLoadingModel = true
@@ -230,6 +261,27 @@ extension ChatViewModel {
 
     func cancelSDLoad() {
         sdLoadTask?.cancel()
+    }
+
+    /// Persist the gate's acknowledgement key and re-attempt the load.
+    /// Called from the SD panel's "Load anyway" button. Subsequent loads
+    /// of the same model identifier skip the gate (per-model persistence,
+    /// per the design — a user who's already accepted Z-Image on this
+    /// machine doesn't need to re-confirm every session).
+    func acknowledgeHeavySDModelAndLoad() {
+        guard let gate = sdHeavyModelGate else { return }
+        if !sdAcknowledgedHeavyModels.contains(gate.acknowledgementKey) {
+            sdAcknowledgedHeavyModels.append(gate.acknowledgementKey)
+        }
+        sdHeavyModelGate = nil
+        loadStableDiffusion()
+    }
+
+    /// Clear an acknowledged identifier — called from Reset paths /
+    /// settings if we ever surface management UI for it. Currently
+    /// unused but cheap to keep.
+    func revokeHeavySDModelAcknowledgement(_ key: String) {
+        sdAcknowledgedHeavyModels.removeAll { $0 == key }
     }
 
     func browseForSDModel() {

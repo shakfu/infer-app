@@ -140,6 +140,12 @@ public enum PersistKey {
     /// generation — `activeProcessorCount - 1` (the prior default) is
     /// enough to peg the WindowServer.
     public static let sdNThreads = "infer.sd.nThreads"
+    /// JSON-encoded `[String]` of model identifiers (trimmed primary
+    /// input — local path or HF reference) the user has explicitly
+    /// acknowledged as "load anyway" past the low-spec heavy-model
+    /// gate. Stored as a Data blob via JSONEncoder so the array is
+    /// future-extensible.
+    public static let sdAcknowledgedHeavyModels = "infer.sd.acknowledgedHeavyModels"
     public static let sdPrompt = "infer.sd.prompt"
     public static let sdNegativePrompt = "infer.sd.negativePrompt"
     public static let sdWidth = "infer.sd.width"
