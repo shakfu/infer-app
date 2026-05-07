@@ -28,9 +28,12 @@ struct WorkspacePickerMenu: View {
             Button("New workspace…") {
                 vm.openCreateWorkspaceSheet()
             }
-            Button("Manage workspaces…") {
-                vm.openWorkspaceManagement()
-            }
+            // "Manage workspaces…" lived here in pre-Phase-2b builds
+            // and routed to a modal sheet. Since Phase 2b, settings
+            // for the active workspace live inline in `WikiSidebar`
+            // (`WorkspaceSettingsInline`); switching to a different
+            // workspace via the list above + scrolling the sidebar
+            // covers every previous use case.
         } label: {
             label
         }

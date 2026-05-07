@@ -124,9 +124,23 @@ extension ChatViewModel {
                assistantIndex < self.messages.count {
                 self.messages[assistantIndex].retrievedChunks = augmentation.chunks
             }
-            let promptText = augmentation.didAugment
+            let basePromptText = augmentation.didAugment
                 ? augmentation.augmentedText
                 : text
+            // Wiki context: pinned pages (and their transitive
+            // [[wikilinks]]) for the active workspace, prepended to
+            // the user-facing message. Composes alongside RAG —
+            // wiki = curated authored context, RAG = retrieved bulk —
+            // so both can fire on the same turn. Build failures
+            // (missing dir, decode error) downgrade silently to no
+            // wiki injection; logging happens in the helper.
+            let wikiContext = await self.buildWikiContextIfAvailable()
+            let promptText: String
+            if !wikiContext.text.isEmpty {
+                promptText = wikiContext.text + "\n" + basePromptText
+            } else {
+                promptText = basePromptText
+            }
 
             // Build the composition plan for the active agent. `.single`
             // for every persona / non-composition agent (most cases);

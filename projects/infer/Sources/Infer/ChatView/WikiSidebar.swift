@@ -1,0 +1,562 @@
+import SwiftUI
+import AppKit
+import InferCore
+import UniformTypeIdentifiers
+
+/// Payload carried by a sidebar drag — a single wiki page id. The
+/// `.draggable` source is the leaf row; `.dropDestination` targets are
+/// folder rows + a root drop zone, which assemble the new id by
+/// appending the basename to the destination folder (or use the bare
+/// basename for the root case).
+struct WikiPageDragPayload: Codable, Transferable {
+    let pageId: String
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .wikiPageDrag)
+    }
+}
+
+/// Payload for dragging a whole folder. Distinct UTI from
+/// `WikiPageDragPayload` so drop targets can opt into accepting one,
+/// the other, or both — folder rows take both (drop-page nests the
+/// page inside; drop-folder nests the source folder), the trailing
+/// root drop target only takes pages (folder-to-root is "rename to
+/// the basename" — a less common operation; users with that intent
+/// can rename via context menu in Phase 4f).
+struct WikiFolderDragPayload: Codable, Transferable {
+    let folderId: String
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .wikiFolderDrag)
+    }
+}
+
+extension UTType {
+    static let wikiPageDrag = UTType(exportedAs: "com.infer.wiki.page.drag")
+    static let wikiFolderDrag = UTType(exportedAs: "com.infer.wiki.folder.drag")
+}
+
+/// Left sidebar — per-workspace wiki page list with pin toggles plus a
+/// shortcut to advanced workspace settings (which still live in the
+/// modal `WorkspaceSheet` for now; full migration is Phase 2b).
+///
+/// Layout:
+///   ┌─ Workspace picker (dropdown) ──────┐
+///   ├─ Pages (header + new-page button) ─┤
+///   │   📌 Pinned page                   │
+///   │      Other page                    │
+///   │      ...                           │
+///   ├─ "Workspace settings…" button ─────┤
+///   └────────────────────────────────────┘
+///
+/// Pin toggle is a click on the pin icon; clicking the row body opens
+/// the editor sheet. Right-click context menu exposes Rename / Delete.
+struct WikiSidebar: View {
+    @Bindable var vm: ChatViewModel
+    @State private var promptingNewFolder = false
+    @State private var newFolderName = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            if vm.activeWorkspaceId == nil {
+                emptyWorkspaceState
+            } else {
+                ScrollView {
+                    VStack(spacing: 8) {
+                        pageList
+                        Divider().padding(.vertical, 4)
+                        if let active = vm.workspaces.first(where: { $0.id == vm.activeWorkspaceId }) {
+                            WorkspaceSettingsInline(vm: vm, workspace: active)
+                                .padding(.bottom, 8)
+                        }
+                    }
+                }
+            }
+            Divider()
+            footer
+        }
+        .frame(maxHeight: .infinity)
+        .onAppear { vm.refreshWiki() }
+        .onChange(of: vm.activeWorkspaceId) { _, _ in vm.refreshWiki() }
+    }
+
+    // MARK: - Sections
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            WorkspacePickerMenu(vm: vm)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+    }
+
+    private var pageList: some View {
+        VStack(spacing: 0) {
+            treeToolbar
+            // Show the tree whenever there's anything to render —
+            // pages OR empty folders. The empty-state placeholder
+            // only fires when the workspace's wiki is genuinely
+            // bare on disk; an empty folder created via the toolbar
+            // is reason enough to render the tree.
+            if vm.wikiPages.isEmpty && vm.wikiFolders.isEmpty {
+                emptyPagesState
+            } else {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(vm.buildWikiTree()) { node in
+                        WikiTreeRow(node: node, depth: 0, vm: vm)
+                    }
+                }
+                // Trailing drop target: dragging a nested page onto
+                // empty space below the tree moves it back to the
+                // wiki root. Tall enough (24pt) to be a comfortable
+                // hit target without dominating the layout.
+                Color.clear
+                    .frame(height: 24)
+                    .contentShape(Rectangle())
+                    .dropDestination(for: WikiPageDragPayload.self) { drops, _ in
+                        moveDroppedPagesToRoot(drops)
+                        return !drops.isEmpty
+                    }
+            }
+        }
+    }
+
+    /// Move every dropped page to the wiki root by stripping its
+    /// folder prefix. No-op if the page is already at root.
+    private func moveDroppedPagesToRoot(_ drops: [WikiPageDragPayload]) {
+        for drop in drops {
+            let basename = (drop.pageId as NSString).lastPathComponent
+            if basename != drop.pageId {
+                vm.moveWikiPage(from: drop.pageId, to: basename)
+            }
+        }
+    }
+
+    /// Obsidian-style centered icon row above the tree — no labels,
+    /// equal spacing, slightly larger glyphs than the inline tree
+    /// chevrons so the toolbar reads as the primary affordance area.
+    private var treeToolbar: some View {
+        HStack(spacing: 18) {
+            Button { vm.openNewWikiPage() } label: {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("New page")
+
+            Button { promptingNewFolder = true } label: {
+                Image(systemName: "folder.badge.plus")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help("New folder")
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .alert("New folder", isPresented: $promptingNewFolder) {
+            TextField("folder name (use / for nested)", text: $newFolderName)
+            Button("Create") {
+                let trimmed = newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    vm.createWikiFolder(trimmed)
+                }
+                newFolderName = ""
+            }
+            Button("Cancel", role: .cancel) { newFolderName = "" }
+        }
+    }
+
+    private var emptyWorkspaceState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "folder.badge.plus")
+                .font(.title2)
+                .foregroundStyle(.secondary)
+            Text("Create or select a workspace to start a wiki.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding(20)
+        .frame(maxHeight: .infinity)
+    }
+
+    private var emptyPagesState: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "doc.text")
+                .font(.title3)
+                .foregroundStyle(.secondary)
+            Text("No pages yet")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Create a page") { vm.openNewWikiPage() }
+                .buttonStyle(.borderless)
+                .font(.caption)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var footer: some View {
+        if let stats = vm.wikiContextStats {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Image(systemName: "pin.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                    Text("\(stats.pageCount) page\(stats.pageCount == 1 ? "" : "s") · ~\(formattedTokens(stats.approximateTokens)) tokens")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                if stats.droppedCount > 0 {
+                    Text("\(stats.droppedCount) page\(stats.droppedCount == 1 ? "" : "s") dropped (over budget)")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .help("Unpinned pages reachable through wikilinks that exceeded the budget. Pin them to force inclusion, or raise the wiki budget.")
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+        } else {
+            EmptyView()
+        }
+    }
+
+    /// Compact token formatter — "8.2k" instead of "8200" so the
+    /// footer fits in a 240pt sidebar without truncation.
+    private func formattedTokens(_ n: Int) -> String {
+        if n < 1000 { return "\(n)" }
+        return String(format: "%.1fk", Double(n) / 1000.0)
+    }
+}
+
+/// Per-depth indent step in points. 17pt mirrors Obsidian's tree
+/// indent — wide enough that the vertical guide line for nested
+/// content sits clearly under the parent's chevron, narrow enough
+/// that 4-deep paths don't push titles off-screen in a 240pt sidebar.
+private let wikiTreeIndentStep: CGFloat = 17
+
+/// Vertical guide rails drawn at every ancestor depth so the user
+/// can trace a row up to its parent folder, the way Obsidian does.
+/// Each rail is a hairline `Rectangle` 1pt wide centered in its
+/// indent column; the row's leading padding is built up from these
+/// rails plus a small base inset.
+///
+/// Rails draw on the parent's chevron column, NOT the row's own
+/// indent column — that's why the loop runs `0..<depth` (drawing
+/// `depth` rails), and the actual row content starts at
+/// `depth * step + baseInset`.
+private struct WikiTreeIndentGuides: View {
+    let depth: Int
+    private let baseInset: CGFloat = 6
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(0..<depth, id: \.self) { _ in
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.18))
+                    .frame(width: 1)
+                    .padding(.leading, wikiTreeIndentStep / 2)
+                    .padding(.trailing, (wikiTreeIndentStep / 2) - 1)
+            }
+        }
+        .padding(.leading, baseInset)
+    }
+}
+
+/// Recursive row that switches on `WikiTreeNode`. Folders render a
+/// chevron + name (no icon — Obsidian-style); pages render a plain
+/// title row. Folder open/closed state persists per-folder via
+/// @AppStorage so the user's collapse layout survives relaunch.
+struct WikiTreeRow: View {
+    let node: WikiTreeNode
+    let depth: Int
+    let vm: ChatViewModel
+
+    var body: some View {
+        switch node {
+        case .folder(let id, let name, let children):
+            WikiFolderRow(
+                folderId: id,
+                name: name,
+                children: children,
+                depth: depth,
+                vm: vm
+            )
+        case .page(let page):
+            WikiPageRow(
+                page: page,
+                pinned: vm.wikiPins.contains(page.id),
+                isActive: vm.activeTab == .page(id: page.id),
+                depth: depth,
+                onOpen: { vm.openWikiPage(page.id) },
+                onTogglePin: { vm.toggleWikiPin(page.id) },
+                onDelete: { vm.deleteWikiPage(page.id) }
+            )
+        }
+    }
+}
+
+/// Folder row — leading chevron (rotates on expand), folder icon,
+/// folder name. Click anywhere on the row toggles open/closed. Right-
+/// click context menu exposes "New page in folder" + "Delete folder".
+struct WikiFolderRow: View {
+    let folderId: String
+    let name: String
+    let children: [WikiTreeNode]
+    let depth: Int
+    let vm: ChatViewModel
+
+    @AppStorage private var open: Bool
+    @State private var hovering = false
+    @State private var dropTargeted = false
+    @State private var promptingNewPage = false
+    @State private var newPageName = ""
+    @State private var promptingNewSubfolder = false
+    @State private var newSubfolderName = ""
+    @State private var confirmingDelete = false
+
+    init(folderId: String, name: String, children: [WikiTreeNode], depth: Int, vm: ChatViewModel) {
+        self.folderId = folderId
+        self.name = name
+        self.children = children
+        self.depth = depth
+        self.vm = vm
+        // Per-folder fold state — keyed by full folder path so nested
+        // folders with identical basenames don't share open/closed.
+        self._open = AppStorage(
+            wrappedValue: true,
+            "infer.wiki.foldOpen.\(folderId)"
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 0) {
+                WikiTreeIndentGuides(depth: depth)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(open ? 90 : 0))
+                    .animation(.easeInOut(duration: 0.12), value: open)
+                    .frame(width: wikiTreeIndentStep, alignment: .center)
+                Text(name)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+            .padding(.trailing, 10)
+            .padding(.vertical, 5)
+            .background(folderRowBackground)
+            .overlay(alignment: .leading) {
+                if dropTargeted {
+                    Rectangle()
+                        .fill(Color.accentColor)
+                        .frame(width: 2)
+                }
+            }
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            // `.draggable` registers a press-and-hold gesture that
+            // on macOS would otherwise swallow the tap, breaking the
+            // expand/collapse toggle. `.simultaneousGesture` runs
+            // alongside the drag gesture so a click still fires
+            // `open.toggle()` while a press-and-drag still initiates
+            // a folder move.
+            .simultaneousGesture(TapGesture().onEnded { open.toggle() })
+            .draggable(WikiFolderDragPayload(folderId: folderId))
+            .dropDestination(for: WikiPageDragPayload.self) { drops, _ in
+                handleDrop(drops)
+                return !drops.isEmpty
+            } isTargeted: { dropTargeted = $0 }
+            .dropDestination(for: WikiFolderDragPayload.self) { drops, _ in
+                handleFolderDrop(drops)
+                return !drops.isEmpty
+            } isTargeted: { dropTargeted = dropTargeted || $0 }
+            .contextMenu {
+                Button("New page in “\(name)”") { promptingNewPage = true }
+                Button("New folder in “\(name)”") { promptingNewSubfolder = true }
+                Divider()
+                Button("Delete folder", role: .destructive) { confirmingDelete = true }
+            }
+            .alert("New page in “\(name)”", isPresented: $promptingNewPage) {
+                TextField("page name", text: $newPageName)
+                Button("Create") {
+                    let trimmed = newPageName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        // Save an empty page at folder/<name>; the
+                        // VM rewrites the active tab to the new id.
+                        vm.saveWikiPage(
+                            originalId: ChatViewModel.newWikiPageSentinel,
+                            newId: folderId + "/" + trimmed,
+                            content: ""
+                        )
+                        vm.openWikiPage(folderId + "/" + trimmed)
+                    }
+                    newPageName = ""
+                }
+                Button("Cancel", role: .cancel) { newPageName = "" }
+            }
+            .alert("New folder in “\(name)”", isPresented: $promptingNewSubfolder) {
+                TextField("folder name", text: $newSubfolderName)
+                Button("Create") {
+                    let trimmed = newSubfolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        vm.createWikiFolder(folderId + "/" + trimmed)
+                        // Auto-open the parent so the user sees the
+                        // new subfolder appear without having to
+                        // expand manually.
+                        open = true
+                    }
+                    newSubfolderName = ""
+                }
+                Button("Cancel", role: .cancel) { newSubfolderName = "" }
+            }
+            .alert("Delete folder “\(name)” and all pages inside?",
+                   isPresented: $confirmingDelete,
+                   actions: {
+                       Button("Delete", role: .destructive) {
+                           vm.deleteWikiFolder(folderId)
+                       }
+                       Button("Cancel", role: .cancel) {}
+                   },
+                   message: {
+                       Text("This permanently removes every page nested under this folder. Inbound wikilinks resolve as unresolved until updated.")
+                   })
+
+            if open {
+                ForEach(children) { child in
+                    WikiTreeRow(node: child, depth: depth + 1, vm: vm)
+                }
+            }
+        }
+    }
+
+    /// Folder header background. Drop-targeted is the only place we
+    /// keep an accent tint — it's a transient interaction state where
+    /// the user needs unambiguous "here's where it lands" feedback.
+    /// Hover stays as the same gray as page rows for visual coherence.
+    private var folderRowBackground: Color {
+        if dropTargeted { return Color.accentColor.opacity(0.12) }
+        if hovering { return Color.secondary.opacity(0.08) }
+        return Color.clear
+    }
+
+    /// Move every dropped page into this folder, preserving its
+    /// basename. A page already inside this folder is a no-op (same
+    /// new id as old). Pages already nested at deeper paths under
+    /// this folder also stay put — moving `Folder/Sub/Page` "into"
+    /// `Folder` would silently flatten the structure, which the user
+    /// almost never wants. We treat such drops as no-ops; flattening
+    /// requires an explicit drag onto a deeper target.
+    private func handleDrop(_ drops: [WikiPageDragPayload]) {
+        for drop in drops {
+            let basename = (drop.pageId as NSString).lastPathComponent
+            let newId = folderId + "/" + basename
+            // Skip self-drops and skip drops where the source is
+            // already directly under this folder (prevents the
+            // flattening case).
+            if drop.pageId.lowercased() == newId.lowercased() { continue }
+            vm.moveWikiPage(from: drop.pageId, to: newId)
+        }
+    }
+
+    /// Nest a dropped folder under this folder. Cycle / collision
+    /// guards live in `WikiStore.moveFolder`; here we just compute
+    /// the new path and call the VM. Self-drops are no-ops.
+    private func handleFolderDrop(_ drops: [WikiFolderDragPayload]) {
+        for drop in drops {
+            if drop.folderId.lowercased() == folderId.lowercased() { continue }
+            let basename = (drop.folderId as NSString).lastPathComponent
+            let newPath = folderId + "/" + basename
+            vm.moveWikiFolder(from: drop.folderId, to: newPath)
+        }
+    }
+}
+
+/// Page leaf row. No file icon — Obsidian renders pages as plain
+/// titles indented under the parent folder, with the indent guides
+/// providing the structural cue. Pinned status is shown via a small
+/// trailing dot (always visible when pinned, hover-affordance for
+/// toggling otherwise).
+private struct WikiPageRow: View {
+    let page: WikiPage
+    let pinned: Bool
+    let isActive: Bool
+    let depth: Int
+    let onOpen: () -> Void
+    let onTogglePin: () -> Void
+    let onDelete: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 0) {
+            WikiTreeIndentGuides(depth: depth)
+            // Skip the chevron column so the title aligns under
+            // sibling folder names rather than under the chevron's
+            // text. Obsidian's leaf rows pad equivalent to the
+            // chevron width so the structure reads as a real tree.
+            Spacer()
+                .frame(width: wikiTreeIndentStep)
+            Text(displayName)
+                .font(.system(size: 13))
+                .fontWeight(isActive ? .medium : .regular)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if pinned || hovering {
+                Button(action: onTogglePin) {
+                    Image(systemName: pinned ? "pin.fill" : "pin")
+                        .font(.system(size: 10))
+                        .foregroundStyle(pinned ? .orange : .secondary)
+                }
+                .buttonStyle(.borderless)
+                .help(pinned ? "Unpin" : "Pin (always inject)")
+            }
+        }
+        .padding(.trailing, 10)
+        .padding(.vertical, 5)
+        .background(rowBackground)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        // Same `.draggable`-vs-tap conflict as folder rows: use a
+        // simultaneous gesture so click-to-open still fires while
+        // press-and-drag initiates a page move.
+        .simultaneousGesture(TapGesture().onEnded { onOpen() })
+        .contextMenu {
+            Button("Open", action: onOpen)
+            Button(pinned ? "Unpin" : "Pin", action: onTogglePin)
+            Divider()
+            Button("Delete", role: .destructive, action: onDelete)
+        }
+        // Drag the page id; folder rows + the trailing root drop
+        // target handle the move via `vm.moveWikiPage`.
+        .draggable(WikiPageDragPayload(pageId: page.id))
+    }
+
+    /// Render the basename only — folder context is conveyed by the
+    /// row's depth indent, mirroring Obsidian. Falls back to the
+    /// full id for root-level pages.
+    private var displayName: String {
+        (page.id as NSString).lastPathComponent
+    }
+
+    /// Obsidian-style: subtle gray for selection (not accent blue),
+    /// even subtler gray on hover. Active state wins over hover.
+    private var rowBackground: Color {
+        if isActive { return Color.secondary.opacity(0.18) }
+        if hovering { return Color.secondary.opacity(0.08) }
+        return Color.clear
+    }
+}

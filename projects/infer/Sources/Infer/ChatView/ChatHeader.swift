@@ -4,6 +4,13 @@ import AppKit
 extension ChatView {
     var header: some View {
         HStack(spacing: 12) {
+            Button {
+                wikiSidebarOpen.toggle()
+            } label: {
+                Image(systemName: wikiSidebarOpen ? "sidebar.left" : "sidebar.squares.left")
+            }
+            .help(wikiSidebarOpen ? "Hide wiki sidebar" : "Show wiki sidebar")
+
             statusView
             WorkspacePickerMenu(vm: vm)
             AgentPickerMenu(vm: vm, sidebarOpen: $sidebarOpen)

@@ -440,6 +440,61 @@ final class ChatViewModel {
     var pendingImageURL: URL? = nil
 
     let vault = VaultStore.shared
+    /// Per-workspace markdown wiki — curated, always-injected context
+    /// composed alongside RAG. See `WikiStore` for the storage model
+    /// and `buildWikiContextIfAvailable()` below for the per-turn
+    /// injection helper.
+    let wiki = WikiStore()
+    /// Token budget for the always-inject wiki context. Defaults to
+    /// 8k — generous enough that authored notes for typical projects
+    /// fit, conservative enough to leave room for RAG chunks +
+    /// conversation history. Pinned roots bypass the cap so the user
+    /// is never surprised by a pinned page being dropped.
+    var wikiBudgetTokens: Int = UserDefaults.standard.integer(forKey: PersistKey.wikiBudgetTokens) > 0
+        ? UserDefaults.standard.integer(forKey: PersistKey.wikiBudgetTokens)
+        : 8000
+    {
+        didSet { UserDefaults.standard.set(wikiBudgetTokens, forKey: PersistKey.wikiBudgetTokens) }
+    }
+    /// Pages list for the active workspace, refreshed via
+    /// `refreshWiki()` when the workspace switches or after a
+    /// save/delete. Empty when no workspace is active.
+    var wikiPages: [WikiPage] = []
+    /// Pinned page ids for the active workspace (cached for O(1) UI
+    /// pin toggle rendering). Refreshed alongside `wikiPages`.
+    var wikiPins: Set<String> = []
+    /// Every folder under the active workspace's wiki root, even
+    /// folders containing no pages — needed so a freshly-created
+    /// empty folder still renders in the tree (without this list, the
+    /// tree was synthesised purely from page paths and empty folders
+    /// were invisible). Refreshed alongside `wikiPages`.
+    var wikiFolders: [String] = []
+    /// Pending refresh task. Cancelled before starting a new refresh
+    /// so rapid back-to-back calls (which happen on every save / pin
+    /// / move / folder op) can't race and stomp fresh state with
+    /// stale snapshots — manifested as "tree flickering" or rows
+    /// briefly disappearing during interaction.
+    @ObservationIgnored
+    var wikiRefreshTask: Task<Void, Never>? = nil
+    /// Open tabs in the main content area. Tab 0 is always Chat
+    /// (uncloseable, ordering-fixed); subsequent tabs are wiki pages
+    /// opened from the sidebar. New entries are appended; reopening a
+    /// page that's already a tab focuses it instead of duplicating.
+    var openTabs: [WikiTab] = [.chat]
+    /// Currently-rendered tab. Defaults to chat; switches when the
+    /// user clicks a tab strip entry or opens a wiki page from the
+    /// sidebar.
+    var activeTab: WikiTab = .chat
+    /// Sentinel id used by the "new page" flow before the user has
+    /// picked a name. New pages get a temp tab whose id is this
+    /// sentinel until the first save.
+    static let newWikiPageSentinel: String = ""
+    /// Cached preview of what the next chat turn will inject from the
+    /// wiki — page count, dropped count, approximate tokens. Refreshed
+    /// alongside `wikiPages` / `wikiPins` in `refreshWiki`. Surfaced in
+    /// the sidebar footer so the user can tell at a glance how much
+    /// context they're committing on each turn.
+    var wikiContextStats: WikiContextStats? = nil
 
     /// Row id of the in-progress vault conversation, or nil if no turns have
     /// been recorded yet (next `send()` will create a new row).

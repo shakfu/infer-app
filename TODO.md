@@ -8,6 +8,26 @@ Roughly prioritized by user-facing impact / effort ratio. Items within a tier ar
 
 ## P1 — feature completeness
 
+- [x] **Per-workspace wiki — Phase 2b.** Inline workspace settings + RAG section in `WikiSidebar` (replacing modal for editing; modal kept for creation only), live KaTeX preview pane in editor (`HSplitView` reusing `MathMessageView`'s WKWebView), backlinks panel below editor (chips that save current draft + open linked page on click). See CHANGELOG.
+
+- [x] **Per-workspace wiki — Phase 3a (inject-budget viz + rename-with-rewrites).** Sidebar footer shows "N pages · ~Yk tokens" plus orange "M pages dropped (over budget)" line when the cap fired. Renames rewrite inbound `[[wikilink]]`s across all sibling pages (alias + section fragment preserved). See CHANGELOG.
+
+- [x] **Per-workspace wiki — Phase 3b (`[[` autocomplete in editor).** `MarkdownTextView` (NSTextView wrap) + `MarkdownTextViewController` + `WikiAutocompletePopover`. Tab / Enter / Esc / ↑ ↓ keyboard nav; prefix-then-substring fuzzy ranking; 8-hit cap; current page excluded from candidates. See CHANGELOG.
+
+- [x] **Per-workspace wiki — Phase 4b (real folders + nested tree).** Path-aware storage, recursive listing, basename-fallback resolution, tree view with chevrons + per-folder fold state, "new page in folder" + "delete folder" context menus, root toolbar with `square.and.pencil` + `folder.badge.plus`. See CHANGELOG.
+
+- [x] **Per-workspace wiki — Phase 4c (Cmd+W / Cmd+1..9 shortcuts, debounced auto-save, live backlinks).** See CHANGELOG.
+
+- [x] **Per-workspace wiki — Phase 4d (drag-to-move pages between folders).** `WikiStore.movePage` + `WikiPageDragPayload` Transferable + folder/root drop targets. See CHANGELOG.
+
+- [x] **Per-workspace wiki — Phase 4e (drag-folder + drag-to-reorder tabs).** `WikiStore.moveFolder` with cycle/overwrite guards; folder + tab Transferable payloads; folder-row dual drop accepting both pages and folders; tab chip drag with custom pill preview. See CHANGELOG.
+
+- [ ] **Per-workspace wiki — Phase 4f (rename + sidebar search + sort).** Rename via context menu on rows (today rename happens implicitly via title edit on the page; folder rename has no path). Sidebar fuzzy-search field at the top of the tree (filter pages by basename + folder name; navigate with Cmd+K-style fuzzy picker). Sort options on the toolbar — alphabetical / modified date / pin-first. Batched single-pass wikilink rewrite on `moveFolder` so very-large folder moves stay O(N) instead of O(N²) in pages.
+
+- [ ] **Per-workspace wiki — Phase 3 (polish).** `[[wikilink]]` autocomplete in the editor (NSTextView delegate matching `[[` prefix → page-id picker), live-updating backlinks panel as edits land, drag-to-rename with link rewrite, optional inject-budget visualisation in the sidebar ("12 pages / 8.2k tokens / 3 dropped"), per-folder wiki structure (today's storage layer is flat — nested pages would need link resolution to handle `[[folder/Page]]`).
+
+
+
 - [ ] **Timestamps per message.** Stash `Date` on each `ChatMessage`, show as `HH:mm` in the gutter. Helps when triaging long sessions.
 
 - [ ] **Multi-language syntax highlighting in chat.** Splash is Swift-only. Swap for Highlightr (highlight.js via JavaScriptCore) behind the existing `CodeSyntaxHighlighter` interface; the call site in `MessageRow` doesn't change. NOTE: subsumed by the "WKWebView-per-message chat rendering" experiment below if that path is taken — highlight.js is already bundled in `WebAssets/` and would run inside the chat WebView automatically.

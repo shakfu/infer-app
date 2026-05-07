@@ -64,6 +64,11 @@ public enum PersistKey {
     /// semantics (forces temperature=1.0) so it must be explicit.
     public static let cloudExtendedThinkingEnabled = "infer.cloud.extendedThinkingEnabled"
     public static let sidebarOpen = "infer.sidebarOpen"
+    /// Visibility of the left wiki sidebar (per-workspace markdown
+    /// pages + pin toggles). Independent of `sidebarOpen` so a user
+    /// can collapse one without the other. Defaults to true on first
+    /// launch so the wiki feature is discoverable.
+    public static let wikiSidebarOpen = "infer.wikiSidebarOpen"
     public static let sidebarTab = "infer.sidebarTab"
     public static let activeWorkspaceId = "infer.activeWorkspaceId"
 
@@ -146,6 +151,13 @@ public enum PersistKey {
     /// gate. Stored as a Data blob via JSONEncoder so the array is
     /// future-extensible.
     public static let sdAcknowledgedHeavyModels = "infer.sd.acknowledgedHeavyModels"
+
+    /// Token budget for always-injected wiki context. Stored as Int;
+    /// 0 (default for unset Int in UserDefaults) means "use built-in
+    /// default" (8k). The wiki composes pinned pages + their
+    /// transitive `[[wikilinks]]` and stops adding pages once this
+    /// cap would be exceeded; pinned roots bypass the cap.
+    public static let wikiBudgetTokens = "infer.wiki.budgetTokens"
     public static let sdPrompt = "infer.sd.prompt"
     public static let sdNegativePrompt = "infer.sd.negativePrompt"
     public static let sdWidth = "infer.sd.width"

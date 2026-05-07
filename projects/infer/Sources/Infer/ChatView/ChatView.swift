@@ -6,6 +6,10 @@ import InferCore
 struct ChatView: View {
     @Bindable var vm: ChatViewModel
     @AppStorage(PersistKey.sidebarOpen) var sidebarOpen: Bool = true
+    /// Independent visibility flag for the left wiki sidebar so users
+    /// can collapse it without affecting the right (Model / Agents /
+    /// etc.) sidebar.
+    @AppStorage(PersistKey.wikiSidebarOpen) var wikiSidebarOpen: Bool = true
     @State var composerExpanded: Bool = false
     @FocusState var composerFocused: Bool
     @State var pinnedToBottom: Bool = true
@@ -16,13 +20,26 @@ struct ChatView: View {
 
     var body: some View {
         HStack(spacing: 0) {
+            if wikiSidebarOpen {
+                WikiSidebar(vm: vm)
+                    .frame(width: 240)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+                Divider()
+            }
+
             VStack(spacing: 0) {
-                header
+                MainContentTabBar(vm: vm)
                 Divider()
-                transcript
-                transcriptionBanner
-                Divider()
-                composer
+                Group {
+                    switch vm.activeTab {
+                    case .chat:
+                        chatTabContent
+                    case .page(let id):
+                        WikiPageView(vm: vm, pageId: id)
+                            .id(id)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(minWidth: 520)
 
@@ -33,8 +50,13 @@ struct ChatView: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .frame(minWidth: sidebarOpen ? 800 : 520, minHeight: 500)
+        .frame(
+            minWidth: (sidebarOpen ? 800 : 520) + (wikiSidebarOpen ? 240 : 0),
+            minHeight: 500
+        )
         .animation(.easeInOut(duration: 0.18), value: sidebarOpen)
+        .animation(.easeInOut(duration: 0.18), value: wikiSidebarOpen)
+        .background(tabKeyboardShortcuts)
         .overlay(alignment: .bottom) {
             ToastOverlay(center: vm.toasts)
                 .animation(.easeInOut(duration: 0.2), value: vm.toasts.current)
@@ -45,8 +67,13 @@ struct ChatView: View {
                 vm.inspectorListing = nil
             }
         }
+        // Workspace creation still uses the modal sheet — single
+        // decision point that benefits from focus. Editing existing
+        // workspaces happens inline in the WikiSidebar
+        // (`WorkspaceSettingsInline`); the `workspaceInSheet` field on
+        // the VM is no longer presented modally.
         .sheet(isPresented: Binding(
-            get: { vm.workspaceInSheet != nil || vm.creatingWorkspace },
+            get: { vm.creatingWorkspace },
             set: { open in
                 if !open {
                     vm.workspaceInSheet = nil
@@ -69,6 +96,55 @@ struct ChatView: View {
                ),
                actions: { Button("OK") { vm.errorMessage = nil } },
                message: { Text(vm.errorMessage ?? "") })
+    }
+
+    /// Hidden zero-size buttons that register Cmd+W (close active
+    /// tab) and Cmd+1..9 (switch to tab N) keyboard shortcuts.
+    /// Cmd+W is only registered when the active tab is a page so the
+    /// system Close-Window shortcut still works when the user is on
+    /// the (uncloseable) Chat tab.
+    @ViewBuilder
+    private var tabKeyboardShortcuts: some View {
+        Group {
+            if vm.activeTab != .chat {
+                Button("") { vm.closeTab(vm.activeTab) }
+                    .keyboardShortcut("w", modifiers: .command)
+            }
+            // Cmd+1..9 — index into vm.openTabs (1-indexed for the
+            // user, 0-indexed in the array). Out-of-range indices
+            // are no-ops.
+            ForEach(1...9, id: \.self) { n in
+                Button("") {
+                    let idx = n - 1
+                    guard vm.openTabs.indices.contains(idx) else { return }
+                    vm.switchTab(vm.openTabs[idx])
+                }
+                .keyboardShortcut(
+                    KeyEquivalent(Character(String(n))),
+                    modifiers: .command
+                )
+            }
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+    }
+
+    /// What the main content area renders when the active tab is
+    /// `.chat`. Same elements as before the Phase 4a tab restructure
+    /// (header + transcript + transcription banner + composer); the
+    /// outer tab bar replaces the previous responsibility for telling
+    /// the user "you're in chat mode."
+    @ViewBuilder
+    var chatTabContent: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            transcript
+            transcriptionBanner
+            Divider()
+            composer
+        }
     }
 
     func handleAudioDrop(providers: [NSItemProvider]) -> Bool {
