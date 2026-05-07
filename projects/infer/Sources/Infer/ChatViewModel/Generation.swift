@@ -135,11 +135,30 @@ extension ChatViewModel {
             // (missing dir, decode error) downgrade silently to no
             // wiki injection; logging happens in the helper.
             let wikiContext = await self.buildWikiContextIfAvailable()
-            let promptText: String
-            if !wikiContext.text.isEmpty {
-                promptText = wikiContext.text + "\n" + basePromptText
-            } else {
-                promptText = basePromptText
+            // Per-turn supplement: any `[[Page]]` mentions in the
+            // user's message expand to include those pages' content
+            // for this turn only. Mentions are scoped to the
+            // *original* user text (`text`), not RAG's augmented
+            // form, so the user's literal `[[Page]]` syntax drives
+            // the lookup even when RAG also fired.
+            let mentionsContext = await self.buildWikiMentionsContext(in: text)
+            var prefix = ""
+            if !wikiContext.text.isEmpty { prefix += wikiContext.text + "\n" }
+            if !mentionsContext.text.isEmpty { prefix += mentionsContext.text + "\n" }
+            let promptText = prefix + basePromptText
+            if !mentionsContext.pageIds.isEmpty {
+                self.logs.log(
+                    .debug,
+                    source: "wiki",
+                    message: "mentions: \(mentionsContext.pageIds.count) page\(mentionsContext.pageIds.count == 1 ? "" : "s") (~\(mentionsContext.approximateTokens) tok)"
+                )
+            }
+            if !mentionsContext.unresolvedTargets.isEmpty {
+                self.logs.log(
+                    .debug,
+                    source: "wiki",
+                    message: "unresolved mentions: \(mentionsContext.unresolvedTargets.joined(separator: ", "))"
+                )
             }
 
             // Build the composition plan for the active agent. `.single`

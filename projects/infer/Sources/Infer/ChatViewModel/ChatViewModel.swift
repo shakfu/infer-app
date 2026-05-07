@@ -485,6 +485,9 @@ final class ChatViewModel {
     /// user clicks a tab strip entry or opens a wiki page from the
     /// sidebar.
     var activeTab: WikiTab = .chat
+    /// Fuzzy quick-switcher visibility. Bound to Cmd+O on the chat
+    /// surface; the modal sheet renders `WikiQuickSwitcher`.
+    var showQuickSwitcher: Bool = false
     /// Sentinel id used by the "new page" flow before the user has
     /// picked a name. New pages get a temp tab whose id is this
     /// sentinel until the first save.

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import InferCore
 
 /// Inline wiki page editor — what the main content area renders when
 /// the active tab is a `.page(id:)`. Replaces the modal
@@ -148,7 +149,44 @@ struct WikiPageView: View {
                 scheduleAutoSave()
                 scheduleBacklinksRefresh()
             }
+            .onReceive(editorController.wikilinkClickSubject) { rawTarget in
+                handleWikilinkClick(rawTarget)
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Resolve a Cmd-clicked wikilink target to an existing page id
+    /// (case-insensitive, basename-fallback) and open it as a tab.
+    /// Unresolved targets surface as a one-line toast so the user
+    /// knows the click was registered but the linked page doesn't
+    /// exist yet — could be a typo or a future "create stub on
+    /// click" feature later.
+    private func handleWikilinkClick(_ rawTarget: String) {
+        // Save current draft so navigating away doesn't lose
+        // unsaved changes — same idiom as the backlinks chips.
+        if dirty, !isNew { saveIfPossible() }
+
+        let pages = vm.wikiPages
+        let fullIndex = Dictionary(
+            uniqueKeysWithValues: pages.map { ($0.id.lowercased(), $0) }
+        )
+        var basenameIndex: [String: String] = [:]
+        for fullKey in fullIndex.keys.sorted() {
+            let base = (fullKey as NSString).lastPathComponent
+            if basenameIndex[base] == nil { basenameIndex[base] = fullKey }
+        }
+        if let resolvedKey = WikiLinkResolver.resolveKey(
+            rawTarget,
+            fullIndex: fullIndex,
+            basenameIndex: basenameIndex
+        ),
+           let page = fullIndex[resolvedKey] {
+            vm.openWikiPage(page.id)
+        } else {
+            vm.toasts.show(
+                "No page named “\(rawTarget)” in this workspace."
+            )
+        }
     }
 
     /// Debounced auto-save. 1.5 s after the user stops typing on an

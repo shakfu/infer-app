@@ -30,6 +30,38 @@ enum WikiTab: Hashable, Sendable, Codable {
     }
 }
 
+/// Per-turn supplement built from `[[Page]]` mentions found in the
+/// user's chat message. Distinct from `WikiContext` (which is the
+/// always-injected pinned set) — mentions live for one turn only.
+/// Format wraps the resolved pages in a `<wiki_mentions>` block so
+/// the model sees the user's `[[Page]]` syntax in the message body
+/// alongside the resolved content as adjacent context.
+public struct WikiMentionsContext: Equatable, Sendable {
+    public let text: String
+    public let pageIds: [String]
+    public let unresolvedTargets: [String]
+    public let approximateTokens: Int
+
+    public static let empty = WikiMentionsContext(
+        text: "",
+        pageIds: [],
+        unresolvedTargets: [],
+        approximateTokens: 0
+    )
+
+    static func format(_ pages: [WikiPage]) -> String {
+        guard !pages.isEmpty else { return "" }
+        var body = "<wiki_mentions>\nThe user referenced these pages in this message; treat them as supplementary context for this turn.\n\n"
+        for page in pages {
+            body += "## \(page.id)\n\n"
+            body += page.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            body += "\n\n"
+        }
+        body += "</wiki_mentions>\n"
+        return body
+    }
+}
+
 /// Snapshot of what the next chat turn would inject from the wiki.
 /// Surfaced in the sidebar footer so users see the cost of their pin
 /// set without having to reason about it. Mirrors `WikiContext`'s
@@ -54,6 +86,69 @@ extension ChatViewModel {
     /// (a few small file reads + a BFS over a deduped set), so we
     /// don't cache — pinning a page or editing a wiki body should
     /// reflect on the next turn without explicit cache invalidation.
+    /// Scan the user's current message for `[[Page]]` mentions and
+    /// build a per-turn context block from the matched pages — a
+    /// "for this turn only" supplement to the always-injected pinned
+    /// set. Resolution mirrors `WikiLinkResolver.resolveKey` (case-
+    /// insensitive, basename fallback). Unresolved mentions surface
+    /// in the result so the caller can log / surface them; they
+    /// don't fail the build.
+    ///
+    /// Returns `.empty` when no workspace is active, the message
+    /// contains no mentions, or every mention is unresolved.
+    func buildWikiMentionsContext(in messageText: String) async -> WikiMentionsContext {
+        guard let workspaceId = activeWorkspaceId else { return .empty }
+        let rawTargets = WikiLinkResolver.extractLinks(from: messageText)
+        guard !rawTargets.isEmpty else { return .empty }
+        let pages = wikiPages
+        let fullIndex = Dictionary(
+            uniqueKeysWithValues: pages.map { ($0.id.lowercased(), $0) }
+        )
+        var basenameIndex: [String: String] = [:]
+        for fullKey in fullIndex.keys.sorted() {
+            let base = (fullKey as NSString).lastPathComponent
+            if basenameIndex[base] == nil { basenameIndex[base] = fullKey }
+        }
+        // Resolve each mention; dedup by resolved id so `[[X]]` and
+        // `[[x]]` don't double-count.
+        var resolvedById: [String: WikiPage] = [:]
+        var resolvedOrder: [String] = []
+        var unresolved: [String] = []
+        for raw in rawTargets {
+            if let key = WikiLinkResolver.resolveKey(
+                raw, fullIndex: fullIndex, basenameIndex: basenameIndex
+            ),
+               let page = fullIndex[key] {
+                if resolvedById[page.id] == nil {
+                    resolvedById[page.id] = page
+                    resolvedOrder.append(page.id)
+                }
+            } else {
+                unresolved.append(raw)
+            }
+        }
+        // Re-load each resolved page from disk so the latest saved
+        // content is what gets injected — `wikiPages` is cached and
+        // could lag behind a recent save in very-short windows.
+        var freshPages: [WikiPage] = []
+        for id in resolvedOrder {
+            if let fresh = try? await wiki.loadPage(workspaceId: workspaceId, id: id) {
+                freshPages.append(fresh)
+            } else if let stale = resolvedById[id] {
+                freshPages.append(stale)
+            }
+        }
+        let approxTokens = freshPages.reduce(0) {
+            $0 + WikiContext.estimateTokens(for: $1)
+        }
+        return WikiMentionsContext(
+            text: WikiMentionsContext.format(freshPages),
+            pageIds: freshPages.map { $0.id },
+            unresolvedTargets: unresolved,
+            approximateTokens: approxTokens
+        )
+    }
+
     func buildWikiContextIfAvailable() async -> WikiContext {
         guard let workspaceId = activeWorkspaceId else { return .empty }
         let store = self.wiki

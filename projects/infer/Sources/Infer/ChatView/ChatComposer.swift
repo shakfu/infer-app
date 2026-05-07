@@ -1,9 +1,14 @@
 import SwiftUI
 import AppKit
+import InferCore
 
 extension ChatView {
     var composer: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Suggestion popover above the composer when the user is
+            // mid-typing a `[[mention]]`. Sits above the input so it
+            // doesn't push the controls down on every keystroke.
+            ChatComposerMentionsBar(vm: vm)
             if let url = vm.pendingImageURL {
                 attachmentChip(url: url)
             }
@@ -41,13 +46,26 @@ extension ChatView {
                     Button("Stop") { vm.stop() }
                         .keyboardShortcut(".", modifiers: .command)
                 } else {
-                    Button("Send") {
-                        vm.send()
-                        if composerExpanded { composerExpanded = false }
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Button("Send") {
+                            vm.send()
+                            if composerExpanded { composerExpanded = false }
+                        }
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .disabled(!sendEnabled)
+                        .help(sendDisabledReason ?? "Send (⌘↵)")
+                        // Mention-cost badge: tells the user how much
+                        // extra context their `[[Page]]` mentions
+                        // will inject this turn. Counted against the
+                        // current input only (mentions are per-turn
+                        // — the always-injected pinned cost is
+                        // already shown in the wiki sidebar footer).
+                        if let cost = mentionCostBadge {
+                            Text(cost)
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!sendEnabled)
-                    .help(sendDisabledReason ?? "Send (⌘↵)")
                 }
             }
         }
@@ -74,6 +92,43 @@ extension ChatView {
             return "The current backend can't use image attachments. Switch to MLX with a vision-capable model (e.g. gemma-3-4b-it-4bit)."
         }
         return nil
+    }
+
+    /// Compact summary of the per-turn cost of `[[Page]]` mentions
+    /// in the current input — synchronous + cheap (regex-light scan
+    /// of the input string, then chars/4 estimate per resolved page
+    /// from the cached `vm.wikiPages`). Returns nil when no mentions
+    /// are present so the badge slot stays empty in the common case.
+    var mentionCostBadge: String? {
+        let raws = WikiLinkResolver.extractLinks(from: vm.input)
+        guard !raws.isEmpty else { return nil }
+        let pages = vm.wikiPages
+        let fullIndex = Dictionary(
+            uniqueKeysWithValues: pages.map { ($0.id.lowercased(), $0) }
+        )
+        var basenameIndex: [String: String] = [:]
+        for fullKey in fullIndex.keys.sorted() {
+            let base = (fullKey as NSString).lastPathComponent
+            if basenameIndex[base] == nil { basenameIndex[base] = fullKey }
+        }
+        var resolved: Set<String> = []
+        var totalTokens = 0
+        for raw in raws {
+            guard let key = WikiLinkResolver.resolveKey(
+                raw, fullIndex: fullIndex, basenameIndex: basenameIndex
+            ),
+                  !resolved.contains(key),
+                  let page = fullIndex[key] else { continue }
+            resolved.insert(key)
+            totalTokens += WikiContext.estimateTokens(for: page)
+        }
+        guard !resolved.isEmpty else { return nil }
+        return "\(resolved.count) mention\(resolved.count == 1 ? "" : "s") · ~\(formattedTokens(totalTokens)) tok"
+    }
+
+    private func formattedTokens(_ n: Int) -> String {
+        if n < 1000 { return "\(n)" }
+        return String(format: "%.1fk", Double(n) / 1000.0)
     }
 
     var attachButton: some View {

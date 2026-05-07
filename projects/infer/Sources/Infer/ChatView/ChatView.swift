@@ -86,6 +86,9 @@ struct ChatView: View {
                 vm.creatingWorkspace = false
             }
         }
+        .sheet(isPresented: $vm.showQuickSwitcher) {
+            WikiQuickSwitcher(vm: vm)
+        }
         .onDrop(of: [.audiovisualContent, .audio, .fileURL], isTargeted: nil) { providers in
             handleAudioDrop(providers: providers)
         }
@@ -124,6 +127,16 @@ struct ChatView: View {
                     modifiers: .command
                 )
             }
+            // Cmd+O — fuzzy quick-switcher. Mirrors Obsidian's
+            // shortcut for the same affordance. Only fires when a
+            // workspace is active (no point opening the picker with
+            // an empty page list).
+            Button("") {
+                if vm.activeWorkspaceId != nil {
+                    vm.showQuickSwitcher = true
+                }
+            }
+            .keyboardShortcut("o", modifiers: .command)
         }
         .opacity(0)
         .frame(width: 0, height: 0)

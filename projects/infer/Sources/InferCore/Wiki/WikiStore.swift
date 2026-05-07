@@ -579,7 +579,7 @@ extension WikiContext {
     /// Cheap token estimate — chars / 4 is the GPT rule-of-thumb that
     /// holds within ~10% for English markdown. Real token counts run
     /// inside the runner; this is just for the budget cap.
-    static func estimateTokens(for page: WikiPage) -> Int {
+    public static func estimateTokens(for page: WikiPage) -> Int {
         // Add a small overhead for the wrapping header so the budget
         // accounts for it.
         let headerOverhead = 8

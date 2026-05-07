@@ -19,8 +19,34 @@ struct MarkdownTextView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        guard let tv = scroll.documentView as? NSTextView else { return scroll }
+        // Manual NSScrollView + WikiTextView setup (rather than the
+        // `NSTextView.scrollableTextView()` convenience) so we can
+        // use a custom NSTextView subclass that handles Cmd-click on
+        // wikilinks. Boilerplate matches what the convenience would
+        // build, just with the subclass slotted in.
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = true
+
+        let bigDimension: CGFloat = 1_000_000
+        let container = NSTextContainer(containerSize: NSSize(
+            width: 0, height: bigDimension
+        ))
+        container.widthTracksTextView = true
+        let layoutManager = NSLayoutManager()
+        layoutManager.addTextContainer(container)
+        let storage = NSTextStorage()
+        storage.addLayoutManager(layoutManager)
+
+        let tv = WikiTextView(frame: .zero, textContainer: container)
+        tv.autoresizingMask = [.width]
+        tv.minSize = NSSize(width: 0, height: 0)
+        tv.maxSize = NSSize(width: bigDimension, height: bigDimension)
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
         tv.delegate = context.coordinator
         tv.allowsUndo = true
         tv.isRichText = false
@@ -35,7 +61,15 @@ struct MarkdownTextView: NSViewRepresentable {
         tv.textColor = NSColor.textColor
         tv.string = text
         tv.textContainerInset = NSSize(width: 8, height: 8)
+        // Cmd-click anywhere inside a [[...]] span fires this — the
+        // controller routes it to the SwiftUI side, which resolves
+        // the target id and opens the page as a tab.
+        tv.onWikilinkClick = { [weak controller] target in
+            controller?.fireWikilinkClick(target)
+        }
         controller.textView = tv
+
+        scroll.documentView = tv
         return scroll
     }
 
@@ -99,6 +133,111 @@ struct MarkdownTextView: NSViewRepresentable {
     }
 }
 
+/// `NSTextView` subclass that surfaces Cmd-click on `[[wikilinks]]`
+/// as a callback. Plain clicks fall through to standard text-view
+/// behaviour (cursor positioning, selection, IME) — only the Cmd
+/// modifier triggers the link-follow path so editing inside a
+/// wikilink isn't disrupted.
+final class WikiTextView: NSTextView {
+    /// Invoked with the raw link target (alias and section fragment
+    /// stripped) when the user Cmd-clicks inside a `[[...]]` span.
+    /// Resolution from raw target → actual page id happens on the
+    /// SwiftUI side via `WikiLinkResolver.resolveKey`.
+    var onWikilinkClick: ((String) -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        guard event.modifierFlags.contains(.command) else {
+            super.mouseDown(with: event)
+            return
+        }
+        if let target = wikilinkTarget(at: event) {
+            onWikilinkClick?(target)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    /// Pretty cursor when Cmd is held over a wikilink — communicates
+    /// "click here to follow." Without this the text I-beam stays,
+    /// which works but isn't as discoverable.
+    override func cursorUpdate(with event: NSEvent) {
+        if event.modifierFlags.contains(.command),
+           wikilinkTarget(at: event) != nil {
+            NSCursor.pointingHand.set()
+            return
+        }
+        super.cursorUpdate(with: event)
+    }
+
+    /// Resolve a click event to the wikilink target whose `[[...]]`
+    /// span contains the click. Returns `nil` when the click is
+    /// outside any span, the span is unclosed, or the inner text is
+    /// empty after stripping alias / section fragment.
+    private func wikilinkTarget(at event: NSEvent) -> String? {
+        guard let layoutManager = self.layoutManager,
+              let container = self.textContainer,
+              let storage = self.textStorage else { return nil }
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        let containerPoint = NSPoint(
+            x: viewPoint.x - textContainerOrigin.x,
+            y: viewPoint.y - textContainerOrigin.y
+        )
+        let glyphIndex = layoutManager.glyphIndex(for: containerPoint, in: container)
+        let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
+        let nsStr = storage.string as NSString
+        guard charIndex < nsStr.length else { return nil }
+
+        // Look back from the click for the most recent `[[`.
+        let beforeRange = NSRange(location: 0, length: charIndex)
+        let openRange = nsStr.range(
+            of: "[[", options: .backwards, range: beforeRange
+        )
+        // If `[[` isn't found before the click but the click sits
+        // exactly on `[[`, we still want to handle it — extend the
+        // search to include charIndex itself.
+        let openLoc: Int
+        if openRange.location != NSNotFound {
+            openLoc = openRange.location
+        } else if charIndex + 2 <= nsStr.length,
+                  nsStr.substring(with: NSRange(location: charIndex, length: 2)) == "[[" {
+            openLoc = charIndex
+        } else {
+            return nil
+        }
+        let innerStart = openLoc + 2
+        guard innerStart < nsStr.length else { return nil }
+
+        // Find the matching `]]`. Bail if the span runs past EOF.
+        let afterRange = NSRange(
+            location: innerStart, length: nsStr.length - innerStart
+        )
+        let closeRange = nsStr.range(of: "]]", options: [], range: afterRange)
+        guard closeRange.location != NSNotFound else { return nil }
+
+        // Click must land inside the `[[...]]` span (between the
+        // opening and the start of the closing). Allow the click at
+        // the closing markers too — feels natural.
+        guard charIndex >= innerStart, charIndex <= closeRange.location + 1 else {
+            return nil
+        }
+
+        let inner = nsStr.substring(with: NSRange(
+            location: innerStart, length: closeRange.location - innerStart
+        ))
+        // Strip alias (`|...`) and section fragment (`#...`) — same
+        // as the resolver does for inbound link extraction.
+        var target = inner
+        if let pipe = target.firstIndex(of: "|") {
+            target = String(target[target.startIndex..<pipe])
+        }
+        if let hash = target.firstIndex(of: "#") {
+            target = String(target[target.startIndex..<hash])
+        }
+        let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 /// Bridge between the SwiftUI side (autocomplete popover, suggestion
 /// list) and the underlying `NSTextView`. SwiftUI observes `trigger`
 /// to render the popover; the `NSTextView` calls `recomputeTrigger`
@@ -118,6 +257,18 @@ final class MarkdownTextViewController: ObservableObject {
     @Published var suggestions: [String] = []
 
     weak var textView: NSTextView?
+
+    /// Combine-style passthrough for "user Cmd-clicked a wikilink in
+    /// the editor." SwiftUI observers (the page view) react to each
+    /// emission by resolving the target and opening it as a tab. A
+    /// passthrough rather than a `@Published` value because we want
+    /// repeated clicks on the same target to fire each time, not
+    /// dedup against equality.
+    let wikilinkClickSubject = PassthroughSubject<String, Never>()
+
+    func fireWikilinkClick(_ target: String) {
+        wikilinkClickSubject.send(target)
+    }
 
     struct Trigger: Equatable {
         /// Text the user has typed after the most recent `[[`. Used
