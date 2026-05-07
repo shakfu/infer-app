@@ -28,20 +28,36 @@ struct WikiPageView: View {
     init(vm: ChatViewModel, pageId: String) {
         self.vm = vm
         self.pageId = pageId
-        _title = State(initialValue: pageId)
+        // Title field shows the *basename* — folder context is
+        // conveyed by the breadcrumb row above. New pages (sentinel
+        // id "") start with an empty title field. Renames (an edit
+        // to the title) keep the page in its current folder; to
+        // move across folders the user drags the page in the
+        // sidebar.
+        _title = State(initialValue: (pageId as NSString).lastPathComponent)
     }
 
     private var isNew: Bool { pageId.isEmpty }
 
-    /// Mirrors `WikiStore.validatePath`: empty / absolute / `..`-
-    /// traversal / doubled-separator / dotfile-component paths are
-    /// rejected, but `/` is allowed because folder-nested pages keep
-    /// their full path as the title (e.g. `ABC/DEF/Sandwich`).
+    /// Folder path containing this page, or empty string when the
+    /// page sits at the wiki root. Used by `breadcrumb` to render
+    /// the parent context above the title.
+    private var parentPath: String {
+        (pageId as NSString).deletingLastPathComponent
+    }
+
+    /// `true` when the user's input in the title field is acceptable
+    /// for save. New pages allow `/` in the title (so a user can
+    /// create `Notes/Daily/2026-05-08` from the root + button without
+    /// pre-creating folders). Existing pages restrict to basename —
+    /// renames keep the page in its current folder; cross-folder
+    /// moves go through drag-and-drop.
     private var canSave: Bool {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               !trimmed.hasPrefix("/"), !trimmed.hasPrefix("\\"),
               trimmed != ".", trimmed != ".." else { return false }
+        if !isNew, trimmed.contains("/") { return false }
         let comps = trimmed.split(separator: "/", omittingEmptySubsequences: false)
         for c in comps {
             let s = String(c)
@@ -107,6 +123,39 @@ struct WikiPageView: View {
     // MARK: - Sections
 
     private var header: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if !isNew, !parentPath.isEmpty {
+                breadcrumb
+            }
+            titleBar
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    /// Folder-path breadcrumb above the title — Obsidian-style. Path
+    /// components are dimmed muted text separated by chevron
+    /// glyphs; non-clickable in v1 (folders aren't "openable" the
+    /// way pages are; the sidebar's tree is the navigation surface
+    /// for jumping between folders).
+    private var breadcrumb: some View {
+        HStack(spacing: 4) {
+            let parts = parentPath.split(separator: "/").map(String.init)
+            ForEach(Array(parts.enumerated()), id: \.offset) { idx, part in
+                if idx > 0 {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Text(part)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+    }
+
+    private var titleBar: some View {
         HStack(spacing: 8) {
             TextField(
                 isNew ? "Untitled" : "Page name",
@@ -138,8 +187,6 @@ struct WikiPageView: View {
                 .keyboardShortcut("s", modifiers: .command)
                 .disabled(!canSave || (!dirty && !isNew))
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
     }
 
     private var editor: some View {
@@ -276,9 +323,24 @@ struct WikiPageView: View {
 
     private func saveIfPossible() {
         guard canSave, dirty || isNew else { return }
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Compose the new id from the page's existing folder context
+        // + the user's basename input. New pages with `/` in the
+        // input (root creation of nested pages) use the input as-is
+        // because they have no parent context yet. Existing pages
+        // keep their parent path; cross-folder moves go through
+        // sidebar drag.
+        let newId: String
+        if isNew {
+            newId = trimmed
+        } else if parentPath.isEmpty {
+            newId = trimmed
+        } else {
+            newId = parentPath + "/" + trimmed
+        }
         vm.saveWikiPage(
             originalId: pageId,
-            newId: title.trimmingCharacters(in: .whitespacesAndNewlines),
+            newId: newId,
             content: content
         )
         dirty = false
