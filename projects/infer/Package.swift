@@ -11,6 +11,12 @@ let package = Package(
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.2.0"),
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
         .package(url: "https://github.com/JohnSundell/Splash", from: "0.16.0"),
+        // Highlightr (raspu, MIT) — Swift wrapper around highlight.js
+        // running in JavaScriptCore. Used for non-Swift fenced code
+        // blocks (Python / JS / Bash / etc.); Splash continues to
+        // handle Swift because it produces nicer Swift-specific
+        // tokenization. ~190 languages out of the box.
+        .package(url: "https://github.com/raspu/Highlightr", from: "2.3.0"),
         .package(url: "https://github.com/swiftlang/swift-markdown", from: "0.7.0"),
         // STTextView (Marcin Krzyzanowski, MIT) — TextKit 2 NSTextView
         // replacement used by the wiki page editor. Markdown-focused
@@ -176,6 +182,7 @@ let package = Package(
                 .product(name: "Tokenizers", package: "swift-transformers"),
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
                 .product(name: "Splash", package: "Splash"),
+                .product(name: "Highlightr", package: "Highlightr"),
                 .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "STTextView", package: "STTextView"),
                 .product(name: "GRDB", package: "GRDB.swift"),

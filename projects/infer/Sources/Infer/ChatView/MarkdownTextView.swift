@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import Combine
 import Splash
+import Highlightr
 import STTextView
 import STTextKitPlus
 
@@ -341,14 +342,57 @@ final class WikiTextStorageDelegate: NSObject, NSTextStorageDelegate {
             lineLocation = lineEndIncludingTerminator
         }
 
-        // Splash pass for captured Swift code blocks. Other
-        // languages stay on the plain monospaced + dimmed-background
-        // styling applied during the walk above. Multi-language
-        // coverage (Python / JS / etc.) is on the TODO list — needs
-        // either Highlightr (JS-runtime, broad) or properly wired
-        // SwiftTreeSitter / NeonPlugin (native, per-language opt-in).
-        for hl in pendingHighlights where hl.language == "swift" {
-            applySplashHighlights(in: hl.range, on: textStorage)
+        // Splash for Swift (richer Swift-specific tokenization);
+        // Highlightr (highlight.js via JavaScriptCore) for everything
+        // else. Both passes only add `.foregroundColor`; the
+        // monospaced font + dimmed background written by
+        // `applyCodeBlock` during the walk above remain.
+        for hl in pendingHighlights {
+            if hl.language == "swift" {
+                applySplashHighlights(in: hl.range, on: textStorage)
+            } else {
+                applyHighlightrHighlights(
+                    in: hl.range, language: hl.language, on: textStorage
+                )
+            }
+        }
+    }
+
+    /// Cached `Highlightr` instance — boots a JSContext + loads
+    /// highlight.js, so we don't want to rebuild it on every styling
+    /// pass. Lazy so unit tests that never hit a fenced code block
+    /// don't pay the cost.
+    nonisolated(unsafe) private static let sharedHighlightr: Highlightr? = {
+        let hl = Highlightr()
+        hl?.setTheme(to: "xcode")
+        return hl
+    }()
+
+    /// Run Highlightr (highlight.js) over `range` and copy each run's
+    /// foreground color onto `storage`. Unknown languages produce no
+    /// output from highlight.js, in which case we leave the plain
+    /// monospaced styling in place. Font is intentionally untouched
+    /// — `applyCodeBlock` already wrote the monospaced font and the
+    /// code-block background.
+    private func applyHighlightrHighlights(
+        in range: NSRange, language: String, on storage: NSTextStorage
+    ) {
+        guard range.length > 0,
+              range.location + range.length <= storage.length,
+              let highlighter = Self.sharedHighlightr else { return }
+        let source = (storage.string as NSString).substring(with: range)
+        guard let attributed = highlighter.highlight(
+            source, as: language, fastRender: true
+        ) else { return }
+        let attrFull = NSRange(location: 0, length: attributed.length)
+        attributed.enumerateAttribute(.foregroundColor, in: attrFull, options: []) { value, sub, _ in
+            guard let color = value as? NSColor else { return }
+            let abs = NSRange(
+                location: range.location + sub.location,
+                length: sub.length
+            )
+            guard abs.location + abs.length <= storage.length else { return }
+            storage.addAttributes([.foregroundColor: color], range: abs)
         }
     }
 
@@ -404,7 +448,6 @@ final class WikiTextStorageDelegate: NSObject, NSTextStorageDelegate {
     private func applyCodeBlock(line: NSRange, in storage: NSTextStorage) {
         storage.addAttributes([
             .font: monospacedFont,
-            .backgroundColor: codeBackgroundColor,
             .foregroundColor: baseColor,
         ], range: line)
     }
@@ -449,7 +492,6 @@ final class WikiTextStorageDelegate: NSObject, NSTextStorageDelegate {
             )
             storage.addAttributes([
                 .font: monospacedFont,
-                .backgroundColor: codeBackgroundColor,
             ], range: absRange)
             consumed.append(NSRange(
                 location: openRange.location,
