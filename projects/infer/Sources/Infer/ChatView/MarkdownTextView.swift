@@ -266,6 +266,14 @@ final class MarkdownTextViewController: ObservableObject {
     /// dedup against equality.
     let wikilinkClickSubject = PassthroughSubject<String, Never>()
 
+    /// Optional hook that resolves a chosen page id into the actual
+    /// text to insert (typically basename when unique, full path on
+    /// basename collision — Obsidian-style). The SwiftUI side wires
+    /// this with the workspace's full page list. Falls back to the
+    /// id verbatim when nil so the controller stays usable in
+    /// contexts where collision resolution isn't relevant.
+    var resolveInsertText: ((String) -> String)?
+
     func fireWikilinkClick(_ target: String) {
         wikilinkClickSubject.send(target)
     }
@@ -345,7 +353,12 @@ final class MarkdownTextViewController: ObservableObject {
     func acceptSuggestion(_ pageId: String) -> Bool {
         guard let trigger, let tv = textView else { return false }
         let storage = tv.textStorage
-        let replacement = "\(pageId)]]"
+        // Insert basename when the resolver hook says it's unique;
+        // full id on collision. Falls back to verbatim id when no
+        // hook is set (used in contexts where collision matters
+        // less, e.g. tests).
+        let insertText = resolveInsertText?(pageId) ?? pageId
+        let replacement = "\(insertText)]]"
         let replacementNS = replacement as NSString
         storage?.beginEditing()
         // Replace the query characters; `[[` already exists immediately

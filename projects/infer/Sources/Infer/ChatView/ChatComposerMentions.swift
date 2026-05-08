@@ -111,13 +111,17 @@ struct ChatComposerMentionsBar: View {
 
     // MARK: - Insert
 
-    /// Replace the trailing `[[query` with `[[<chosenId>]]`. The
-    /// existing `[[` stays in place (so `replaceFromIndex` points
-    /// just *past* it); we replace from there to end-of-string.
+    /// Replace the trailing `[[query` with `[[<insertText>]]`. Insert
+    /// text is the basename when unique (Obsidian-style — keeps
+    /// chat messages clean), full id on basename collision so the
+    /// link still resolves to the intended page. The existing `[[`
+    /// stays in place; we replace from there to end-of-string.
     /// SwiftUI's text bindings don't let us position the cursor —
     /// the user types past the inserted closing `]]` naturally.
     private func insertMention(_ id: String, replacing trigger: TrailingTrigger) {
+        let allIds = vm.wikiPages.map(\.id)
+        let insertText = WikiPageView.insertText(forFullId: id, allIds: allIds)
         let prefix = vm.input[vm.input.startIndex..<trigger.replaceFromIndex]
-        vm.input = String(prefix) + id + "]] "
+        vm.input = String(prefix) + insertText + "]] "
     }
 }

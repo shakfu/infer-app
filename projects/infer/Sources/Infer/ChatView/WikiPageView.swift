@@ -199,7 +199,26 @@ struct WikiPageView: View {
             .onReceive(editorController.wikilinkClickSubject) { rawTarget in
                 handleWikilinkClick(rawTarget)
             }
+            .onAppear {
+                editorController.resolveInsertText = { fullId in
+                    Self.insertText(forFullId: fullId, allIds: vm.wikiPages.map(\.id))
+                }
+            }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Decide how `fullId` should appear inside `[[...]]`: basename
+    /// when no other page in the workspace shares that basename
+    /// (Obsidian's default — keeps body text clean); full path on
+    /// collision so the link resolves unambiguously even after a
+    /// future page is added with the same basename.
+    static func insertText(forFullId fullId: String, allIds: [String]) -> String {
+        let basename = (fullId as NSString).lastPathComponent
+        let lowered = basename.lowercased()
+        let collisions = allIds.filter {
+            ($0 as NSString).lastPathComponent.lowercased() == lowered
+        }
+        return collisions.count > 1 ? fullId : basename
     }
 
     /// Resolve a Cmd-clicked wikilink target to an existing page id
