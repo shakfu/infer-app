@@ -18,17 +18,32 @@ enum MessageMath {
 /// assistant messages stay on the SwiftUI/MarkdownUI path.
 struct MathMessageView: View {
     let text: String
+    /// Cmd+F transcript find state. When non-nil, the WebView's
+    /// JS-side highlighter wraps text matches in `<mark>` tags;
+    /// `activeMatchIndex` (0-based, message-local) styles the
+    /// corresponding match orange instead of yellow. Skips KaTeX-
+    /// rendered math nodes and hljs-highlighted code so equations
+    /// and code styling don't break.
+    var findQuery: String? = nil
+    var activeMatchIndex: Int? = nil
     @State private var height: CGFloat = 20
 
     var body: some View {
-        MathWebView(text: text, height: $height)
-            .frame(height: height)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        MathWebView(
+            text: text,
+            findQuery: findQuery,
+            activeMatchIndex: activeMatchIndex,
+            height: $height
+        )
+        .frame(height: height)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 private struct MathWebView: NSViewRepresentable {
     let text: String
+    var findQuery: String?
+    var activeMatchIndex: Int?
     @Binding var height: CGFloat
 
     func makeCoordinator() -> Coordinator {
@@ -52,6 +67,10 @@ private struct MathWebView: NSViewRepresentable {
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
         context.coordinator.update(text: text)
+        context.coordinator.updateFindState(
+            query: findQuery,
+            activeIndex: activeMatchIndex
+        )
     }
 
     static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
@@ -63,6 +82,15 @@ private struct MathWebView: NSViewRepresentable {
         private var hasLoaded = false
         var pendingText: String?
         private var lastSentText: String?
+        /// Last find state we pushed into the WebView. Compared
+        /// against incoming updates so a no-op SwiftUI re-render
+        /// doesn't fire redundant `evaluateJavaScript` calls.
+        private var lastFindQuery: String?
+        private var lastActiveIndex: Int?
+        /// Pending find state captured before the WebView finishes
+        /// loading. Applied in `didFinish` alongside `pendingText`.
+        private var pendingFindQuery: String?
+        private var pendingActiveIndex: Int?
         private let heightBinding: Binding<CGFloat>
 
         init(heightBinding: Binding<CGFloat>) {
@@ -77,6 +105,51 @@ private struct MathWebView: NSViewRepresentable {
             if lastSentText == text { return }
             lastSentText = text
             send(text: text)
+        }
+
+        /// Push `findQuery` + active-match-index into the WebView
+        /// via a small JS bridge that wraps text matches in
+        /// `<mark>` tags. KaTeX-rendered math (`.katex`,
+        /// `.katex-display`) and hljs-styled code (`.hljs`) are
+        /// skipped during text-node walking so equations and code
+        /// rendering aren't disrupted. Self-skips no-op updates.
+        func updateFindState(query: String?, activeIndex: Int?) {
+            if !hasLoaded {
+                pendingFindQuery = query
+                pendingActiveIndex = activeIndex
+                return
+            }
+            if lastFindQuery == query && lastActiveIndex == activeIndex {
+                return
+            }
+            lastFindQuery = query
+            lastActiveIndex = activeIndex
+            applyFindHighlights(query: query, activeIndex: activeIndex)
+        }
+
+        private func applyFindHighlights(query: String?, activeIndex: Int?) {
+            guard let webView else { return }
+            let queryLiteral = jsString(query ?? "")
+            let activeLiteral: String
+            if let i = activeIndex { activeLiteral = String(i) }
+            else { activeLiteral = "-1" }
+            let js = "if (typeof applyFindHighlights === 'function') { applyFindHighlights(\(queryLiteral), \(activeLiteral)); }"
+            webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+
+        /// JSON-encode a Swift string into a JS string literal —
+        /// `"\\n"`, `"\""`, etc. — so we can splice it into an
+        /// `evaluateJavaScript` payload safely.
+        private func jsString(_ s: String) -> String {
+            guard let data = try? JSONSerialization.data(
+                withJSONObject: [s], options: .fragmentsAllowed
+            ),
+                  let str = String(data: data, encoding: .utf8) else {
+                return "\"\""
+            }
+            // `[s]` JSON-encoded → "[\"...\"]"; index [0] gets the
+            // string literal back.
+            return "(\(str))[0]"
         }
 
         private func send(text: String) {
@@ -117,7 +190,16 @@ private struct MathWebView: NSViewRepresentable {
               window.webkit.messageHandlers.heightChanged.postMessage(h);
             })();
             """
-            webView.evaluateJavaScript(js, completionHandler: nil)
+            webView.evaluateJavaScript(js) { [weak self] _, _ in
+                // Re-apply find highlights after content + KaTeX +
+                // hljs run. Each content swap rebuilds the DOM, so
+                // any prior `<mark>` wrappers are gone and need
+                // re-application based on the current find state.
+                self?.applyFindHighlights(
+                    query: self?.lastFindQuery,
+                    activeIndex: self?.lastActiveIndex
+                )
+            }
         }
 
         private static func markdownToHTML(_ text: String) -> String {
@@ -145,6 +227,14 @@ private struct MathWebView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish _: WKNavigation!) {
             hasLoaded = true
+            // Apply pending find state first so the post-send
+            // highlight pass picks up the right query/active-index.
+            if pendingFindQuery != nil || pendingActiveIndex != nil {
+                lastFindQuery = pendingFindQuery
+                lastActiveIndex = pendingActiveIndex
+                pendingFindQuery = nil
+                pendingActiveIndex = nil
+            }
             if let t = pendingText {
                 pendingText = nil
                 lastSentText = nil
@@ -242,7 +332,100 @@ private struct MathWebView: NSViewRepresentable {
       th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
       a { color: var(--link); text-decoration: none; }
       .katex-display { margin: 8px 0; overflow-x: auto; overflow-y: hidden; }
+      mark.find-match {
+        background: yellow;
+        color: inherit;
+        padding: 0;
+        border-radius: 1px;
+      }
+      mark.find-match.active {
+        background: orange;
+      }
     </style>
+    <script>
+    // Cmd+F highlight bridge. The Swift side calls
+    // `applyFindHighlights(query, activeIndex)` after each content
+    // update + on every find-state change. KaTeX-rendered math
+    // (.katex / .katex-display), hljs-styled code (.hljs), <script>,
+    // <style>, and any existing <mark> are skipped so equations and
+    // code rendering aren't disrupted by text-node mutations.
+    function clearFindHighlights() {
+      var marks = document.querySelectorAll('mark.find-match');
+      marks.forEach(function(mark) {
+        var parent = mark.parentNode;
+        while (mark.firstChild) {
+          parent.insertBefore(mark.firstChild, mark);
+        }
+        parent.removeChild(mark);
+      });
+      var content = document.getElementById('content');
+      if (content) content.normalize();
+    }
+    function applyFindHighlights(query, activeIndex) {
+      clearFindHighlights();
+      if (!query) return;
+      var lowerQuery = query.toLowerCase();
+      var queryLen = lowerQuery.length;
+      if (queryLen === 0) return;
+      var content = document.getElementById('content');
+      if (!content) return;
+      var walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT, {
+        acceptNode: function(node) {
+          var p = node.parentElement;
+          while (p && p !== content) {
+            if (p.classList && (
+              p.classList.contains('katex') ||
+              p.classList.contains('katex-display') ||
+              p.classList.contains('hljs')
+            )) {
+              return NodeFilter.FILTER_REJECT;
+            }
+            var tag = p.tagName;
+            if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK') {
+              return NodeFilter.FILTER_REJECT;
+            }
+            p = p.parentElement;
+          }
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
+      var nodes = [];
+      var n;
+      while ((n = walker.nextNode())) { nodes.push(n); }
+      var matchIndex = 0;
+      for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i];
+        var text = node.nodeValue;
+        var lower = text.toLowerCase();
+        var ranges = [];
+        var pos = 0;
+        while ((pos = lower.indexOf(lowerQuery, pos)) !== -1) {
+          ranges.push([pos, pos + queryLen]);
+          pos += queryLen;
+        }
+        if (ranges.length === 0) continue;
+        var fragment = document.createDocumentFragment();
+        var cursor = 0;
+        for (var r = 0; r < ranges.length; r++) {
+          var start = ranges[r][0];
+          var end = ranges[r][1];
+          if (start > cursor) {
+            fragment.appendChild(document.createTextNode(text.slice(cursor, start)));
+          }
+          var mark = document.createElement('mark');
+          mark.className = 'find-match' + (matchIndex === activeIndex ? ' active' : '');
+          mark.textContent = text.slice(start, end);
+          fragment.appendChild(mark);
+          cursor = end;
+          matchIndex += 1;
+        }
+        if (cursor < text.length) {
+          fragment.appendChild(document.createTextNode(text.slice(cursor)));
+        }
+        node.parentNode.replaceChild(fragment, node);
+      }
+    }
+    </script>
     </head>
     <body><div id="content"></div></body>
     </html>

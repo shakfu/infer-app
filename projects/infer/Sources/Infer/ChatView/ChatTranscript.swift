@@ -387,17 +387,23 @@ struct MessageRow: View {
             } else if !message.text.isEmpty {
                 switch message.role {
                 case .assistant:
-                    if findActive {
-                        // Find-active path applies to *all* assistant
-                        // messages (including math-bearing ones that
-                        // would normally render through MathMessageView's
-                        // WKWebView+KaTeX). The WKWebView path doesn't
-                        // expose ranges we can inject highlights into,
-                        // so during search the plain AttributedString
-                        // path uniformly shows matches across every
-                        // assistant message. Closing the bar restores
-                        // rich rendering — Markdown for prose, KaTeX
-                        // via WKWebView for math.
+                    if MessageMath.containsMath(message.text) {
+                        // Math messages keep rich KaTeX rendering
+                        // even during find. Highlights are injected
+                        // into the WKWebView via `applyFindHighlights`
+                        // JS — KaTeX / hljs nodes are skipped so the
+                        // math rendering isn't disrupted.
+                        MathMessageView(
+                            text: message.text,
+                            findQuery: vm.transcriptFindQuery,
+                            activeMatchIndex: activeMatchIndex
+                        )
+                    } else if findActive {
+                        // Non-math prose path during find: fall back
+                        // to plain AttributedString so highlights
+                        // show. Markdown formatting suppressed
+                        // temporarily; closing the bar restores the
+                        // full Markdown render.
                         Text(MessageWikilinkRenderer.attributedUserMessage(
                             message.text,
                             findQuery: vm.transcriptFindQuery,
@@ -406,8 +412,6 @@ struct MessageRow: View {
                             .environment(\.openURL, OpenURLAction { url in
                                 MessageWikilinkRenderer.handle(url: url, vm: vm)
                             })
-                    } else if MessageMath.containsMath(message.text) {
-                        MathMessageView(text: message.text)
                     } else {
                         // Pre-process `[[Page]]` tokens into
                         // `[label](wiki://Page)` markdown links so
