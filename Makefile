@@ -22,6 +22,9 @@ SQLITEVEC_TAG := 0.0.14
 TSQMD_DIR := thirdparty/tree-sitter-qmd
 TSQMD_MARKER := $(TSQMD_DIR)/Package.swift
 TSQMD_COMMIT := c925e444df03c1f7b7b4cccb5f0a2e72fc130885
+TSPY_DIR := thirdparty/tree-sitter-python
+TSPY_MARKER := $(TSPY_DIR)/Package.swift
+TSPY_TAG := v0.25.0
 INFER_DIR := projects/infer
 INFER_BUILD_DIR := $(BUILD_DIR)/infer-xcode
 
@@ -46,7 +49,7 @@ INFER_PRODUCT_DIR := $(INFER_BUILD_DIR)/Build/Products/$(INFER_CONFIG)
 INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 
 .PHONY: all build bundle run clean clean-infer clean-mlx-cache test
-.PHONY: fetch-stack build-stack fetch-webassets fetch-sqlitevec fetch-tree-sitter-qmd fetch-python generate-icon
+.PHONY: fetch-stack build-stack fetch-webassets fetch-sqlitevec fetch-tree-sitter-qmd fetch-tree-sitter-python fetch-python generate-icon
 .PHONY: build-release bundle-release run-release release
 .PHONY: plugins-gen plugins-gen-check
 
@@ -206,6 +209,16 @@ $(TSQMD_MARKER):
 
 fetch-tree-sitter-qmd: $(TSQMD_MARKER)
 
+# Vendored tree-sitter-python grammar. Stripped Package.swift (no test
+# target, no SwiftTreeSitter dep) so it composes cleanly with our
+# ChimeHQ/SwiftTreeSitter pin. Also stages queries/highlights.scm into
+# projects/infer/Sources/Infer/Resources/python_highlights.scm so the
+# wiki editor can load it via Bundle.module.
+$(TSPY_MARKER):
+	@./scripts/manage.py fetch tree-sitter-python --set tag=$(TSPY_TAG)
+
+fetch-tree-sitter-python: $(TSPY_MARKER)
+
 # Optional plugin. Builds CPython + a curated set of pip packages (default:
 # openai, anthropic) into thirdparty/Python.framework via scripts/buildpy.py.
 # The bundle rule copies the framework if present and skips otherwise, so
@@ -215,7 +228,7 @@ fetch-tree-sitter-qmd: $(TSQMD_MARKER)
 fetch-python:
 	@./scripts/manage.py fetch python$(if $(PY_PKGS), --set py_pkgs="$(PY_PKGS)")
 
-build: $(GGML_XCFRAMEWORK) $(LLAMACPP_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SD_XCFRAMEWORK) $(SQLITEVEC_MARKER) $(TSQMD_MARKER) plugins-gen
+build: $(GGML_XCFRAMEWORK) $(LLAMACPP_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SD_XCFRAMEWORK) $(SQLITEVEC_MARKER) $(TSQMD_MARKER) $(TSPY_MARKER) plugins-gen
 	@xcodebuild $(INFER_XCODE_FLAGS) build
 
 bundle: build $(INFER_DIR)/Resources/AppIcon.icns $(WEBASSETS_MARKER)

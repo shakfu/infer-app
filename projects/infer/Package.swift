@@ -10,12 +10,11 @@ let package = Package(
         .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.8.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.2.0"),
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
-        .package(url: "https://github.com/JohnSundell/Splash", from: "0.16.0"),
         // Highlightr (raspu, MIT) — Swift wrapper around highlight.js
-        // running in JavaScriptCore. Used for non-Swift fenced code
-        // blocks (Python / JS / Bash / etc.); Splash continues to
-        // handle Swift because it produces nicer Swift-specific
-        // tokenization. ~190 languages out of the box.
+        // running in JavaScriptCore. Used by the chat transcript for
+        // arbitrary-language fenced code blocks; ~190 languages out
+        // of the box. The wiki editor uses tree-sitter instead and
+        // does not depend on Highlightr.
         .package(url: "https://github.com/raspu/Highlightr", from: "2.3.0"),
         .package(url: "https://github.com/swiftlang/swift-markdown", from: "0.7.0"),
         // STTextView (Marcin Krzyzanowski, MIT) — TextKit 2 NSTextView
@@ -52,6 +51,10 @@ let package = Package(
         // is added explicitly so SPM resolves a single version
         // (tree-sitter-qmd's Package.swift declares its own dep on it).
         .package(path: "../../thirdparty/tree-sitter-qmd"),
+        // Vendored tree-sitter-python — patched Package.swift (no
+        // Swift deps on the library target) so it composes with
+        // ChimeHQ/SwiftTreeSitter without product-name collision.
+        .package(path: "../../thirdparty/tree-sitter-python"),
         .package(url: "https://github.com/ChimeHQ/SwiftTreeSitter", from: "0.9.0"),
         // libxlsxwriter and CoreXLSX moved into
         // projects/plugins/plugin_spreadsheet_tools — that plugin owns
@@ -189,10 +192,10 @@ let package = Package(
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Tokenizers", package: "swift-transformers"),
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
-                .product(name: "Splash", package: "Splash"),
                 .product(name: "Highlightr", package: "Highlightr"),
                 .product(name: "SwiftTreeSitter", package: "SwiftTreeSitter"),
                 .product(name: "TreeSitterMarkdown", package: "tree-sitter-qmd"),
+                .product(name: "TreeSitterPython", package: "tree-sitter-python"),
                 .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "STTextView", package: "STTextView"),
                 .product(name: "GRDB", package: "GRDB.swift"),
@@ -217,6 +220,11 @@ let package = Package(
                 // under `agents/`. Loader globs both directories.
                 .copy("Resources/personas"),
                 .copy("Resources/agents"),
+                // Tree-sitter highlights query for Python — staged
+                // here by the `tree-sitter-python` fetcher so the
+                // wiki editor can load it via Bundle.module without
+                // crossing target boundaries.
+                .copy("Resources/python_highlights.scm"),
             ],
             linkerSettings: [
                 .unsafeFlags([

@@ -419,9 +419,7 @@ struct MessageRow: View {
                         // route through MessageWikilinkRenderer.handle.
                         Markdown(MessageWikilinkRenderer.markdownifyWikilinks(message.text))
                             .markdownTheme(.gitHub)
-                            .markdownCodeSyntaxHighlighter(
-                                .splash(theme: .sundellsColors(withFont: .init(size: 14)))
-                            )
+                            .markdownCodeSyntaxHighlighter(.chat())
                             .environment(\.openURL, OpenURLAction { url in
                                 MessageWikilinkRenderer.handle(url: url, vm: vm)
                             })

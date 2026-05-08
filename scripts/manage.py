@@ -358,6 +358,94 @@ def fetch_tree_sitter_qmd(inputs: dict[str, object]) -> None:
     print(f"  installed tree-sitter-qmd ({commit[:10]})")
 
 
+def fetch_tree_sitter_python(inputs: dict[str, object]) -> None:
+    """Clone tree-sitter/tree-sitter-python at `tag`, vendor the
+    library bits to thirdparty/tree-sitter-python, and copy its
+    highlights.scm into the Infer target's resources.
+
+    Why we patch upstream's Package.swift: it pulls
+    `tree-sitter/swift-tree-sitter` as a SwiftTreeSitter dep for its
+    test target. Our project already pins ChimeHQ/SwiftTreeSitter; SPM
+    can't reconcile two packages with the same product name. We strip
+    upstream's test target + dep so the library target — which has no
+    Swift deps — compiles cleanly alongside ours.
+    """
+    tag = str(inputs["tag"])
+    repo_url = "https://github.com/tree-sitter/tree-sitter-python.git"
+    thirdparty = ROOT / "thirdparty"
+    dest = thirdparty / "tree-sitter-python"
+    resource_dst = (
+        ROOT / "projects" / "infer" / "Sources" / "Infer" / "Resources"
+        / "python_highlights.scm"
+    )
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        clone_path = tmp / "tree-sitter-python"
+        run([
+            "git", "clone", "-q", "--depth", "1", "--branch", tag,
+            repo_url, str(clone_path),
+        ])
+        shutil.rmtree(clone_path / ".git", ignore_errors=True)
+
+        # Patch Package.swift: drop the test target and the
+        # SwiftTreeSitter dep (the library target itself has no Swift
+        # dependencies). Keep the library target unchanged.
+        #
+        # Hardcoded sources list because upstream's
+        # `FileManager.default.fileExists(atPath: "src/scanner.c")`
+        # check resolves against SPM's working directory, not the
+        # package root — scanner.c sits at thirdparty/tree-sitter-python/
+        # src/scanner.c and the check returns false from elsewhere,
+        # silently dropping the external scanner and leaving its
+        # symbols unresolved at link time.
+        package_swift = clone_path / "Package.swift"
+        patched = """// swift-tools-version:5.3
+
+import Foundation
+import PackageDescription
+
+let package = Package(
+    name: "TreeSitterPython",
+    products: [
+        .library(name: "TreeSitterPython", targets: ["TreeSitterPython"]),
+    ],
+    targets: [
+        .target(
+            name: "TreeSitterPython",
+            path: ".",
+            sources: ["src/parser.c", "src/scanner.c"],
+            resources: [
+                .copy("queries")
+            ],
+            publicHeadersPath: "bindings/swift",
+            cSettings: [.headerSearchPath("src")]
+        ),
+    ],
+    cLanguageStandard: .c11
+)
+"""
+        package_swift.write_text(patched)
+
+        thirdparty.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            print(f"  removing existing {dest}")
+            shutil.rmtree(dest)
+        print(f"  copying tree-sitter-python -> {dest}")
+        shutil.copytree(clone_path, dest, symlinks=True)
+
+    # Copy highlights.scm into the Infer target's resources so the
+    # wiki editor can load it via Bundle.module without crossing
+    # target boundaries.
+    src_scm = dest / "queries" / "highlights.scm"
+    if not src_scm.is_file():
+        raise SystemExit(f"highlights.scm missing in {tag}")
+    resource_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src_scm, resource_dst)
+    print(f"  staged python_highlights.scm -> {resource_dst}")
+    print(f"  installed tree-sitter-python ({tag})")
+
+
 def fetch_webassets(inputs: dict[str, object]) -> None:
     """Download KaTeX + highlight.js into thirdparty/webassets/.
     Replaces fetch_webassets.sh."""
@@ -500,6 +588,12 @@ FETCH_TARGETS: dict[str, Target] = {
             "commit": "c925e444df03c1f7b7b4cccb5f0a2e72fc130885",
         },
         fetch=fetch_tree_sitter_qmd,
+    ),
+    "tree-sitter-python": Target(
+        name="tree-sitter-python",
+        description="Vendored tree-sitter-python grammar + queries",
+        default_inputs={"tag": "v0.25.0"},
+        fetch=fetch_tree_sitter_python,
     ),
     "webassets": Target(
         name="webassets",

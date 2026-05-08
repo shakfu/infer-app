@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import Combine
-import Splash
 import Highlightr
 import STTextView
 import STTextKitPlus
@@ -290,12 +289,16 @@ final class WikiTextStorageDelegate: NSObject, NSTextStorageDelegate {
         // don't get accent-colored inside code blocks.
         applyWikilinks(in: textStorage, fenceRanges: fenceContentRanges.map(\.range))
 
-        // Splash for Swift; Highlightr for everything else. Both only
-        // add `.foregroundColor`; the monospaced font from
-        // `applyCodeBlock` remains.
+        // Per-language fence coloring. Python goes through
+        // tree-sitter-python + the upstream highlights.scm (high-
+        // fidelity, native). Everything else routes to Highlightr
+        // (highlight.js via JavaScriptCore) which gives ~190
+        // grammars for free. Highlightr is already in the dep graph
+        // for the chat transcript, so wiring it back into the wiki
+        // path costs nothing extra.
         for hl in fenceContentRanges {
-            if hl.language == "swift" {
-                applySplashHighlights(in: hl.range, on: textStorage)
+            if hl.language == "python" {
+                applyPythonHighlights(in: hl.range, on: textStorage)
             } else {
                 applyHighlightrHighlights(
                     in: hl.range, language: hl.language, on: textStorage
@@ -303,6 +306,57 @@ final class WikiTextStorageDelegate: NSObject, NSTextStorageDelegate {
             }
         }
     }
+
+    /// Pull the Python fence content out, run it through
+    /// `WikiPythonHighlighter`, and paint each emitted color span
+    /// onto the storage. The highlighter caches by source string so
+    /// edits elsewhere in the document don't re-run the Python parse.
+    private func applyPythonHighlights(in range: NSRange, on storage: NSTextStorage) {
+        guard range.length > 0,
+              range.location + range.length <= storage.length else { return }
+        let source = (storage.string as NSString).substring(with: range)
+        let spans = pythonHighlighter.highlights(for: source, baseOffset: range.location)
+        for span in spans {
+            guard span.range.location + span.range.length <= storage.length else { continue }
+            storage.addAttributes([.foregroundColor: span.color], range: span.range)
+        }
+    }
+
+    /// Highlightr fallback for non-Python fenced code. Boots a single
+    /// JSContext + highlight.js once per app session (lazy static)
+    /// and reuses it across every wiki edit. Highlightr only adds
+    /// `.foregroundColor`; the monospaced font from `applyCodeBlock`
+    /// remains.
+    private func applyHighlightrHighlights(
+        in range: NSRange, language: String, on storage: NSTextStorage
+    ) {
+        guard range.length > 0,
+              range.location + range.length <= storage.length,
+              let highlighter = Self.sharedHighlightr else { return }
+        let source = (storage.string as NSString).substring(with: range)
+        guard let attributed = highlighter.highlight(
+            source, as: language, fastRender: true
+        ) else { return }
+        let attrFull = NSRange(location: 0, length: attributed.length)
+        attributed.enumerateAttribute(.foregroundColor, in: attrFull, options: []) { value, sub, _ in
+            guard let color = value as? NSColor else { return }
+            let abs = NSRange(
+                location: range.location + sub.location,
+                length: sub.length
+            )
+            guard abs.location + abs.length <= storage.length else { return }
+            storage.addAttributes([.foregroundColor: color], range: abs)
+        }
+    }
+
+    /// Lazy app-wide Highlightr instance. Construction loads
+    /// highlight.js + the active stylesheet, so we share one across
+    /// all open wiki editors.
+    nonisolated(unsafe) private static let sharedHighlightr: Highlightr? = {
+        let hl = Highlightr()
+        hl?.setTheme(to: "xcode")
+        return hl
+    }()
 
     /// Apply attributes for a single inline span produced by the
     /// inline tree-sitter pass. Reads the existing font at the span's
@@ -361,72 +415,10 @@ final class WikiTextStorageDelegate: NSObject, NSTextStorageDelegate {
     /// belongs to a single document — sharing across editors would
     /// invalidate the incremental cache on every page switch.
     private let treeSitterParser = WikiTreeSitterParser()
-
-    /// Cached `Highlightr` instance — boots a JSContext + loads
-    /// highlight.js, so we don't want to rebuild it on every styling
-    /// pass. Lazy so unit tests that never hit a fenced code block
-    /// don't pay the cost.
-    nonisolated(unsafe) private static let sharedHighlightr: Highlightr? = {
-        let hl = Highlightr()
-        hl?.setTheme(to: "xcode")
-        return hl
-    }()
-
-    /// Run Highlightr (highlight.js) over `range` and copy each run's
-    /// foreground color onto `storage`. Unknown languages produce no
-    /// output from highlight.js, in which case we leave the plain
-    /// monospaced styling in place. Font is intentionally untouched
-    /// — `applyCodeBlock` already wrote the monospaced font and the
-    /// code-block background.
-    private func applyHighlightrHighlights(
-        in range: NSRange, language: String, on storage: NSTextStorage
-    ) {
-        guard range.length > 0,
-              range.location + range.length <= storage.length,
-              let highlighter = Self.sharedHighlightr else { return }
-        let source = (storage.string as NSString).substring(with: range)
-        guard let attributed = highlighter.highlight(
-            source, as: language, fastRender: true
-        ) else { return }
-        let attrFull = NSRange(location: 0, length: attributed.length)
-        attributed.enumerateAttribute(.foregroundColor, in: attrFull, options: []) { value, sub, _ in
-            guard let color = value as? NSColor else { return }
-            let abs = NSRange(
-                location: range.location + sub.location,
-                length: sub.length
-            )
-            guard abs.location + abs.length <= storage.length else { return }
-            storage.addAttributes([.foregroundColor: color], range: abs)
-        }
-    }
-
-    /// Run Splash over the swift source in `range` and apply its
-    /// per-token color attributes onto `storage`. The monospaced
-    /// font + background that `applyCodeBlock` already wrote stay;
-    /// Splash only adds foreground colors.
-    private func applySplashHighlights(in range: NSRange, on storage: NSTextStorage) {
-        guard range.length > 0,
-              range.location + range.length <= storage.length else { return }
-        let source = (storage.string as NSString).substring(with: range)
-        let highlighter = SyntaxHighlighter(
-            format: AttributedStringOutputFormat(
-                theme: .sundellsColors(withFont: .init(size: 13))
-            )
-        )
-        let attributed = highlighter.highlight(source)
-        attributed.enumerateAttribute(
-            .foregroundColor,
-            in: NSRange(location: 0, length: attributed.length),
-            options: []
-        ) { value, subrange, _ in
-            guard let color = value as? NSColor else { return }
-            let abs = NSRange(
-                location: range.location + subrange.location,
-                length: subrange.length
-            )
-            storage.addAttributes([.foregroundColor: color], range: abs)
-        }
-    }
+    /// Python in-fence highlighter. Holds its own `tree-sitter-python`
+    /// parser + the upstream `highlights.scm` query. Activated for
+    /// fences whose info string is `python` (or pandoc `{python}`).
+    private let pythonHighlighter = WikiPythonHighlighter()
 
     // MARK: - Code block
 
