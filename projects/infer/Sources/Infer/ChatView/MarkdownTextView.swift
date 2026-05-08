@@ -57,7 +57,10 @@ struct MarkdownTextView: NSViewRepresentable {
         tv.isAutomaticTextCompletionEnabled = false
         tv.isAutomaticDataDetectionEnabled = false
         tv.isAutomaticLinkDetectionEnabled = false
-        tv.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        // Body in proportional system font; the storage delegate
+        // re-applies monospaced font + dimmed background to code
+        // spans + fenced code blocks so they contrast visually.
+        tv.font = NSFont.systemFont(ofSize: 13)
         tv.textColor = NSColor.textColor
         tv.string = text
         tv.textContainerInset = NSSize(width: 8, height: 8)
@@ -161,28 +164,70 @@ struct MarkdownTextView: NSViewRepresentable {
     }
 }
 
-/// `NSTextStorageDelegate` that styles `[[wikilink]]` spans as
-/// accent-colored, underlined text — matches the link styling of
-/// the chat transcript so the same visual idiom carries across both
-/// surfaces. Triggers on every edit; the scan is O(N) over the full
-/// storage which is fine at personal-notes scale (~10k chars).
+/// `NSTextStorageDelegate` that applies markdown inline styling to
+/// the editor's text storage on every edit. Headings render larger
+/// and bolder, fenced + inline code in monospaced + dimmed
+/// background, `**bold**` bold, `*italic*` italic, `[[wikilinks]]`
+/// and `[md links](url)` accent-colored + underlined.
 ///
-/// Applies attributes via `setAttributes` (not `replaceCharacters`)
-/// inside `didProcessEditing`, which is documented as safe — only
-/// character mutations would re-entrantly fire the delegate.
+/// Single-pass approach: walk the document line-by-line, tracking
+/// fenced-code state across lines; per non-fenced line apply inline
+/// styling for headings + emphasis + code spans + links. Full sweep
+/// on every character edit (O(N) over storage) — fine at personal-
+/// notes scale; promote to incremental edit-range scanning later if
+/// it bites on long documents.
+///
+/// Attribute mutations inside `didProcessEditing` are safe because
+/// they don't change characters — only `replaceCharacters` would
+/// re-entrantly fire the delegate.
 final class WikiTextStorageDelegate: NSObject, NSTextStorageDelegate {
     private let baseFont: NSFont
+    private let baseSize: CGFloat
     private let baseColor: NSColor
     private let linkColor: NSColor
+    private let codeBackgroundColor: NSColor
+    private let mutedColor: NSColor
 
     init(
-        font: NSFont = .monospacedSystemFont(ofSize: 13, weight: .regular),
+        size: CGFloat = 13,
         textColor: NSColor = .textColor,
         linkColor: NSColor = .controlAccentColor
     ) {
-        self.baseFont = font
+        self.baseSize = size
+        self.baseFont = NSFont.systemFont(ofSize: size)
         self.baseColor = textColor
         self.linkColor = linkColor
+        self.codeBackgroundColor = NSColor.secondaryLabelColor.withAlphaComponent(0.10)
+        self.mutedColor = NSColor.secondaryLabelColor
+    }
+
+    private var monospacedFont: NSFont {
+        NSFont.monospacedSystemFont(ofSize: baseSize, weight: .regular)
+    }
+
+    /// Heading sizes scale down as level increases, mirroring how
+    /// `swift-markdown-ui`'s GitHub theme renders the chat
+    /// transcript so wiki + chat surfaces feel consistent.
+    private func headingFont(level: Int) -> NSFont {
+        let size: CGFloat
+        switch level {
+        case 1: size = baseSize + 9
+        case 2: size = baseSize + 6
+        case 3: size = baseSize + 4
+        case 4: size = baseSize + 2
+        case 5: size = baseSize + 1
+        default: size = baseSize
+        }
+        return NSFont.boldSystemFont(ofSize: size)
+    }
+
+    private func emphasisFont(bold: Bool, italic: Bool, monospaced: Bool = false) -> NSFont {
+        if monospaced { return monospacedFont }
+        var traits: NSFontDescriptor.SymbolicTraits = []
+        if bold { traits.insert(.bold) }
+        if italic { traits.insert(.italic) }
+        let descriptor = baseFont.fontDescriptor.withSymbolicTraits(traits)
+        return NSFont(descriptor: descriptor, size: baseSize) ?? baseFont
     }
 
     func textStorage(
@@ -191,51 +236,296 @@ final class WikiTextStorageDelegate: NSObject, NSTextStorageDelegate {
         range editedRange: NSRange,
         changeInLength delta: Int
     ) {
-        // `editedAttributes`-only edits are us re-applying styling
-        // and should NOT trigger another sweep. Only character
-        // mutations matter.
         guard editedMask.contains(.editedCharacters) else { return }
+        applyStyling(to: textStorage)
+    }
+
+    /// Public so `MarkdownTextView` can fire a one-shot sweep after
+    /// the initial `tv.string = ...` assignment (which runs before
+    /// the delegate is attached) and on external binding updates.
+    func applyStyling(to textStorage: NSTextStorage) {
         let str = textStorage.string as NSString
         let full = NSRange(location: 0, length: str.length)
 
-        // Reset everything to plain. Cheaper than diffing — full
-        // sweep handles delete-of-a-link, paste, undo, etc.
+        // Reset to defaults. Single sweep is cheaper than diffing
+        // and handles delete / paste / undo uniformly.
         textStorage.setAttributes([
             .font: baseFont,
             .foregroundColor: baseColor,
         ], range: full)
 
-        // Apply wikilink styling to every `[[...]]` span. State-
-        // machine version of `extractLinks`'s scan, but applying
-        // attributes instead of harvesting targets. Doesn't honour
-        // code fences for now — `[[example]]` inside a fenced
-        // sample will render styled. Acceptable in an authoring
-        // context where code samples with wikilinks are rare; if
-        // it bites we can promote to the full state-machine logic.
-        var searchStart = 0
-        while searchStart < str.length {
-            let openRange = str.range(
-                of: "[[",
-                range: NSRange(location: searchStart, length: str.length - searchStart)
+        // Walk the document line-by-line, tracking whether we're
+        // inside a ``` fenced code block across line boundaries.
+        var lineLocation = 0
+        var inFence = false
+        while lineLocation < str.length {
+            var lineEndContent: Int = 0
+            var lineEndIncludingTerminator: Int = 0
+            str.getLineStart(
+                nil,
+                end: &lineEndIncludingTerminator,
+                contentsEnd: &lineEndContent,
+                for: NSRange(location: lineLocation, length: 0)
+            )
+            let lineRange = NSRange(
+                location: lineLocation,
+                length: lineEndContent - lineLocation
+            )
+            let lineText = str.substring(with: lineRange)
+
+            // Fence open/close markers stay in monospaced + dimmed
+            // background but flip the fence state for the next line.
+            if lineText.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                inFence.toggle()
+                applyCodeBlock(line: lineRange, in: textStorage)
+                lineLocation = lineEndIncludingTerminator
+                continue
+            }
+            if inFence {
+                applyCodeBlock(line: lineRange, in: textStorage)
+                lineLocation = lineEndIncludingTerminator
+                continue
+            }
+
+            // Heading? Match `^#{1,6}\s+...$`. The leading hashes
+            // get muted color so the heading text reads as the
+            // primary content; the heading font applies to the
+            // whole line so layout reflows correctly.
+            if let parsed = parseHeading(lineText) {
+                let level = parsed.level
+                let lineLen = lineRange.length
+                textStorage.addAttributes([
+                    .font: headingFont(level: level),
+                ], range: lineRange)
+                let hashesRange = NSRange(
+                    location: lineRange.location,
+                    length: min(parsed.markerLength, lineLen)
+                )
+                textStorage.addAttributes([
+                    .foregroundColor: mutedColor,
+                ], range: hashesRange)
+                // Inline patterns (bold/italic/code/links) inside
+                // headings are styled too — but only if they don't
+                // collide with the heading font (the emphasis path
+                // overrides `.font` so bold-inside-heading still
+                // shows; size from the heading font is preserved
+                // because we re-derive size from the bold trait).
+                applyInlineSpans(in: lineRange, lineText: lineText, on: textStorage,
+                                 baseFontOverride: headingFont(level: level))
+                lineLocation = lineEndIncludingTerminator
+                continue
+            }
+
+            // Regular line — apply inline emphasis / code spans /
+            // wikilinks / markdown links.
+            applyInlineSpans(in: lineRange, lineText: lineText, on: textStorage,
+                             baseFontOverride: nil)
+            lineLocation = lineEndIncludingTerminator
+        }
+    }
+
+    // MARK: - Heading
+
+    private struct HeadingMatch {
+        let level: Int
+        let markerLength: Int  // # count + the following space
+    }
+
+    private func parseHeading(_ line: String) -> HeadingMatch? {
+        var level = 0
+        var idx = line.startIndex
+        while idx < line.endIndex, line[idx] == "#", level < 6 {
+            level += 1
+            idx = line.index(after: idx)
+        }
+        guard level >= 1, idx < line.endIndex, line[idx] == " " else { return nil }
+        // marker = `#`s + the single mandatory space
+        return HeadingMatch(level: level, markerLength: level + 1)
+    }
+
+    // MARK: - Code block
+
+    private func applyCodeBlock(line: NSRange, in storage: NSTextStorage) {
+        storage.addAttributes([
+            .font: monospacedFont,
+            .backgroundColor: codeBackgroundColor,
+            .foregroundColor: baseColor,
+        ], range: line)
+    }
+
+    // MARK: - Inline spans
+
+    /// Apply inline styling within a single line: inline code first
+    /// (highest precedence — content inside `` ` `` is verbatim and
+    /// shouldn't get further parsed), then markdown links + wiki
+    /// links, then emphasis (bold + italic). Each pass searches
+    /// only the line range, so cross-line patterns don't accumulate.
+    private func applyInlineSpans(
+        in lineRange: NSRange,
+        lineText: String,
+        on storage: NSTextStorage,
+        baseFontOverride: NSFont?
+    ) {
+        let lineNS = lineText as NSString
+        // Track regions already claimed by inline code so emphasis
+        // / link passes skip them. Stored as half-open intervals in
+        // line-local indices.
+        var consumed: [NSRange] = []
+
+        // Inline code: ` ... ` (single backticks; no escape
+        // handling for now). Simplest scan.
+        var i = 0
+        while i < lineNS.length {
+            let openRange = lineNS.range(
+                of: "`",
+                range: NSRange(location: i, length: lineNS.length - i)
             )
             guard openRange.location != NSNotFound else { break }
             let innerStart = openRange.upperBound
-            guard innerStart <= str.length else { break }
-            let closeRange = str.range(
-                of: "]]",
-                range: NSRange(location: innerStart, length: str.length - innerStart)
+            let closeRange = lineNS.range(
+                of: "`",
+                range: NSRange(location: innerStart, length: lineNS.length - innerStart)
             )
             guard closeRange.location != NSNotFound else { break }
-            let span = NSRange(
-                location: openRange.location,
+            let absRange = NSRange(
+                location: lineRange.location + openRange.location,
                 length: closeRange.upperBound - openRange.location
             )
-            textStorage.addAttributes([
+            storage.addAttributes([
+                .font: monospacedFont,
+                .backgroundColor: codeBackgroundColor,
+            ], range: absRange)
+            consumed.append(NSRange(
+                location: openRange.location,
+                length: closeRange.upperBound - openRange.location
+            ))
+            i = closeRange.upperBound
+        }
+
+        // Markdown link: `[text](url)`.  Apply accent color +
+        // underline to the entire span.
+        applyRegex(
+            "\\[[^\\]\\n]*\\]\\([^)\\n]+\\)",
+            in: lineRange, lineNS: lineNS, consumed: &consumed,
+            attributes: [
                 .foregroundColor: linkColor,
                 .underlineStyle: NSUnderlineStyle.single.rawValue,
-            ], range: span)
-            searchStart = closeRange.upperBound
+            ],
+            on: storage
+        )
+
+        // Wikilinks `[[Page]]` (and aliased / fragmented variants).
+        applyRegex(
+            "\\[\\[[^\\]\\n]+\\]\\]",
+            in: lineRange, lineNS: lineNS, consumed: &consumed,
+            attributes: [
+                .foregroundColor: linkColor,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+            ],
+            on: storage
+        )
+
+        // Bold: `**text**`. Use the regex to find the span; apply
+        // bold trait. Stars themselves stay normal (rendered as
+        // muted markers would require a second attribute pass —
+        // skipped for v1; keeps the markup readable when editing).
+        applyEmphasisRegex(
+            "\\*\\*[^*\\n]+\\*\\*",
+            in: lineRange, lineNS: lineNS, consumed: &consumed,
+            traits: (bold: true, italic: false),
+            baseFontOverride: baseFontOverride,
+            on: storage
+        )
+
+        // Italic: `*text*` (single asterisk) and `_text_`. Match
+        // patterns that aren't immediately preceded/followed by
+        // another `*` so we don't double-trigger on bold (regex
+        // negative lookbehind via `(?<!\\*)` handles it).
+        applyEmphasisRegex(
+            "(?<!\\*)\\*(?!\\s)[^*\\n]+?(?<!\\s)\\*(?!\\*)",
+            in: lineRange, lineNS: lineNS, consumed: &consumed,
+            traits: (bold: false, italic: true),
+            baseFontOverride: baseFontOverride,
+            on: storage
+        )
+        applyEmphasisRegex(
+            "(?<![\\w_])_[^_\\n]+_(?![\\w_])",
+            in: lineRange, lineNS: lineNS, consumed: &consumed,
+            traits: (bold: false, italic: true),
+            baseFontOverride: baseFontOverride,
+            on: storage
+        )
+    }
+
+    /// Apply attributes to every regex match in the line that
+    /// doesn't overlap a previously-consumed range. Records each
+    /// match's local range in `consumed` so subsequent passes skip
+    /// nested patterns.
+    private func applyRegex(
+        _ pattern: String,
+        in lineRange: NSRange,
+        lineNS: NSString,
+        consumed: inout [NSRange],
+        attributes: [NSAttributedString.Key: Any],
+        on storage: NSTextStorage
+    ) {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
+        let lineLocal = NSRange(location: 0, length: lineNS.length)
+        regex.enumerateMatches(in: lineNS as String, range: lineLocal) { match, _, _ in
+            guard let m = match else { return }
+            if Self.overlaps(m.range, consumed: consumed) { return }
+            let abs = NSRange(
+                location: lineRange.location + m.range.location,
+                length: m.range.length
+            )
+            storage.addAttributes(attributes, range: abs)
+            consumed.append(m.range)
         }
+    }
+
+    /// Like `applyRegex` but for bold/italic — derives the right
+    /// font from `baseFontOverride` (or the storage's current font
+    /// at that range, which after the headings pass is the heading
+    /// font) so emphasis composes with headings rather than reverting
+    /// to body size.
+    private func applyEmphasisRegex(
+        _ pattern: String,
+        in lineRange: NSRange,
+        lineNS: NSString,
+        consumed: inout [NSRange],
+        traits: (bold: Bool, italic: Bool),
+        baseFontOverride: NSFont?,
+        on storage: NSTextStorage
+    ) {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return }
+        let lineLocal = NSRange(location: 0, length: lineNS.length)
+        regex.enumerateMatches(in: lineNS as String, range: lineLocal) { match, _, _ in
+            guard let m = match else { return }
+            if Self.overlaps(m.range, consumed: consumed) { return }
+            let abs = NSRange(
+                location: lineRange.location + m.range.location,
+                length: m.range.length
+            )
+            // Derive the font from the existing attributes at this
+            // position so we compose with the heading font (if any)
+            // — heading + bold, heading + italic, etc.
+            let existing = (storage.attribute(.font, at: abs.location, effectiveRange: nil) as? NSFont)
+                ?? baseFontOverride ?? baseFont
+            var symbolic = existing.fontDescriptor.symbolicTraits
+            if traits.bold { symbolic.insert(.bold) }
+            if traits.italic { symbolic.insert(.italic) }
+            let descriptor = existing.fontDescriptor.withSymbolicTraits(symbolic)
+            let combined = NSFont(descriptor: descriptor, size: existing.pointSize) ?? existing
+            storage.addAttributes([.font: combined], range: abs)
+            consumed.append(m.range)
+        }
+    }
+
+    private static func overlaps(_ candidate: NSRange, consumed: [NSRange]) -> Bool {
+        for c in consumed {
+            if NSIntersectionRange(candidate, c).length > 0 { return true }
+        }
+        return false
     }
 }
 
