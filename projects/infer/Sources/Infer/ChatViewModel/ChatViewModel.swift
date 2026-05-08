@@ -469,6 +469,12 @@ final class ChatViewModel {
     /// tree was synthesised purely from page paths and empty folders
     /// were invisible). Refreshed alongside `wikiPages`.
     var wikiFolders: [String] = []
+    /// Inverse backlinks index: lowercased page id → array of source
+    /// page ids whose body contains a wikilink resolving to that
+    /// target. Built once per `refreshWiki` so the per-page editor
+    /// can look up backlinks in O(1) instead of walking every page
+    /// in the workspace on every open + every debounced edit.
+    var wikiBacklinksIndex: [String: [String]] = [:]
     /// Pending refresh task. Cancelled before starting a new refresh
     /// so rapid back-to-back calls (which happen on every save / pin
     /// / move / folder op) can't race and stomp fresh state with

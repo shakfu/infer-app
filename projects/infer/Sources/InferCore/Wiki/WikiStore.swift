@@ -17,19 +17,18 @@ public struct WikiPage: Equatable, Sendable, Identifiable {
 }
 
 /// Result of building the always-inject context for a chat turn:
-/// the concatenated body, the page ids that contributed, the count of
-/// pages that were dropped because the budget cap fired, and the
-/// (string) approximation of token use the cap was checking.
+/// the concatenated body, the page ids that contributed, and the
+/// approximate token cost. (Pre-Phase-5 had a `droppedPageIds`
+/// field for pages dropped to fit a budget; the inject model no
+/// longer drops anything — the hard cap is on the pin set itself.)
 public struct WikiContext: Equatable, Sendable {
     public let text: String
     public let pageIds: [String]
-    public let droppedPageIds: [String]
     public let approximateTokens: Int
 
     public static let empty = WikiContext(
         text: "",
         pageIds: [],
-        droppedPageIds: [],
         approximateTokens: 0
     )
 }
@@ -138,14 +137,37 @@ public actor WikiStore {
         guard fm.fileExists(atPath: dir.path) else { return [] }
         guard let subpaths = fm.subpaths(atPath: dir.path) else { return [] }
         var folders: [String] = []
+        var seenLowered: Set<String> = []
         for subpath in subpaths {
             let comps = subpath.split(separator: "/")
-            if comps.contains(where: { $0.hasPrefix(".") }) { continue }
+            // Skip dotfile-component paths (`.git`, `.DS_Store` are
+            // files but `.foo/` directories also live here) AND
+            // skip components with leading/trailing whitespace —
+            // the latter previously caused the "two abc" phantom
+            // when an `abc ` (trailing space) folder coexisted with
+            // a clean `abc` from a separate creation.
+            var skip = false
+            for c in comps {
+                let s = String(c)
+                if s.hasPrefix(".") || s != s.trimmingCharacters(in: .whitespaces) {
+                    skip = true
+                    break
+                }
+            }
+            if skip { continue }
             let url = dir.appendingPathComponent(subpath)
             var isDir: ObjCBool = false
-            if fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                folders.append(subpath)
-            }
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDir),
+                  isDir.boolValue else { continue }
+            // Case-fold dedup: if `Abc` and `abc` both exist on a
+            // case-sensitive filesystem (or via stale state from
+            // earlier dev iterations), surface only the first
+            // observed casing — matches Obsidian's "case-insensitive
+            // path-uniqueness" assumption.
+            let lowered = subpath.lowercased()
+            if seenLowered.contains(lowered) { continue }
+            seenLowered.insert(lowered)
+            folders.append(subpath)
         }
         folders.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         return folders
@@ -561,7 +583,6 @@ public actor WikiStore {
         return WikiContext(
             text: WikiContext.format(pinnedPages),
             pageIds: pinnedPages.map { $0.id },
-            droppedPageIds: [],
             approximateTokens: total
         )
     }

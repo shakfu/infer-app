@@ -26,11 +26,27 @@ struct WikiAutocompletePopover: View {
                             Image(systemName: "doc.text")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
-                            Text(id)
+                            // Basename as primary, folder path as
+                            // secondary — same visual model as the
+                            // sidebar tree leaves and the Cmd+O
+                            // quick switcher. The full id is still
+                            // what gets inserted on accept (so links
+                            // round-trip through the resolver
+                            // unambiguously); the popover just
+                            // renders the human-readable shape.
+                            Text((id as NSString).lastPathComponent)
                                 .font(.callout)
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
                                 .truncationMode(.tail)
+                            let folder = (id as NSString).deletingLastPathComponent
+                            if !folder.isEmpty {
+                                Text(folder)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
                             Spacer(minLength: 6)
                         }
                         .padding(.horizontal, 8)

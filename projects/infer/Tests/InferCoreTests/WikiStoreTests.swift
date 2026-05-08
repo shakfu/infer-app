@@ -205,8 +205,6 @@ final class WikiStoreTests: XCTestCase {
         XCTAssertFalse(ctx.pageIds.contains("Unreachable"))
         XCTAssertTrue(ctx.text.contains("<wiki_context>"))
         XCTAssertTrue(ctx.text.contains("## Pinned"))
-        XCTAssertTrue(ctx.droppedPageIds.isEmpty,
-                      "no silent drops in the new model")
     }
 
     func testBuildContextIgnoresBudgetForPinnedSet() async throws {
@@ -218,7 +216,6 @@ final class WikiStoreTests: XCTestCase {
         try await store.setPin(workspaceId: 7, id: "Big", pinned: true)
         let ctx = try await store.buildContext(workspaceId: 7, budgetTokens: 1000)
         XCTAssertEqual(ctx.pageIds, ["Big"])
-        XCTAssertTrue(ctx.droppedPageIds.isEmpty)
     }
 
     func testBuildContextSkipsMissingPinnedPages() async throws {

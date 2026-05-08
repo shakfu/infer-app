@@ -70,7 +70,6 @@ public struct WikiMentionsContext: Equatable, Sendable {
 /// reconstruct the full text on demand.
 struct WikiContextStats: Equatable, Sendable {
     let pageCount: Int
-    let droppedCount: Int
     let approximateTokens: Int
 }
 
@@ -204,9 +203,17 @@ extension ChatViewModel {
             )) ?? .empty
             let stats = pins.isEmpty ? nil : WikiContextStats(
                 pageCount: ctx.pageIds.count,
-                droppedCount: ctx.droppedPageIds.count,
                 approximateTokens: ctx.approximateTokens
             )
+            // Build the inverse backlinks index keyed by lowercased
+            // page id. For each page, extract its raw `[[link]]`
+            // targets, resolve each via the same case-insensitive +
+            // basename-fallback rule the editor uses, and record
+            // (resolved_id → source_id). A target that resolves both
+            // by exact match and basename fallback only contributes
+            // once — `WikiLinkResolver.resolveKey` returns the same
+            // id either way.
+            let backlinksIndex = Self.buildBacklinksIndex(pages: pages)
             if Task.isCancelled { return }
             await MainActor.run {
                 guard let self else { return }
@@ -214,8 +221,45 @@ extension ChatViewModel {
                 self.wikiPins = pins
                 self.wikiFolders = folders
                 self.wikiContextStats = stats
+                self.wikiBacklinksIndex = backlinksIndex
             }
         }
+    }
+
+    /// Walk every page once, extract its outbound wikilinks, resolve
+    /// each, and bucket the source id under the resolved target's
+    /// lowercased id. Returns a map from `lowercased(target_id)` to
+    /// a sorted, deduped list of source ids that link to it.
+    /// Self-links (a page wikilinking to itself) are dropped.
+    private static func buildBacklinksIndex(
+        pages: [WikiPage]
+    ) -> [String: [String]] {
+        let fullIndex = Dictionary(
+            uniqueKeysWithValues: pages.map { ($0.id.lowercased(), $0) }
+        )
+        var basenameIndex: [String: String] = [:]
+        for fullKey in fullIndex.keys.sorted() {
+            let base = (fullKey as NSString).lastPathComponent
+            if basenameIndex[base] == nil { basenameIndex[base] = fullKey }
+        }
+        var inverse: [String: Set<String>] = [:]
+        for source in pages {
+            for raw in WikiLinkResolver.extractLinks(from: source.content) {
+                guard let key = WikiLinkResolver.resolveKey(
+                    raw, fullIndex: fullIndex, basenameIndex: basenameIndex
+                ),
+                      let target = fullIndex[key],
+                      target.id != source.id else { continue }
+                inverse[target.id.lowercased(), default: []].insert(source.id)
+            }
+        }
+        var result: [String: [String]] = [:]
+        for (key, sources) in inverse {
+            result[key] = sources.sorted {
+                $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+            }
+        }
+        return result
     }
 
     /// Open a wiki page as a tab in the main content area. If the
@@ -430,40 +474,45 @@ extension ChatViewModel {
     }
 
     /// Build the children of a folder at `prefix` (or the root when
-    /// `prefix` is empty). Walks `folderPaths` for direct child
-    /// folders and `wikiPages` for direct child pages.
+    /// `prefix` is empty). All path comparisons are case-folded so
+    /// `[[Folder/Page]]` and `[[folder/Page]]` resolve to the same
+    /// node — matches the case-insensitive uniqueness the storage
+    /// layer enforces and prevents the "two abc" phantom that
+    /// previously appeared when stale state held both casings.
     private func nodes(at prefix: String, folderPaths: Set<String>) -> [WikiTreeNode] {
-        let qualifiedPrefix = prefix.isEmpty ? "" : prefix + "/"
-        // Direct child folders: those whose path starts with
-        // `qualifiedPrefix` and contains no further `/` after it.
+        let lowerPrefix = prefix.lowercased()
+        let qualifiedLower = lowerPrefix.isEmpty ? "" : lowerPrefix + "/"
+        // Direct child folders: case-fold both sides of the prefix
+        // check, then split the suffix on `/` to ensure we only
+        // pick direct children (no further slashes).
         var childFolders: [String] = []
         for folder in folderPaths {
-            guard folder.hasPrefix(qualifiedPrefix) else {
-                if !qualifiedPrefix.isEmpty { continue }
-                // Root case: anything is a candidate.
-                if folder.contains("/") { continue }
-                childFolders.append(folder)
-                continue
+            let lowered = folder.lowercased()
+            let suffix: String
+            if qualifiedLower.isEmpty {
+                suffix = lowered
+            } else {
+                guard lowered.hasPrefix(qualifiedLower) else { continue }
+                suffix = String(lowered.dropFirst(qualifiedLower.count))
             }
-            let suffix = String(folder.dropFirst(qualifiedPrefix.count))
-            if suffix.isEmpty { continue }
-            if !suffix.contains("/") {
-                childFolders.append(folder)
-            }
+            if suffix.isEmpty || suffix.contains("/") { continue }
+            childFolders.append(folder)
         }
         childFolders.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
 
-        // Direct child pages: those whose id starts with
-        // `qualifiedPrefix` and contains no further `/` after it.
+        // Direct child pages — same case-folded prefix logic.
         var childPages: [WikiPage] = []
         for page in wikiPages {
-            if qualifiedPrefix.isEmpty {
-                if !page.id.contains("/") { childPages.append(page) }
+            let lowered = page.id.lowercased()
+            let suffix: String
+            if qualifiedLower.isEmpty {
+                suffix = lowered
             } else {
-                guard page.id.hasPrefix(qualifiedPrefix) else { continue }
-                let suffix = String(page.id.dropFirst(qualifiedPrefix.count))
-                if !suffix.contains("/") { childPages.append(page) }
+                guard lowered.hasPrefix(qualifiedLower) else { continue }
+                suffix = String(lowered.dropFirst(qualifiedLower.count))
             }
+            if suffix.isEmpty || suffix.contains("/") { continue }
+            childPages.append(page)
         }
         childPages.sort {
             $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending
@@ -626,23 +675,13 @@ extension ChatViewModel {
     }
 
     /// Pages whose body contains a wikilink resolving to `target`.
-    /// Case-folded match (so `[[my page]]` finds page id "My Page").
-    /// Returns ids in alphabetical order. Returns empty for the
-    /// new-page sentinel and when no workspace is active.
+    /// O(1) lookup against `wikiBacklinksIndex` (built once per
+    /// `refreshWiki`); previously walked every page in the workspace
+    /// on every call. Returns ids in alphabetical order. Empty for
+    /// the new-page sentinel.
     func loadBacklinks(for target: String) async -> [String] {
-        guard !target.isEmpty, let workspaceId = activeWorkspaceId else { return [] }
-        let needle = target.lowercased()
-        let pages: [WikiPage] = (try? await wiki.listPages(workspaceId: workspaceId)) ?? []
-        var hits: [String] = []
-        for page in pages {
-            if page.id.lowercased() == needle { continue }  // skip self
-            let links = WikiLinkResolver.extractLinks(from: page.content)
-            if links.contains(where: { $0.lowercased() == needle }) {
-                hits.append(page.id)
-            }
-        }
-        hits.sort { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
-        return hits
+        guard !target.isEmpty else { return [] }
+        return wikiBacklinksIndex[target.lowercased()] ?? []
     }
 
     /// Read one page synchronously for the editor sheet. Falls back

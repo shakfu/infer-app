@@ -16,6 +16,7 @@ extension ChatView {
                         } else {
                             MessageRow(
                                 message: msg,
+                                vm: vm,
                                 onRegenerate: canRegenerate(at: idx) ? { vm.regenerateLast() } : nil,
                                 onEdit: canEdit(at: idx) ? { vm.editLastUserMessage() } : nil
                             )
@@ -157,6 +158,10 @@ extension ChatView {
 
 struct MessageRow: View {
     let message: ChatMessage
+    /// VM reference threaded through so the rendered transcript can
+    /// route `wiki://` link clicks (in `[[Page]]` mentions) back to
+    /// the wiki tab system.
+    let vm: ChatViewModel
     /// When non-nil, hover reveals a regenerate button that invokes this.
     /// Wired only for the latest assistant turn when the VM is idle.
     var onRegenerate: (() -> Void)? = nil
@@ -266,18 +271,24 @@ struct MessageRow: View {
                     if MessageMath.containsMath(message.text) {
                         MathMessageView(text: message.text)
                     } else {
-                        Markdown(message.text)
+                        // Pre-process `[[Page]]` tokens into
+                        // `[label](wiki://Page)` markdown links so
+                        // the renderer styles them natively; clicks
+                        // route through MessageWikilinkRenderer.handle.
+                        Markdown(MessageWikilinkRenderer.markdownifyWikilinks(message.text))
                             .markdownTheme(.gitHub)
                             .markdownCodeSyntaxHighlighter(
                                 .splash(theme: .sundellsColors(withFont: .init(size: 14)))
                             )
                             .environment(\.openURL, OpenURLAction { url in
-                                NSWorkspace.shared.open(url)
-                                return .handled
+                                MessageWikilinkRenderer.handle(url: url, vm: vm)
                             })
                     }
                 case .user, .system:
-                    Text(message.text)
+                    Text(MessageWikilinkRenderer.attributedUserMessage(message.text))
+                        .environment(\.openURL, OpenURLAction { url in
+                            MessageWikilinkRenderer.handle(url: url, vm: vm)
+                        })
                 }
             }
         }

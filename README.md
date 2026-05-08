@@ -10,6 +10,8 @@ A macOS SwiftUI chat application that puts local and cloud LLM backends behind o
 
 - **Persistence + export** — searchable SQLite [conversation vault](#conversation-vault), Markdown / PDF / HTML [transcript export](#conversation-actions), document rendering via an [external Quarto installation](#quarto-rendering).
 
+- **[Per-workspace wiki](#per-workspace-wiki)** — Obsidian-styled markdown notes living alongside chat: nested folders, drag-to-organize, `[[wikilinks]]` with autocomplete + Cmd-click navigation, Cmd+O quick switcher, pin pages to always-inject into chat, type `[[Page]]` in a chat message to inject for that turn only.
+
 - **[Tool runtime](#built-in-agent-tools)** — sandboxed built-ins (filesystem read/write/list, PDF text extraction, XLSX read + write, CSV/TSV writing, clipboard, math, vault + Wikipedia + web search, HTTP fetch with allowlist), plus arbitrary MCP-server tools.
 
 - **[Plugins](#plugins)** — compile-time plugin system; today Python execution via an embedded interpreter, more to come.
@@ -92,6 +94,26 @@ The **Voice** sidebar tab exposes live dictation, TTS, a hands-free voice loop, 
 Every new chat is saved to `~/Library/Application Support/Infer/vault.sqlite` (GRDB + FTS5). The **History** sidebar tab has search-as-you-type across all past messages and a recent-conversations list; clicking a result loads it into the UI. Markdown transcript save/load is still available via `File > Save/Open Transcript…` but is independent of the vault.
 
 Loading a conversation (from the History tab or `File > Open Transcript…`) restores the model's KV cache from the loaded messages, so follow-up turns have full prior context. Cost is one prompt-sized decode at load time on both backends.
+
+## Per-workspace wiki
+
+Each workspace has its own markdown wiki — a nested directory of `.md` files at `~/Library/Application Support/Infer/workspaces/<id>/wiki/` rendered as a tree in the left sidebar. Designed for the chat-side use case: notes you want the model to see.
+
+**Tree** — folders nest arbitrarily, render with vertical indent guides, expand/collapse state persists per-folder. The toolbar above the tree has new-page (`square.and.pencil`) and new-folder (`folder.badge.plus`) buttons. Right-click a row for Pin / Rename / New page in folder / New folder in folder / Delete. Drag pages between folders or into the empty area below the tree (= move to root); drag folders into other folders to nest. The default workspace can't be deleted but offers a Reset action that wipes its wiki + RAG corpus while keeping conversations and the data folder.
+
+**Tabs** — clicking a page opens it as a tab next to the chat tab in the main content area. Chat is always tab 0 and uncloseable. Cmd+W closes the active tab; Cmd+1..9 switches; Cmd+O opens a fuzzy quick-switcher (page basename + folder path); tabs drag-to-reorder.
+
+**Editor** — `NSTextView`-backed plain markdown. Type `[[` to get a fuzzy autocomplete popover of pages (Tab/Enter inserts, ↑↓ navigate, Esc dismisses). Cmd-click a `[[wikilink]]` in the editor to follow it; clicks resolve case-insensitively with basename fallback so `[[Page]]` finds `Folder/Page` if there's no top-level `Page`. Auto-saves 1.5 s after typing stops. Cmd+S forces a save. Renames carry inbound wikilinks across siblings; folder moves recursively re-key every page inside.
+
+**Backlinks** — every page tab shows a chip row of pages that wikilink to it. Built from a workspace-wide inverse index that refreshes on every save, so lookup is O(1).
+
+**Two context channels into chat** —
+
+- **Pinned pages** (max 20) inject into *every* chat turn. The sidebar footer shows the always-on count + token cost (`3/20 pinned · ~4.2k tok every turn`).
+
+- **`[[Page]]` mentions in a chat message** inject *for that turn only*. The composer has the same autocomplete (`[[` triggers a fuzzy popover); a cost badge below the Send button shows `2 mentions · ~3.1k tok` when the input contains resolved mentions. Past `[[mentions]]` in the chat history are rendered as accent-colored links and are clickable to re-open the page.
+
+**Markdown text in user + assistant messages** — `[[Page]]` tokens in chat history are styled as accent-colored links. Clicking opens the linked page as a tab. Code fences and inline code are skipped so `[[example]]` inside a triple-backtick block stays verbatim.
 
 ## Conversation actions
 
