@@ -45,6 +45,14 @@ let package = Package(
         // while still available to `sqlite-vec.c` via the local
         // quoted include.
         .package(path: "../../thirdparty/SQLiteVec"),
+        // tree-sitter-qmd (Quarto-flavored markdown). Vendored at
+        // thirdparty/tree-sitter-qmd/ — upstream ships the SwiftPM
+        // package in a subdirectory of a Rust monorepo, so we extract
+        // and reference it as a local path package. SwiftTreeSitter
+        // is added explicitly so SPM resolves a single version
+        // (tree-sitter-qmd's Package.swift declares its own dep on it).
+        .package(path: "../../thirdparty/tree-sitter-qmd"),
+        .package(url: "https://github.com/ChimeHQ/SwiftTreeSitter", from: "0.9.0"),
         // libxlsxwriter and CoreXLSX moved into
         // projects/plugins/plugin_spreadsheet_tools — that plugin owns
         // csv.write / tsv.write / xlsx.write / xlsx.read and the heavy
@@ -183,6 +191,8 @@ let package = Package(
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
                 .product(name: "Splash", package: "Splash"),
                 .product(name: "Highlightr", package: "Highlightr"),
+                .product(name: "SwiftTreeSitter", package: "SwiftTreeSitter"),
+                .product(name: "TreeSitterMarkdown", package: "tree-sitter-qmd"),
                 .product(name: "Markdown", package: "swift-markdown"),
                 .product(name: "STTextView", package: "STTextView"),
                 .product(name: "GRDB", package: "GRDB.swift"),

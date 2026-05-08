@@ -200,7 +200,16 @@ def safe_extract_tar(archive: Path, dst: Path) -> None:
 
 
 def safe_extract_zip(archive: Path, dst: Path) -> None:
-    """Extract a zip, refusing any member whose resolved path escapes dst."""
+    """Extract a zip, refusing any member whose resolved path escapes dst.
+
+    Delegates the actual unpack to system `unzip` because Python's
+    `zipfile.extractall()` does NOT preserve symlinks — it materializes
+    them as regular files whose contents are the symlink target string.
+    Apple .framework bundles depend on `Headers`, `Modules`, and
+    `Versions/Current` being real symlinks; without them, clang can't
+    resolve `<Whisper/whisper.h>`. system `unzip` honors the
+    `external_attr` Unix mode bits and creates true symlinks.
+    """
     dst.mkdir(parents=True, exist_ok=True)
     dst_resolved = dst.resolve()
     with zipfile.ZipFile(archive) as z:
@@ -208,7 +217,10 @@ def safe_extract_zip(archive: Path, dst: Path) -> None:
             target = (dst_resolved / info.filename).resolve()
             if not str(target).startswith(str(dst_resolved)):
                 raise ValueError(f"zip path traversal: {info.filename}")
-        z.extractall(dst_resolved)
+    subprocess.run(
+        ["unzip", "-q", "-o", str(archive), "-d", str(dst_resolved)],
+        check=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +310,52 @@ def fetch_sqlitevec(inputs: dict[str, object]) -> None:
 
     n = len(list(patch_dir.glob("*.patch"))) + 1  # +1 for the rename patch
     print(f"  installed SQLiteVec ({tag}, {n} patches applied)")
+
+
+def fetch_tree_sitter_qmd(inputs: dict[str, object]) -> None:
+    """Clone quarto-dev/quarto-markdown at `commit`, extract the
+    `crates/tree-sitter-qmd/` SwiftPM package to thirdparty/tree-sitter-qmd.
+
+    Upstream ships its Package.swift in a subdirectory of a multi-crate
+    monorepo, so SPM can't reference it via URL — we vendor the
+    subdirectory at a pinned commit. No patches today (the upstream
+    Package.swift declares `swift-tools-version:5.3` which our 6.1 root
+    package consumes fine).
+    """
+    commit = str(inputs["commit"])
+    repo_url = "https://github.com/quarto-dev/quarto-markdown.git"
+    thirdparty = ROOT / "thirdparty"
+    dest = thirdparty / "tree-sitter-qmd"
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        clone_path = tmp / "quarto-markdown"
+        # The repo is large; fetch only the pinned commit shallowly. GitHub
+        # supports `--depth 1` from a sha when uploadpack.allowReachableSHA1
+        # is on (it is for github.com); fall back to a full shallow clone
+        # of main + checkout if the direct fetch fails on older git.
+        run(["git", "init", "-q", str(clone_path)])
+        run(["git", "-C", str(clone_path), "remote", "add", "origin", repo_url])
+        try:
+            run(["git", "-C", str(clone_path), "fetch", "-q", "--depth", "1", "origin", commit])
+            run(["git", "-C", str(clone_path), "checkout", "-q", "FETCH_HEAD"])
+        except subprocess.CalledProcessError:
+            shutil.rmtree(clone_path)
+            run(["git", "clone", "-q", "--depth", "50", repo_url, str(clone_path)])
+            run(["git", "-C", str(clone_path), "checkout", "-q", commit])
+
+        crate = clone_path / "crates" / "tree-sitter-qmd"
+        if not crate.is_dir():
+            raise SystemExit(f"crates/tree-sitter-qmd missing in {commit}")
+
+        thirdparty.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            print(f"  removing existing {dest}")
+            shutil.rmtree(dest)
+        print(f"  copying tree-sitter-qmd -> {dest}")
+        shutil.copytree(crate, dest, symlinks=True)
+
+    print(f"  installed tree-sitter-qmd ({commit[:10]})")
 
 
 def fetch_webassets(inputs: dict[str, object]) -> None:
@@ -432,6 +490,16 @@ FETCH_TARGETS: dict[str, Target] = {
             "patches": ["scripts/patches/sqlitevec/**/*"],
         },
         fetch=fetch_sqlitevec,
+    ),
+    "tree-sitter-qmd": Target(
+        name="tree-sitter-qmd",
+        description="Vendored tree-sitter-qmd grammar (Quarto/Markdown)",
+        default_inputs={
+            # No upstream tags yet; pin to a known-good commit on main.
+            # Bump and rerun fetch to upgrade.
+            "commit": "c925e444df03c1f7b7b4cccb5f0a2e72fc130885",
+        },
+        fetch=fetch_tree_sitter_qmd,
     ),
     "webassets": Target(
         name="webassets",
