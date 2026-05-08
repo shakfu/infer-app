@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import MarkdownUI
-import Splash
 import InferAgents
 import InferCore
 

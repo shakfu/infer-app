@@ -48,7 +48,7 @@ INFER_XCODE_FLAGS := -workspace $(INFER_DIR) -scheme Infer \
 INFER_PRODUCT_DIR := $(INFER_BUILD_DIR)/Build/Products/$(INFER_CONFIG)
 INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 
-.PHONY: all build bundle run clean clean-infer clean-mlx-cache test
+.PHONY: all build bundle run clean clean-infer clean-mlx-cache clean-stack reset test
 .PHONY: fetch-stack build-stack fetch-webassets fetch-sqlitevec fetch-tree-sitter-qmd fetch-tree-sitter-python fetch-python generate-icon
 .PHONY: build-release bundle-release run-release release
 .PHONY: plugins-gen plugins-gen-check
@@ -63,6 +63,50 @@ clean:
 # bundled .app.
 clean-infer:
 	@rm -rf $(INFER_BUILD_DIR)
+
+# Return the project to fresh-clone state (plus any code changes).
+# Wipes `build/` and every fetched artifact under `thirdparty/` so
+# the next `make` runs every fetch + build from scratch.
+#
+# Removes:
+#   build/                              (xcodebuild derived data + bundles)
+#   thirdparty/Ggml.xcframework         + LlamaCpp + Whisper + StableDiffusion
+#   thirdparty/SQLiteVec/               (vendored + patched)
+#   thirdparty/tree-sitter-qmd/         (vendored)
+#   thirdparty/tree-sitter-python/      (vendored)
+#   thirdparty/webassets/               (KaTeX + highlight.js)
+#   thirdparty/Python.framework/        (~5 min to rebuild via fetch-python)
+#   thirdparty/.stack-*                 (stack-version markers)
+#   thirdparty/.cache/                  (manage.py hash-based markers)
+#
+# Preserves:
+#   thirdparty/python-apis/             (manually curated; not part of the
+#                                        fetcher pipeline, so reset has no
+#                                        recipe to recreate it)
+#   ~/.cache/huggingface/hub/           (MLX models — use clean-mlx-cache;
+#                                        intentionally separate because that
+#                                        cache can be 20 GB+ and removal is
+#                                        a stronger commitment than reset)
+#
+# Confirms first — the next `make` redownloads ~150 MB of xcframeworks,
+# re-clones three git repos, and (if you re-run `fetch-python`) rebuilds
+# CPython from source.
+reset:
+	@printf "This wipes build/ and every fetched artifact under thirdparty/\n"
+	@printf "(except python-apis and the HF model cache).\n"
+	@printf "Next 'make' will refetch from scratch. Continue? [y/N] "
+	@read ans; \
+	case "$$ans" in \
+		[yY]|[yY][eE][sS]) \
+			rm -rf $(BUILD_DIR); \
+			rm -rf $(GGML_XCFRAMEWORK) $(LLAMACPP_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SD_XCFRAMEWORK); \
+			rm -rf $(SQLITEVEC_DIR) $(TSQMD_DIR) $(TSPY_DIR) $(WEBASSETS_DIR); \
+			rm -rf thirdparty/Python.framework; \
+			rm -f thirdparty/.stack-*; \
+			rm -rf thirdparty/.cache; \
+			echo "reset complete";; \
+		*) echo "Aborted.";; \
+	esac
 
 # Delete the Hugging Face cache (MLX model downloads). Grows unbounded —
 # 20 GB+ after heavy experimentation. Requires explicit confirmation since
@@ -80,6 +124,22 @@ clean-mlx-cache:
 		[yY]|[yY][eE][sS]) rm -rf "$$dir"; echo "Removed $$dir";; \
 		*) echo "Aborted.";; \
 	esac
+
+# Remove the four ggml-stack xcframeworks AND every cache marker that
+# would tell a subsequent fetch "you've already done this." Two layers
+# need clearing for the pair `make clean-stack && make fetch-stack` to
+# actually re-fetch:
+#   1. `thirdparty/.stack-<version>` — Make's marker file. Without
+#      removing it, Make's dependency on $(STACK_MARKER) short-circuits
+#      the rule and prints "Nothing to be done."
+#   2. `thirdparty/.cache/fetch-stack.json` — manage.py's content-hash
+#      marker. Without removing it, the recipe fires but manage.py
+#      reports "hit, skipping" because its hash is computed from inputs
+#      (version string) rather than from the on-disk artifacts.
+clean-stack:
+	@rm -rf ${GGML_XCFRAMEWORK} ${LLAMACPP_XCFRAMEWORK} ${WHISPER_XCFRAMEWORK} ${SD_XCFRAMEWORK}
+	@rm -f thirdparty/.stack-*
+	@rm -f thirdparty/.cache/fetch-stack.json
 
 # Fast test path. Skips suites whose name ends in `ExternalTests` —
 # those hit real binaries / network / models and are run via
