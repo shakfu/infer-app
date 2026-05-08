@@ -61,6 +61,23 @@ struct MarkdownTextView: NSViewRepresentable {
         tv.textColor = NSColor.textColor
         tv.string = text
         tv.textContainerInset = NSSize(width: 8, height: 8)
+        // Hook the storage delegate so `[[wikilink]]` spans get
+        // accent-colored, underlined styling on every edit. The
+        // initial sweep fires after the `string =` assignment above
+        // because we run it manually below — `setAttributes` doesn't
+        // trigger the delegate, but the initial string assign did
+        // process characters, which already invoked our delegate
+        // once if we'd attached it earlier. Doing it here keeps the
+        // ordering predictable.
+        if let storage = tv.textStorage {
+            storage.delegate = context.coordinator.storageDelegate
+            // Force one sweep so existing pages render with link
+            // styling on first appearance — the assign above ran
+            // before the delegate was attached.
+            storage.edited(.editedCharacters,
+                           range: NSRange(location: 0, length: storage.length),
+                           changeInLength: 0)
+        }
         // Cmd-click anywhere inside a [[...]] span fires this — the
         // controller routes it to the SwiftUI side, which resolves
         // the target id and opens the page as a tab.
@@ -86,11 +103,22 @@ struct MarkdownTextView: NSViewRepresentable {
             let nsLen = (text as NSString).length
             let safeLoc = min(sel.location, nsLen)
             tv.setSelectedRange(NSRange(location: safeLoc, length: 0))
+            // Re-sweep wikilink styling — `string = ...` resets the
+            // storage to plain text (no per-char attributes), so the
+            // delegate needs another pass.
+            if let storage = tv.textStorage {
+                storage.edited(.editedCharacters,
+                               range: NSRange(location: 0, length: storage.length),
+                               changeInLength: 0)
+            }
         }
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: MarkdownTextView
+        /// Owned by the coordinator so the strong reference outlives
+        /// the textStorage's weak `delegate` slot.
+        let storageDelegate = WikiTextStorageDelegate()
         init(_ parent: MarkdownTextView) { self.parent = parent }
 
         func textDidChange(_ notification: Notification) {
@@ -129,6 +157,84 @@ struct MarkdownTextView: NSViewRepresentable {
             default:
                 return false
             }
+        }
+    }
+}
+
+/// `NSTextStorageDelegate` that styles `[[wikilink]]` spans as
+/// accent-colored, underlined text — matches the link styling of
+/// the chat transcript so the same visual idiom carries across both
+/// surfaces. Triggers on every edit; the scan is O(N) over the full
+/// storage which is fine at personal-notes scale (~10k chars).
+///
+/// Applies attributes via `setAttributes` (not `replaceCharacters`)
+/// inside `didProcessEditing`, which is documented as safe — only
+/// character mutations would re-entrantly fire the delegate.
+final class WikiTextStorageDelegate: NSObject, NSTextStorageDelegate {
+    private let baseFont: NSFont
+    private let baseColor: NSColor
+    private let linkColor: NSColor
+
+    init(
+        font: NSFont = .monospacedSystemFont(ofSize: 13, weight: .regular),
+        textColor: NSColor = .textColor,
+        linkColor: NSColor = .controlAccentColor
+    ) {
+        self.baseFont = font
+        self.baseColor = textColor
+        self.linkColor = linkColor
+    }
+
+    func textStorage(
+        _ textStorage: NSTextStorage,
+        didProcessEditing editedMask: NSTextStorageEditActions,
+        range editedRange: NSRange,
+        changeInLength delta: Int
+    ) {
+        // `editedAttributes`-only edits are us re-applying styling
+        // and should NOT trigger another sweep. Only character
+        // mutations matter.
+        guard editedMask.contains(.editedCharacters) else { return }
+        let str = textStorage.string as NSString
+        let full = NSRange(location: 0, length: str.length)
+
+        // Reset everything to plain. Cheaper than diffing — full
+        // sweep handles delete-of-a-link, paste, undo, etc.
+        textStorage.setAttributes([
+            .font: baseFont,
+            .foregroundColor: baseColor,
+        ], range: full)
+
+        // Apply wikilink styling to every `[[...]]` span. State-
+        // machine version of `extractLinks`'s scan, but applying
+        // attributes instead of harvesting targets. Doesn't honour
+        // code fences for now — `[[example]]` inside a fenced
+        // sample will render styled. Acceptable in an authoring
+        // context where code samples with wikilinks are rare; if
+        // it bites we can promote to the full state-machine logic.
+        var searchStart = 0
+        while searchStart < str.length {
+            let openRange = str.range(
+                of: "[[",
+                range: NSRange(location: searchStart, length: str.length - searchStart)
+            )
+            guard openRange.location != NSNotFound else { break }
+            let innerStart = openRange.upperBound
+            guard innerStart <= str.length else { break }
+            let closeRange = str.range(
+                of: "]]",
+                range: NSRange(location: innerStart, length: str.length - innerStart)
+            )
+            guard closeRange.location != NSNotFound else { break }
+            let span = NSRange(
+                location: openRange.location,
+                length: closeRange.upperBound - openRange.location
+            )
+            textStorage.addAttributes([
+                .foregroundColor: linkColor,
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+            ], range: span)
+            searchStart = closeRange.upperBound
         }
     }
 }
