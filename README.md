@@ -107,13 +107,35 @@ Each workspace has its own markdown wiki — a nested directory of `.md` files a
 
 **Backlinks** — every page tab shows a chip row of pages that wikilink to it. Built from a workspace-wide inverse index that refreshes on every save, so lookup is O(1).
 
-**Two context channels into chat** —
+### Including wiki content in a chat — `[[Page]]` mentions
 
-- **Pinned pages** (max 20) inject into *every* chat turn. The sidebar footer shows the always-on count + token cost (`3/20 pinned · ~4.2k tok every turn`).
+Three independent context channels feed every chat turn. Use whichever fits the question:
 
-- **`[[Page]]` mentions in a chat message** inject *for that turn only*. The composer has the same autocomplete (`[[` triggers a fuzzy popover); a cost badge below the Send button shows `2 mentions · ~3.1k tok` when the input contains resolved mentions. Past `[[mentions]]` in the chat history are rendered as accent-colored links and are clickable to re-open the page.
+| Channel | When it injects | How to opt in | Cost shown |
+|---|---|---|---|
+| **Pinned pages** | Every turn | Pin icon on a sidebar row (max 20 pinned per workspace) | Sidebar footer — `3/20 pinned · ~4.2k tok every turn` |
+| **`[[Page]]` mentions** | Only on the turn that contains them | Type `[[` in the composer | Below Send — `2 mentions · ~3.1k tok` (hidden when none) |
+| **RAG retrieval** | When the workspace has a `data_folder` and your message looks like a question | Set the workspace's data folder + scan once | (no cost badge — retrieval is bounded) |
 
-**Markdown text in user + assistant messages** — `[[Page]]` tokens in chat history are styled as accent-colored links. Clicking opens the linked page as a tab. Code fences and inline code are skipped so `[[example]]` inside a triple-backtick block stays verbatim.
+**To reference a wiki page in a single chat message:**
+
+1. **Type `[[` in the chat composer.** A small popover appears with up to 5 fuzzy-matched pages — basename as primary, folder path muted underneath.
+
+2. **Pick a page** with ↑↓ + Enter, or click. The composer text becomes `[[Page]] ` (basename when unique workspace-wide; `[[Folder/Page]]` only when there's a basename collision — the resolver still handles both shapes either way).
+
+3. **Type your message and send.** Before the turn fires, the page's content prepends to your message wrapped in a `<wiki_mentions>` block; the model sees the page body as adjacent context to the literal `[[Page]]` syntax in your sentence:
+
+   ```
+   <wiki_mentions>
+   ## Skills/Researcher
+   <page body>
+   </wiki_mentions>
+   What does the [[Researcher]] skill set look like?
+   ```
+
+4. **Past mentions stay navigable.** `[[Page]]` tokens in old chat messages render as accent-colored clickable links — click to re-open that page as a tab. User and assistant messages both get this treatment. Code fences and inline code are skipped so `[[example]]` inside a triple-backtick block stays verbatim.
+
+Mentions resolve case-insensitively. `[[Researcher]]` finds `Skills/Researcher` if no other `Researcher` exists; `[[Skills/Researcher]]` is path-qualified and exact-only. Mention budget is unbounded by default — the cost badge is the user's hint to keep it sensible.
 
 ## Conversation actions
 
