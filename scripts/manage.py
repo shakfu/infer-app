@@ -564,7 +564,7 @@ FETCH_TARGETS: dict[str, Target] = {
     "stack": Target(
         name="stack",
         description="ggml-stack xcframeworks (Ggml + LlamaCpp + Whisper + StableDiffusion)",
-        default_inputs={"version": "0.2.14"},
+        default_inputs={"version": "0.2.15"},
         fetch=fetch_stack,
     ),
     "sqlitevec": Target(

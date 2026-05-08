@@ -5,7 +5,7 @@ BUILD_DIR := build
 # from upstream releases (parked under thirdparty/_old/ for reference).
 # Fetched together from one GitHub release; bump $(STACK_VERSION) and
 # rerun `make fetch-stack` to upgrade.
-STACK_VERSION := 0.2.14
+STACK_VERSION := 0.2.15
 GGML_XCFRAMEWORK := thirdparty/Ggml.xcframework
 GGML_FRAMEWORK := $(GGML_XCFRAMEWORK)/macos-arm64/Ggml.framework
 LLAMACPP_XCFRAMEWORK := thirdparty/LlamaCpp.xcframework
