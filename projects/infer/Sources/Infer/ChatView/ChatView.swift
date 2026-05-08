@@ -137,6 +137,14 @@ struct ChatView: View {
                 }
             }
             .keyboardShortcut("o", modifiers: .command)
+            // Cmd+F — open the in-transcript find bar. Only fires
+            // on the chat tab; on a wiki page tab the system-level
+            // Find bar of `usesFindBar=true` NSTextView handles
+            // intra-document search instead.
+            if vm.activeTab == .chat {
+                Button("") { vm.transcriptFindOpen() }
+                    .keyboardShortcut("f", modifiers: .command)
+            }
         }
         .opacity(0)
         .frame(width: 0, height: 0)

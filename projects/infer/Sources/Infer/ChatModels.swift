@@ -17,6 +17,14 @@ struct ChatMessage: Identifiable, Equatable {
     let role: Role
     var kind: Kind = .message
     var text: String
+    /// Wall-clock time the message was first created in the live
+    /// session, displayed as `HH:mm` next to the role label. Defaults
+    /// to "now" so callers don't have to thread a date through every
+    /// constructor — only the live-append paths produce meaningful
+    /// values; vault-loaded history pre-dates this field, in which
+    /// case the surrounding view falls back to no-timestamp rendering
+    /// when a message's createdAt is identical across the loaded run.
+    let createdAt: Date = Date()
     /// Optional image attached to this user turn. Ephemeral — not persisted
     /// to the vault or the `.md` transcript. Live session only.
     var imageURL: URL? = nil

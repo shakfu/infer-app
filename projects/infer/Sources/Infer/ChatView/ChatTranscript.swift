@@ -6,7 +6,82 @@ import InferAgents
 import InferCore
 
 extension ChatView {
+    /// Total Cmd+F matches across all message bodies. Cheap to
+    /// recompute on every render — query length is small, message
+    /// bodies are bounded by transcript size. The match's *position*
+    /// inside each row is computed locally inside the row.
+    var transcriptMatchCount: Int {
+        guard let q = vm.transcriptFindQuery,
+              !q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return 0 }
+        return vm.messages.reduce(0) { partial, msg in
+            partial + Self.countMatches(of: q, in: msg.text)
+        }
+    }
+
+    /// Wrap-aware index into the global match list. Cmd+G past the
+    /// last match wraps to 0; Shift+Cmd+G past the first wraps to
+    /// `count - 1`.
+    var transcriptActiveMatchWrapped: Int {
+        let count = transcriptMatchCount
+        guard count > 0 else { return 0 }
+        let raw = vm.transcriptFindActiveMatch
+        let mod = ((raw % count) + count) % count
+        return mod
+    }
+
+    /// Resolve the global wrapped active-match index to (messageId,
+    /// in-message ordinal) for the row containing it. Returns nil
+    /// when there are no matches or no query is active.
+    var transcriptActiveMatchTarget: (messageId: UUID, indexInMessage: Int)? {
+        guard let q = vm.transcriptFindQuery,
+              !q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        let count = transcriptMatchCount
+        guard count > 0 else { return nil }
+        let activeWrapped = transcriptActiveMatchWrapped
+        var seen = 0
+        for msg in vm.messages {
+            let n = Self.countMatches(of: q, in: msg.text)
+            if seen + n > activeWrapped {
+                return (messageId: msg.id, indexInMessage: activeWrapped - seen)
+            }
+            seen += n
+        }
+        return nil
+    }
+
+    private static func countMatches(of needle: String, in haystack: String) -> Int {
+        guard !needle.isEmpty else { return 0 }
+        let hayLower = haystack.lowercased()
+        let needleLower = needle.lowercased()
+        var count = 0
+        var searchStart = hayLower.startIndex
+        while let range = hayLower.range(of: needleLower, range: searchStart..<hayLower.endIndex) {
+            count += 1
+            searchStart = range.upperBound
+        }
+        return count
+    }
+
     var transcript: some View {
+        // Find bar rendered as a sibling above the ScrollView (not
+        // an overlay) so the scroll viewport starts below it. With
+        // an overlay, `proxy.scrollTo(_:anchor: .center)` resolved
+        // "center" relative to the full scroll bounds, which left
+        // the active match hidden behind the bar. The slight layout
+        // jump on bar open/close is the cost; small + animated.
+        VStack(spacing: 0) {
+            if vm.transcriptFindQuery != nil {
+                TranscriptFindBar(vm: vm, matchCount: transcriptMatchCount)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+            transcriptScroll
+        }
+        .animation(.easeInOut(duration: 0.15), value: vm.transcriptFindQuery != nil)
+    }
+
+    private var transcriptScroll: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
@@ -17,6 +92,9 @@ extension ChatView {
                             MessageRow(
                                 message: msg,
                                 vm: vm,
+                                activeMatchIndex: transcriptActiveMatchTarget?.messageId == msg.id
+                                    ? transcriptActiveMatchTarget?.indexInMessage
+                                    : nil,
                                 onRegenerate: canRegenerate(at: idx) ? { vm.regenerateLast() } : nil,
                                 onEdit: canEdit(at: idx) ? { vm.editLastUserMessage() } : nil
                             )
@@ -54,6 +132,30 @@ extension ChatView {
                 if let last = vm.messages.last {
                     withAnimation(.easeOut(duration: 0.15)) {
                         proxy.scrollTo(last.id, anchor: .bottom)
+                    }
+                }
+            }
+            .onChange(of: vm.transcriptFindActiveMatch) { _, _ in
+                // Cmd+G / Shift+Cmd+G — scroll the active-match
+                // message into view. Animation is shorter than the
+                // append-scroll above so rapid match-stepping feels
+                // responsive.
+                if let target = transcriptActiveMatchTarget {
+                    pinnedToBottom = false
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        proxy.scrollTo(target.messageId, anchor: .center)
+                    }
+                }
+            }
+            .onChange(of: vm.transcriptFindQuery) { _, newValue in
+                // Opening the bar with a fresh query (or typing in
+                // the field) should jump to the first match too,
+                // not require an extra Cmd+G.
+                guard newValue?.isEmpty == false else { return }
+                if let target = transcriptActiveMatchTarget {
+                    pinnedToBottom = false
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        proxy.scrollTo(target.messageId, anchor: .center)
                     }
                 }
             }
@@ -162,6 +264,10 @@ struct MessageRow: View {
     /// route `wiki://` link clicks (in `[[Page]]` mentions) back to
     /// the wiki tab system.
     let vm: ChatViewModel
+    /// 0-based index of the Cmd+F active match if it lives in this
+    /// row, nil otherwise. Drives the orange-vs-yellow distinction
+    /// in the matched-range highlighting.
+    var activeMatchIndex: Int? = nil
     /// When non-nil, hover reveals a regenerate button that invokes this.
     /// Wired only for the latest assistant turn when the VM is idle.
     var onRegenerate: (() -> Void)? = nil
@@ -172,15 +278,28 @@ struct MessageRow: View {
     @State private var isHovered = false
     @State private var justCopied = false
 
+    /// True when the Cmd+F find bar is open with a non-empty query.
+    /// Drives the assistant-message rendering path: AttributedString
+    /// (highlights visible) vs Markdown (full formatting).
+    private var findActive: Bool {
+        guard let q = vm.transcriptFindQuery else { return false }
+        return !q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Text(roleLabel)
-                .font(.caption.monospaced())
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .help(roleLabel)
-                .frame(width: 70, alignment: .trailing)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(roleLabel)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(roleLabel + " · " + Self.fullTimestampFormatter.string(from: message.createdAt))
+                Text(Self.timestampFormatter.string(from: message.createdAt))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(width: 70, alignment: .trailing)
             content
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -268,7 +387,26 @@ struct MessageRow: View {
             } else if !message.text.isEmpty {
                 switch message.role {
                 case .assistant:
-                    if MessageMath.containsMath(message.text) {
+                    if findActive {
+                        // Find-active path applies to *all* assistant
+                        // messages (including math-bearing ones that
+                        // would normally render through MathMessageView's
+                        // WKWebView+KaTeX). The WKWebView path doesn't
+                        // expose ranges we can inject highlights into,
+                        // so during search the plain AttributedString
+                        // path uniformly shows matches across every
+                        // assistant message. Closing the bar restores
+                        // rich rendering — Markdown for prose, KaTeX
+                        // via WKWebView for math.
+                        Text(MessageWikilinkRenderer.attributedUserMessage(
+                            message.text,
+                            findQuery: vm.transcriptFindQuery,
+                            activeMatchIndex: activeMatchIndex
+                        ))
+                            .environment(\.openURL, OpenURLAction { url in
+                                MessageWikilinkRenderer.handle(url: url, vm: vm)
+                            })
+                    } else if MessageMath.containsMath(message.text) {
                         MathMessageView(text: message.text)
                     } else {
                         // Pre-process `[[Page]]` tokens into
@@ -285,7 +423,11 @@ struct MessageRow: View {
                             })
                     }
                 case .user, .system:
-                    Text(MessageWikilinkRenderer.attributedUserMessage(message.text))
+                    Text(MessageWikilinkRenderer.attributedUserMessage(
+                        message.text,
+                        findQuery: vm.transcriptFindQuery,
+                        activeMatchIndex: activeMatchIndex
+                    ))
                         .environment(\.openURL, OpenURLAction { url in
                             MessageWikilinkRenderer.handle(url: url, vm: vm)
                         })
@@ -293,6 +435,21 @@ struct MessageRow: View {
             }
         }
     }
+
+    /// `HH:mm` formatter for the inline timestamp under each role
+    /// label. Static + shared so we don't pay the per-row allocation
+    /// of a `DateFormatter` on every transcript render.
+    static let timestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+    /// Longer form used in the row's tooltip — `2026-05-08 14:32`.
+    static let fullTimestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd HH:mm"
+        return f
+    }()
 
     /// Role column text. For assistant messages produced by a
     /// non-Default agent, this is the agent's pre-snapshotted

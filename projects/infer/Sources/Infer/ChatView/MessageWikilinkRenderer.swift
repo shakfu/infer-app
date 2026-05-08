@@ -35,7 +35,49 @@ enum MessageWikilinkRenderer {
 
     /// Build an `AttributedString` for a user/system message,
     /// styling every `[[mention]]` span as an accent-colored link.
-    static func attributedUserMessage(_ text: String) -> AttributedString {
+    /// Variant that also highlights matched ranges of `findQuery`
+    /// (case-insensitive) used by the Cmd+F transcript find bar.
+    /// `activeMatchIndex` (0-based, message-local) gets the
+    /// "currently selected" color (orange); other matches use the
+    /// background yellow. Pass nil for both to render plain.
+    static func attributedUserMessage(
+        _ text: String,
+        findQuery: String? = nil,
+        activeMatchIndex: Int? = nil
+    ) -> AttributedString {
+        var out = baseAttributedUserMessage(text)
+        if let q = findQuery?.trimmingCharacters(in: .whitespacesAndNewlines), !q.isEmpty {
+            applyHighlights(to: &out, query: q, activeIndex: activeMatchIndex)
+        }
+        return out
+    }
+
+    /// Walk `out` for `query` matches and apply background colors —
+    /// active match gets orange (a stronger highlight), every other
+    /// match gets yellow. The Nth match (0-based) is the active one.
+    private static func applyHighlights(
+        to out: inout AttributedString,
+        query: String,
+        activeIndex: Int?
+    ) {
+        var searchStart = out.startIndex
+        var matchOrdinal = 0
+        while searchStart < out.endIndex,
+              let range = out[searchStart..<out.endIndex].range(
+                  of: query, options: [.caseInsensitive]
+              )
+        {
+            if matchOrdinal == activeIndex {
+                out[range].backgroundColor = .orange
+            } else {
+                out[range].backgroundColor = .yellow
+            }
+            searchStart = range.upperBound
+            matchOrdinal += 1
+        }
+    }
+
+    private static func baseAttributedUserMessage(_ text: String) -> AttributedString {
         var out = AttributedString()
         let ns = text as NSString
         var cursor = 0

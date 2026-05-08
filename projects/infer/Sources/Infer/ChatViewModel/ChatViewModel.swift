@@ -494,6 +494,16 @@ final class ChatViewModel {
     /// Fuzzy quick-switcher visibility. Bound to Cmd+O on the chat
     /// surface; the modal sheet renders `WikiQuickSwitcher`.
     var showQuickSwitcher: Bool = false
+    /// Cmd+F transcript search state. `query` drives the find bar's
+    /// text field and the matched-range highlighting in `MessageRow`;
+    /// nil means the find bar is closed. Match positions are
+    /// recomputed lazily on render — the matchCount + activeMatch
+    /// fields below track the user's current navigation cursor.
+    var transcriptFindQuery: String? = nil
+    /// Index into the global ordered list of matches across all
+    /// rendered messages. Cmd+G increments; Shift+Cmd+G decrements.
+    /// Starts at 0 when the find bar opens.
+    var transcriptFindActiveMatch: Int = 0
     /// Sentinel id used by the "new page" flow before the user has
     /// picked a name. New pages get a temp tab whose id is this
     /// sentinel until the first save.
