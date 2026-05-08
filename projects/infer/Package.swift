@@ -12,6 +12,12 @@ let package = Package(
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
         .package(url: "https://github.com/JohnSundell/Splash", from: "0.16.0"),
         .package(url: "https://github.com/swiftlang/swift-markdown", from: "0.7.0"),
+        // STTextView (Marcin Krzyzanowski, MIT) — TextKit 2 NSTextView
+        // replacement used by the wiki page editor. Markdown-focused
+        // editor base (same author as MarkEdit); cleaner range / hit-
+        // testing APIs and a plugin model for change subscription
+        // than raw NSTextView.
+        .package(url: "https://github.com/krzyzanowskim/STTextView", from: "2.2.0"),
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
         // SQLiteVec (jkrukowski, MIT) — Swift wrapper around sqlite-vec
         // (Alex Garcia, MIT). Bundles its *own* SQLite amalgamation
@@ -171,6 +177,7 @@ let package = Package(
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
                 .product(name: "Splash", package: "Splash"),
                 .product(name: "Markdown", package: "swift-markdown"),
+                .product(name: "STTextView", package: "STTextView"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 "InferRAG",
                 .product(name: "PluginAPI", package: "plugin-api"),

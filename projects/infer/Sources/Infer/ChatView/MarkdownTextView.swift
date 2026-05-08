@@ -1,6 +1,9 @@
 import SwiftUI
 import AppKit
 import Combine
+import Splash
+import STTextView
+import STTextKitPlus
 
 /// `NSTextView`-backed plain-text editor used by `WikiPageEditorSheet`
 /// so we can: (a) detect when the cursor is inside an unclosed
@@ -19,11 +22,11 @@ struct MarkdownTextView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        // Manual NSScrollView + WikiTextView setup (rather than the
-        // `NSTextView.scrollableTextView()` convenience) so we can
-        // use a custom NSTextView subclass that handles Cmd-click on
-        // wikilinks. Boilerplate matches what the convenience would
-        // build, just with the subclass slotted in.
+        // STTextView's `scrollableTextView()` returns an NSScrollView
+        // already wired up with a TextKit-2-backed STTextView. We
+        // need a subclass for Cmd-click on wikilinks, so we build
+        // the scroll view + WikiTextView manually but mirror what
+        // `scrollableTextView()` does internally.
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
@@ -31,56 +34,26 @@ struct MarkdownTextView: NSViewRepresentable {
         scroll.borderType = .noBorder
         scroll.drawsBackground = true
 
-        let bigDimension: CGFloat = 1_000_000
-        let container = NSTextContainer(containerSize: NSSize(
-            width: 0, height: bigDimension
-        ))
-        container.widthTracksTextView = true
-        let layoutManager = NSLayoutManager()
-        layoutManager.addTextContainer(container)
-        let storage = NSTextStorage()
-        storage.addLayoutManager(layoutManager)
-
-        let tv = WikiTextView(frame: .zero, textContainer: container)
-        tv.autoresizingMask = [.width]
-        tv.minSize = NSSize(width: 0, height: 0)
-        tv.maxSize = NSSize(width: bigDimension, height: bigDimension)
-        tv.isVerticallyResizable = true
+        let tv = WikiTextView()
+        tv.textDelegate = context.coordinator
+        tv.isEditable = true
+        tv.isSelectable = true
+        // STTextView defaults to `isHorizontallyResizable = true`,
+        // which means long lines extend the view rather than wrap.
+        // For a markdown wiki editor the user wants word wrap to
+        // the content width — flip the flag.
         tv.isHorizontallyResizable = false
-        tv.delegate = context.coordinator
-        tv.allowsUndo = true
-        tv.isRichText = false
-        tv.usesFindBar = true
-        tv.isAutomaticQuoteSubstitutionEnabled = false
-        tv.isAutomaticDashSubstitutionEnabled = false
-        tv.isAutomaticSpellingCorrectionEnabled = false
-        tv.isAutomaticTextCompletionEnabled = false
-        tv.isAutomaticDataDetectionEnabled = false
-        tv.isAutomaticLinkDetectionEnabled = false
-        // Body in proportional system font; the storage delegate
+        // Body in proportional system font; the styling pass
         // re-applies monospaced font + dimmed background to code
         // spans + fenced code blocks so they contrast visually.
         tv.font = NSFont.systemFont(ofSize: 13)
         tv.textColor = NSColor.textColor
-        tv.string = text
-        tv.textContainerInset = NSSize(width: 8, height: 8)
-        // Hook the storage delegate so `[[wikilink]]` spans get
-        // accent-colored, underlined styling on every edit. The
-        // initial sweep fires after the `string =` assignment above
-        // because we run it manually below — `setAttributes` doesn't
-        // trigger the delegate, but the initial string assign did
-        // process characters, which already invoked our delegate
-        // once if we'd attached it earlier. Doing it here keeps the
-        // ordering predictable.
-        if let storage = tv.textStorage {
-            storage.delegate = context.coordinator.storageDelegate
-            // Force one sweep so existing pages render with link
-            // styling on first appearance — the assign above ran
-            // before the delegate was attached.
-            storage.edited(.editedCharacters,
-                           range: NSRange(location: 0, length: storage.length),
-                           changeInLength: 0)
-        }
+        tv.text = text
+        // STTextView exposes content insets through its scroll
+        // view rather than the text container directly — mirror
+        // the previous editor's 8pt feel by setting the scroll
+        // view's content insets.
+        scroll.contentInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
         // Cmd-click anywhere inside a [[...]] span fires this — the
         // controller routes it to the SwiftUI side, which resolves
         // the target id and opens the page as a tab.
@@ -90,58 +63,62 @@ struct MarkdownTextView: NSViewRepresentable {
         controller.textView = tv
 
         scroll.documentView = tv
+        // Initial styling sweep so existing pages render with the
+        // wikilink + markdown-inline styling on first appearance.
+        // The delegate's `textViewDidChangeText(_:)` only fires on
+        // user edits; the initial `tv.text = ...` doesn't.
+        context.coordinator.storageDelegate.applyStyling(to: tv)
         return scroll
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let tv = scrollView.documentView as? NSTextView else { return }
+        guard let tv = scrollView.documentView as? WikiTextView else { return }
         // External update from the binding — only force-reload when
         // the strings actually diverge so we don't blow away the
-        // user's typing on every keystroke (textDidChange fires the
-        // binding, which fires updateNSView, which would otherwise
-        // reset the cursor).
-        if tv.string != text {
-            let sel = tv.selectedRange()
-            tv.string = text
-            let nsLen = (text as NSString).length
-            let safeLoc = min(sel.location, nsLen)
-            tv.setSelectedRange(NSRange(location: safeLoc, length: 0))
-            // Re-sweep wikilink styling — `string = ...` resets the
-            // storage to plain text (no per-char attributes), so the
-            // delegate needs another pass.
-            if let storage = tv.textStorage {
-                storage.edited(.editedCharacters,
-                               range: NSRange(location: 0, length: storage.length),
-                               changeInLength: 0)
-            }
+        // user's typing on every keystroke (textViewDidChangeText
+        // fires the binding, which fires updateNSView, which would
+        // otherwise reset the cursor).
+        if tv.text != text {
+            tv.text = text
+            // Re-sweep styling after the assignment — STTextView's
+            // delegate doesn't fire on programmatic `text =` writes.
+            context.coordinator.storageDelegate.applyStyling(to: tv)
         }
     }
 
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    @MainActor
+    final class Coordinator: NSObject, @preconcurrency STTextViewDelegate {
         var parent: MarkdownTextView
-        /// Owned by the coordinator so the strong reference outlives
-        /// the textStorage's weak `delegate` slot.
+        /// Owned by the coordinator so its strong reference outlives
+        /// the SwiftUI render cycle and the storage delegate's
+        /// weak coupling to the underlying NSTextStorage.
         let storageDelegate = WikiTextStorageDelegate()
         init(_ parent: MarkdownTextView) { self.parent = parent }
 
-        func textDidChange(_ notification: Notification) {
-            guard let tv = notification.object as? NSTextView else { return }
-            parent.text = tv.string
+        // MARK: STTextViewDelegate
+
+        /// Fired after every user-initiated text mutation. Mirrors
+        /// the old `NSTextViewDelegate.textDidChange(_:)`. Pushes
+        /// the string up to the SwiftUI binding, recomputes the
+        /// `[[` autocomplete trigger, and re-applies markdown +
+        /// wikilink styling to the storage.
+        func textViewDidChangeText(_ notification: Notification) {
+            guard let tv = notification.object as? WikiTextView else { return }
+            parent.text = tv.text ?? ""
             parent.controller.recomputeTrigger(in: tv)
+            storageDelegate.applyStyling(to: tv)
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
-            guard let tv = notification.object as? NSTextView else { return }
+            guard let tv = notification.object as? WikiTextView else { return }
             parent.controller.recomputeTrigger(in: tv)
         }
 
-        /// Intercept Return / Tab / Escape when the autocomplete is
-        /// active so the popover can capture them as accept / cancel
-        /// without the text view inserting a literal newline / tab.
-        /// Other commands fall through (Down / Up arrow are also
-        /// handled by the popover via NotificationCenter; commenting
-        /// out for now to keep this scope tight).
-        func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        /// Intercept Return / Tab / Escape / arrows while the
+        /// autocomplete popover is active so the popover can
+        /// capture them as accept / cancel / nav. Other commands
+        /// fall through to STTextView's defaults.
+        func textView(_ textView: STTextView, doCommandBy selector: Selector) -> Bool {
             guard parent.controller.trigger != nil else { return false }
             switch selector {
             case #selector(NSResponder.insertNewline(_:)),
@@ -240,24 +217,38 @@ final class WikiTextStorageDelegate: NSObject, NSTextStorageDelegate {
         applyStyling(to: textStorage)
     }
 
-    /// Public so `MarkdownTextView` can fire a one-shot sweep after
-    /// the initial `tv.string = ...` assignment (which runs before
-    /// the delegate is attached) and on external binding updates.
-    func applyStyling(to textStorage: NSTextStorage) {
+    /// Apply the full styling pass to a WikiTextView. Reaches the
+    /// underlying `NSTextStorage` via TextKit 2's content manager;
+    /// `STTextView` keeps the storage as the canonical attribute
+    /// store (TextKit 2 layouts on top of it), so attribute writes
+    /// are reflected in rendering immediately.
+    func applyStyling(to tv: WikiTextView) {
+        guard let contentStorage = tv.textLayoutManager.textContentManager
+                as? NSTextContentStorage,
+              let textStorage = contentStorage.textStorage else { return }
+        applyStyling(to: textStorage)
+    }
+
+    /// Hand-rolled markdown styling. Walks the text line-by-line,
+    /// tracks fenced-code state, applies heading sizes / bold /
+    /// italic / inline + fenced code styling, and finally layers
+    /// wikilink accent + underline. `swift`-tagged code blocks get
+    /// per-token coloring via Splash; other languages stay plain
+    /// monospaced + dimmed background.
+    private func applyStyling(to textStorage: NSTextStorage) {
         let str = textStorage.string as NSString
         let full = NSRange(location: 0, length: str.length)
 
-        // Reset to defaults. Single sweep is cheaper than diffing
-        // and handles delete / paste / undo uniformly.
         textStorage.setAttributes([
             .font: baseFont,
             .foregroundColor: baseColor,
         ], range: full)
 
-        // Walk the document line-by-line, tracking whether we're
-        // inside a ``` fenced code block across line boundaries.
         var lineLocation = 0
         var inFence = false
+        var currentFenceLang: String?
+        var currentFenceContentStart: Int = 0
+        var pendingHighlights: [(language: String, range: NSRange)] = []
         while lineLocation < str.length {
             var lineEndContent: Int = 0
             var lineEndIncludingTerminator: Int = 0
@@ -273,10 +264,37 @@ final class WikiTextStorageDelegate: NSObject, NSTextStorageDelegate {
             )
             let lineText = str.substring(with: lineRange)
 
-            // Fence open/close markers stay in monospaced + dimmed
-            // background but flip the fence state for the next line.
-            if lineText.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                inFence.toggle()
+            let trimmed = lineText.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") {
+                if inFence {
+                    // Fence close — capture the content range we've
+                    // accumulated for syntax highlighting if it's a
+                    // language we know.
+                    if let lang = currentFenceLang {
+                        let contentLen = lineRange.location - currentFenceContentStart
+                        if contentLen > 0 {
+                            pendingHighlights.append((
+                                language: lang,
+                                range: NSRange(
+                                    location: currentFenceContentStart,
+                                    length: contentLen
+                                )
+                            ))
+                        }
+                    }
+                    inFence = false
+                    currentFenceLang = nil
+                } else {
+                    // Fence open — extract the language tag (text
+                    // immediately after the ``` markers, before any
+                    // newline). The content begins on the next line.
+                    let afterBackticks = String(trimmed.dropFirst(3))
+                        .trimmingCharacters(in: .whitespaces)
+                        .lowercased()
+                    currentFenceLang = afterBackticks.isEmpty ? nil : afterBackticks
+                    currentFenceContentStart = lineEndIncludingTerminator
+                    inFence = true
+                }
                 applyCodeBlock(line: lineRange, in: textStorage)
                 lineLocation = lineEndIncludingTerminator
                 continue
@@ -321,6 +339,44 @@ final class WikiTextStorageDelegate: NSObject, NSTextStorageDelegate {
             applyInlineSpans(in: lineRange, lineText: lineText, on: textStorage,
                              baseFontOverride: nil)
             lineLocation = lineEndIncludingTerminator
+        }
+
+        // Splash pass for captured Swift code blocks. Other
+        // languages stay on the plain monospaced + dimmed-background
+        // styling applied during the walk above. Multi-language
+        // coverage (Python / JS / etc.) is on the TODO list — needs
+        // either Highlightr (JS-runtime, broad) or properly wired
+        // SwiftTreeSitter / NeonPlugin (native, per-language opt-in).
+        for hl in pendingHighlights where hl.language == "swift" {
+            applySplashHighlights(in: hl.range, on: textStorage)
+        }
+    }
+
+    /// Run Splash over the swift source in `range` and apply its
+    /// per-token color attributes onto `storage`. The monospaced
+    /// font + background that `applyCodeBlock` already wrote stay;
+    /// Splash only adds foreground colors.
+    private func applySplashHighlights(in range: NSRange, on storage: NSTextStorage) {
+        guard range.length > 0,
+              range.location + range.length <= storage.length else { return }
+        let source = (storage.string as NSString).substring(with: range)
+        let highlighter = SyntaxHighlighter(
+            format: AttributedStringOutputFormat(
+                theme: .sundellsColors(withFont: .init(size: 13))
+            )
+        )
+        let attributed = highlighter.highlight(source)
+        attributed.enumerateAttribute(
+            .foregroundColor,
+            in: NSRange(location: 0, length: attributed.length),
+            options: []
+        ) { value, subrange, _ in
+            guard let color = value as? NSColor else { return }
+            let abs = NSRange(
+                location: range.location + subrange.location,
+                length: subrange.length
+            )
+            storage.addAttributes([.foregroundColor: color], range: abs)
         }
     }
 
@@ -529,12 +585,12 @@ final class WikiTextStorageDelegate: NSObject, NSTextStorageDelegate {
     }
 }
 
-/// `NSTextView` subclass that surfaces Cmd-click on `[[wikilinks]]`
+/// `STTextView` subclass that surfaces Cmd-click on `[[wikilinks]]`
 /// as a callback. Plain clicks fall through to standard text-view
 /// behaviour (cursor positioning, selection, IME) — only the Cmd
 /// modifier triggers the link-follow path so editing inside a
 /// wikilink isn't disrupted.
-final class WikiTextView: NSTextView {
+final class WikiTextView: STTextView {
     /// Invoked with the raw link target (alias and section fragment
     /// stripped) when the user Cmd-clicks inside a `[[...]]` span.
     /// Resolution from raw target → actual page id happens on the
@@ -566,31 +622,34 @@ final class WikiTextView: NSTextView {
     }
 
     /// Resolve a click event to the wikilink target whose `[[...]]`
-    /// span contains the click. Returns `nil` when the click is
-    /// outside any span, the span is unclosed, or the inner text is
-    /// empty after stripping alias / section fragment.
+    /// span contains the click. Uses STTextView's TextKit 2 layout
+    /// manager to map the click point to a character offset in the
+    /// underlying string, then scans for the surrounding `[[...]]`
+    /// boundaries. Returns nil when the click is outside any span,
+    /// the span is unclosed, or the inner text is empty.
     private func wikilinkTarget(at event: NSEvent) -> String? {
-        guard let layoutManager = self.layoutManager,
-              let container = self.textContainer,
-              let storage = self.textStorage else { return nil }
         let viewPoint = convert(event.locationInWindow, from: nil)
-        let containerPoint = NSPoint(
-            x: viewPoint.x - textContainerOrigin.x,
-            y: viewPoint.y - textContainerOrigin.y
+        // STTextView gives us the text location directly under a
+        // point via its layout manager. `interactingAt:` is the
+        // hit-test variant that snaps to insertion-point boundaries
+        // — exactly what we want for "what character did the user
+        // click on".
+        guard let textLocation = textLayoutManager.location(
+            interactingAt: viewPoint,
+            inContainerAt: textLayoutManager.documentRange.location
+        ) else { return nil }
+        let charIndex = textLayoutManager.offset(
+            from: textLayoutManager.documentRange.location,
+            to: textLocation
         )
-        let glyphIndex = layoutManager.glyphIndex(for: containerPoint, in: container)
-        let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
-        let nsStr = storage.string as NSString
-        guard charIndex < nsStr.length else { return nil }
+        let nsStr = (text ?? "") as NSString
+        guard charIndex >= 0, charIndex < nsStr.length else { return nil }
 
         // Look back from the click for the most recent `[[`.
         let beforeRange = NSRange(location: 0, length: charIndex)
         let openRange = nsStr.range(
-            of: "[[", options: .backwards, range: beforeRange
+            of: "[[", options: NSString.CompareOptions.backwards, range: beforeRange
         )
-        // If `[[` isn't found before the click but the click sits
-        // exactly on `[[`, we still want to handle it — extend the
-        // search to include charIndex itself.
         let openLoc: Int
         if openRange.location != NSNotFound {
             openLoc = openRange.location
@@ -603,16 +662,11 @@ final class WikiTextView: NSTextView {
         let innerStart = openLoc + 2
         guard innerStart < nsStr.length else { return nil }
 
-        // Find the matching `]]`. Bail if the span runs past EOF.
         let afterRange = NSRange(
             location: innerStart, length: nsStr.length - innerStart
         )
         let closeRange = nsStr.range(of: "]]", options: [], range: afterRange)
         guard closeRange.location != NSNotFound else { return nil }
-
-        // Click must land inside the `[[...]]` span (between the
-        // opening and the start of the closing). Allow the click at
-        // the closing markers too — feels natural.
         guard charIndex >= innerStart, charIndex <= closeRange.location + 1 else {
             return nil
         }
@@ -620,8 +674,6 @@ final class WikiTextView: NSTextView {
         let inner = nsStr.substring(with: NSRange(
             location: innerStart, length: closeRange.location - innerStart
         ))
-        // Strip alias (`|...`) and section fragment (`#...`) — same
-        // as the resolver does for inbound link extraction.
         var target = inner
         if let pipe = target.firstIndex(of: "|") {
             target = String(target[target.startIndex..<pipe])
@@ -652,7 +704,7 @@ final class MarkdownTextViewController: ObservableObject {
     /// id without circular bindings.
     @Published var suggestions: [String] = []
 
-    weak var textView: NSTextView?
+    weak var textView: WikiTextView?
 
     /// Combine-style passthrough for "user Cmd-clicked a wikilink in
     /// the editor." SwiftUI observers (the page view) react to each
@@ -691,9 +743,9 @@ final class MarkdownTextViewController: ObservableObject {
     /// current state. Called from the coordinator on text + selection
     /// changes. Cheap enough to run on every keystroke (one
     /// substring + one `range(of:options:)` over a 64-char window).
-    func recomputeTrigger(in tv: NSTextView) {
-        let nsString = tv.string as NSString
-        let cursor = tv.selectedRange().location
+    func recomputeTrigger(in tv: WikiTextView) {
+        let nsString = (tv.text ?? "") as NSString
+        let cursor = Self.cursorOffset(in: tv)
         guard cursor <= nsString.length else {
             trigger = nil
             return
@@ -703,7 +755,7 @@ final class MarkdownTextViewController: ObservableObject {
         // window keeps the search O(constant).
         let lookbackStart = max(0, cursor - 128)
         let window = nsString.substring(with: NSRange(location: lookbackStart, length: cursor - lookbackStart))
-        guard let openIdx = window.range(of: "[[", options: .backwards)?.upperBound else {
+        guard let openIdx = window.range(of: "[[", options: String.CompareOptions.backwards)?.upperBound else {
             trigger = nil
             return
         }
@@ -748,7 +800,6 @@ final class MarkdownTextViewController: ObservableObject {
     @discardableResult
     func acceptSuggestion(_ pageId: String) -> Bool {
         guard let trigger, let tv = textView else { return false }
-        let storage = tv.textStorage
         // Insert basename when the resolver hook says it's unique;
         // full id on collision. Falls back to verbatim id when no
         // hook is set (used in contexts where collision matters
@@ -756,27 +807,28 @@ final class MarkdownTextViewController: ObservableObject {
         let insertText = resolveInsertText?(pageId) ?? pageId
         let replacement = "\(insertText)]]"
         let replacementNS = replacement as NSString
-        storage?.beginEditing()
-        // Replace the query characters; `[[` already exists immediately
-        // before `replaceRange.location` so the final string reads as
-        // `[[<pageId>]]`.
-        storage?.replaceCharacters(
-            in: trigger.replaceRange,
-            with: NSAttributedString(
-                string: replacement,
-                attributes: [
-                    .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
-                    .foregroundColor: NSColor.textColor,
-                ]
-            )
-        )
-        storage?.endEditing()
+        tv.replaceCharacters(in: trigger.replaceRange, with: replacement)
         let cursorLoc = trigger.replaceRange.location + replacementNS.length
-        tv.setSelectedRange(NSRange(location: cursorLoc, length: 0))
-        // Manually fire the binding update — programmatic mutations
-        // through `textStorage` don't trigger `textDidChange`.
-        if let cb = tv.delegate as? MarkdownTextView.Coordinator {
-            cb.parent.text = tv.string
+        // Move the caret past the closing `]]`. STTextView's
+        // public selection API goes through the layout manager:
+        // build an `NSTextLocation` at the cursor's UTF-16 offset
+        // and assign a single zero-length `NSTextSelection`.
+        if let target = tv.textLayoutManager.location(
+            tv.textLayoutManager.documentRange.location,
+            offsetBy: cursorLoc
+        ) {
+            let range = NSTextRange(location: target)
+            tv.textLayoutManager.textSelections = [
+                NSTextSelection(range: range, affinity: .downstream, granularity: .character)
+            ]
+        }
+        // STTextView's `replaceCharacters` does fire its delegate
+        // callback in our experience, but we still push the binding
+        // explicitly so the SwiftUI side reflects the change in case
+        // the delegate path is gated by user-vs-programmatic origin.
+        if let cb = tv.textDelegate as? MarkdownTextView.Coordinator {
+            cb.parent.text = tv.text ?? ""
+            cb.storageDelegate.applyStyling(to: tv)
         }
         dismissTrigger()
         return true
@@ -793,23 +845,35 @@ final class MarkdownTextViewController: ObservableObject {
         return acceptSuggestion(suggestions[highlightedIndex])
     }
 
-    /// Compute the cursor rect in window coordinates. NSTextView's
-    /// layout manager gives the rect in text-container coordinates,
-    /// which we convert through the text container origin and the
-    /// view's coordinate system.
-    private static func cursorRect(in tv: NSTextView, atCharacter loc: Int) -> CGRect {
-        guard let layoutManager = tv.layoutManager,
-              let textContainer = tv.textContainer else { return .zero }
-        let glyphRange = layoutManager.glyphRange(
-            forCharacterRange: NSRange(location: loc, length: 0),
-            actualCharacterRange: nil
+    /// Read the caret position as a UTF-16 offset from the document
+    /// start. STTextView's selection is exposed as an `NSTextRange`;
+    /// we convert it to a numeric offset using the layout manager.
+    private static func cursorOffset(in tv: WikiTextView) -> Int {
+        guard let selection = tv.textLayoutManager.textSelections.first?.textRanges.first else {
+            return 0
+        }
+        return tv.textLayoutManager.offset(
+            from: tv.textLayoutManager.documentRange.location,
+            to: selection.location
         )
-        var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
-        // Translate text-container coords to view coords.
-        rect.origin.x += tv.textContainerOrigin.x
-        rect.origin.y += tv.textContainerOrigin.y
-        // View coords → window coords (callers may convert further to
-        // screen if they need).
-        return tv.convert(rect, to: nil)
+    }
+
+    /// Compute the caret rect in the WikiTextView's coordinate space.
+    /// The popover anchors to this rect (after applying the editor's
+    /// own `.offset` in SwiftUI), so we want a rect relative to the
+    /// view, not the window.
+    private static func cursorRect(in tv: WikiTextView, atCharacter loc: Int) -> CGRect {
+        guard let location = tv.textLayoutManager.location(
+            tv.textLayoutManager.documentRange.location,
+            offsetBy: loc
+        ),
+              let frame = tv.textLayoutManager.textSegmentFrame(
+                  at: location, type: .standard
+              )
+        else { return .zero }
+        // STTextView's segment frame is already in the view's
+        // coordinate space; no further conversion needed for the
+        // popover's `.offset` anchor.
+        return frame
     }
 }
