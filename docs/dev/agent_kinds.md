@@ -1,6 +1,6 @@
 # Agent kinds: persona vs agent
 
-Status: proposal, unimplemented as of 2026-04-25. Companion to `agents.md` (the protocol + loop design) and `plugins.md` (tools + MCP). This doc specifies the **user-facing classification** between *personas* and *agents*, the schema changes to encode it, and the validation rules that keep the distinction honest.
+Status: shipped (schema v2 + v3, runtime, picker, validation), 2026-05-09. Originally drafted as a v2-schema proposal on 2026-04-25; the v3 follow-up added composition primitives (`chain`, `fallback`, `branch`, `refine`, `orchestrator`, `delegate`) — see `agent_composition.md` for the primitive inventory and `agent_delegate.md` for the multi-hop delegation primitive that powers the synthetic Auto picker entry. Companion to `agents.md` (the protocol + loop design) and `plugins.md` (tools + MCP). This doc specifies the **user-facing classification** between *personas* and *agents*, the schema changes to encode it, and the validation rules that keep the distinction honest.
 
 ## Why split the term
 
@@ -60,12 +60,16 @@ Convention: `Resources/personas/<id>.json` + optional `Resources/personas/<id>.m
 
 ### New optional fields: composition (agent only)
 
-Reserved field names; loader rejects them on `kind: "persona"`:
+Loader rejects them on `kind: "persona"`. Originally only `chain` and `orchestrator` were forward-declared in v2; the full set below ships under schema v3 with full runtime semantics in `CompositionController`. See `agent_composition.md` for the per-primitive design and `agent_delegate.md` for `delegate`.
 
 - `chain: [AgentID]` — sequential pipeline. Each agent's final answer becomes the next agent's user message. Step budget applies per agent. Cycles rejected at registry validation time.
-- `orchestrator: { router: AgentID, candidates: [AgentID] }` — a router agent (itself an `agent`) selects one of `candidates` per turn via a synthetic `invoke(agentID:, input:)` tool injected into its tool catalog.
+- `fallback: [AgentID]` — try in order; first that doesn't `.failed` wins.
+- `branch: { probe?, predicate, then, else }` — declarative conditional dispatch.
+- `refine: { producer, critic, maxIterations, acceptWhen }` — bounded producer–critic loop.
+- `orchestrator: { router: AgentID, candidates: [AgentID] }` — a router agent (itself an `agent`) selects one of `candidates` per turn via a synthetic `agents.invoke` tool. One-shot (single dispatch).
+- `delegate: { router, candidates, maxHops }` — multi-hop variant of orchestrator: the router runs in a loop, each candidate's output feeds back as a synthetic tool result on the router's next turn, terminates on no-dispatch / `maxHops` / loop detection / budget.
 
-Both are *forward-declared* in the schema so the JSON shape is stable; the runtime semantics ship in a follow-up (see "Out of scope" below). Loader validates structure (referenced ids exist, no cycles) but the controller treats them as no-ops until composition is implemented.
+At most one composition field may be set per agent (mutual exclusion enforced at decode). Cross-agent reference checks (existence, cycles where applicable) run at registry-load time.
 
 ## Validation rules (loader)
 
@@ -73,10 +77,10 @@ In priority order, evaluated at `PromptAgent` decode:
 
 1. `schemaVersion` ∈ supported set, else `AgentError.unsupportedSchemaVersion`.
 2. `kind` present (or auto-derived for v1).
-3. `kind: "persona"` ⇒ `toolsAllow` is empty or absent, no `chain`, no `orchestrator`. Else `invalidPersona("persona must not declare tools or composition")`.
-4. `kind: "agent"` ⇒ at least one of `toolsAllow`, `chain`, `orchestrator` is present. Empty agent loads with a warning, not an error (allows iterative authoring).
+3. `kind: "persona"` ⇒ `toolsAllow` is empty or absent, no composition fields (`chain`, `fallback`, `branch`, `refine`, `orchestrator`, `delegate`, `budget`). Else `invalidPersona("persona must not declare tools or composition")`.
+4. `kind: "agent"` ⇒ at least one of `toolsAllow` or any composition field is present. Empty agent loads with a warning, not an error (allows iterative authoring).
 5. `contextPath` (if present) resolves to a readable file under the same directory tree as the JSON. Path traversal (`..`) rejected.
-6. Composition references (`chain[*]`, `orchestrator.router`, `orchestrator.candidates[*]`) — structural validation only at decode (non-empty strings); existence checks happen at registry-time once all agents are loaded, since order of file load is undefined.
+6. Composition references (`chain[*]`, `fallback[*]`, `branch.{probe,then,else}`, `refine.{producer,critic}`, `orchestrator.{router,candidates[*]}`, `delegate.{router,candidates[*]}`) — structural validation at decode (non-empty strings, `maxHops > 0`, `maxIterations > 0`, router-not-in-candidates for orchestrator/delegate); existence checks + cycle detection happen at registry-time once all agents are loaded, since order of file load is undefined.
 
 ## Directory split
 
@@ -140,12 +144,12 @@ Each persona file gains `"schemaVersion": 2, "kind": "persona"`. The clock-assis
 
 - `Agent` protocol surface in `Agent.swift` — unchanged. `kind` is metadata on `PromptAgent` / its JSON, not a protocol requirement. `DefaultAgent` is implicitly a persona; `ToolAgent` is implicitly an agent. If a `kind: AgentKind { get }` requirement is added later, default extensions can derive it from existing properties.
 - `ToolRegistry` / `BuiltinTools` — unchanged. Tools remain registered globally and referenced by name from `toolsAllow`.
-- Composition runtime — `chain` and `orchestrator` are forward-declared in the schema only; the controller treats them as no-ops. Implementing real chaining/orchestration is a follow-up doc (`docs/dev/agent_composition.md`, not yet written).
+- ~~Composition runtime — `chain` and `orchestrator` are forward-declared in the schema only; the controller treats them as no-ops.~~ **Shipped under v3.** All six primitives (`chain`, `fallback`, `branch`, `refine`, `orchestrator`, `delegate`) execute via `CompositionController`. See `agent_composition.md`.
 - `ToolAgent` itself — its existence becomes more questionable once `PromptAgent` covers tool-using cases via `kind: "agent"`. Decision deferred; see "Open question" below.
 
 ## Out of scope (deferred)
 
-- **Composition runtime.** `chain` execution, orchestrator routing, handoff envelopes, per-step budget accounting across agents. Schema is forward-declared so files authored against this PR remain valid when composition lands.
+- ~~**Composition runtime.** `chain` execution, orchestrator routing, handoff envelopes, per-step budget accounting across agents.~~ **Shipped under v3 (M5a–M5c).** See `agent_composition.md` and `agent_delegate.md`.
 - **Persona inheritance.** A persona that extends another persona (`extends: <id>`, prompt concatenation). Discussed and rejected for now — keeps the schema flat. Revisit if persona libraries grow past ~20 entries.
 - **Per-persona model pinning.** `requirements.modelHint` (HF id or local path) so a persona can request "load this model when activated." Useful but orthogonal; tracked separately.
 - **Tool consent UX changes.** `autoApprove` semantics already exist in `requirements`; no changes here.
@@ -160,14 +164,14 @@ Each persona file gains `"schemaVersion": 2, "kind": "persona"`. The clock-assis
 
 ## Implementation checklist
 
-When this PR is picked up, the work is:
+All shipped under schema v2 (kind, contextPath, sidecar) and v3 (full composition primitives). Original v2 plan retained below as historical record:
 
-1. Add `AgentKind` enum (`AgentTypes.swift`) and `kind` field on `PromptAgent`. Bump `currentSchemaVersion` to `2`, keep `1` in `supportedSchemaVersions`.
-2. Add `contextPath` field + sidecar loader in `PromptAgent.init(from:)`. Reject path traversal.
-3. Add validation rules 1–6 above. Tests in `InferAgentsTests`.
-4. Forward-declare `chain` and `orchestrator` schema fields. Structural validation only.
-5. Move four persona JSONs from `Resources/agents/` to `Resources/personas/`. Update `AgentController` bootstrap to load both directories. Update `Package.swift` resources list.
-6. Edit four persona JSONs + clock-assistant JSON to add `schemaVersion: 2` and `kind`.
-7. Group by kind in `AgentsLibrarySection`. Add badge/affordance for agents.
-8. Override `PromptAgent.toolsAvailable` to enforce empty tool set when `kind == .persona` (open question 2 — recommend yes).
-9. Update `docs/dev/agents.md` to reference this doc and the new vocabulary.
+1. ✅ Add `AgentKind` enum (`AgentTypes.swift`) and `kind` field on `PromptAgent`. Bump `currentSchemaVersion` to `2`, keep `1` in `supportedSchemaVersions`. *(v3 since.)*
+2. ✅ Add `contextPath` field + sidecar loader in `PromptAgent.init(from:)`. Reject path traversal.
+3. ✅ Add validation rules 1–6 above. Tests in `InferAgentsTests`.
+4. ✅ Forward-declare `chain` and `orchestrator` schema fields. Structural validation only. *(v3 expanded to all six primitives with full runtime in `CompositionController`.)*
+5. ✅ Move four persona JSONs from `Resources/agents/` to `Resources/personas/`. Update `AgentController` bootstrap to load both directories. Update `Package.swift` resources list.
+6. ✅ Edit four persona JSONs + clock-assistant JSON to add `schemaVersion: 2` and `kind`.
+7. ✅ Group by kind in `AgentsLibrarySection`. Add badge/affordance for agents.
+8. ✅ Override `PromptAgent.toolsAvailable` to enforce empty tool set when `kind == .persona` (open question 2 — yes, shipped).
+9. ✅ Update `docs/dev/agents.md` to reference this doc and the new vocabulary.
