@@ -60,10 +60,24 @@ public enum CompositionPlan: Equatable, Sendable {
     /// final result.
     case orchestrator(router: AgentID, candidates: [AgentID])
 
+    /// Multi-hop delegation loop (`agent_delegate.md`). Like
+    /// `.orchestrator` but the router runs in a loop: each candidate's
+    /// output is fed back to the router as a synthetic tool result,
+    /// and the router decides whether to invoke another candidate or
+    /// terminate. The composition's final answer is the router's
+    /// visible text on the iteration where it stops emitting
+    /// `agents.invoke`, or the last candidate's text if `maxHops` is
+    /// hit first. Loop detection (same `(target, input)` twice in a
+    /// row) terminates the loop early. Pattern is ReAct-style
+    /// (LLM emits "tool" calls, observes results, decides next step)
+    /// applied to whole agents instead of fine-grained tools — see
+    /// `ReActAgent` for the single-agent / many-tools variant.
+    case delegate(router: AgentID, candidates: [AgentID], maxHops: Int)
+
     /// Build a plan for `agent`. Composition fields are checked in
     /// priority order: chain → fallback → branch → refine →
-    /// orchestrator → single. Fields are mutually exclusive in
-    /// practice; if more than one is set we surface the highest-
+    /// orchestrator → delegate → single. Fields are mutually exclusive
+    /// in practice; if more than one is set we surface the highest-
     /// priority one (the registry validation pass already warns when
     /// multiple are declared).
     public static func make(for agent: any Agent) -> CompositionPlan {
@@ -95,6 +109,13 @@ public enum CompositionPlan: Equatable, Sendable {
         if let orch = prompt.orchestrator {
             return .orchestrator(router: orch.router, candidates: orch.candidates)
         }
+        if let delegate = prompt.delegate {
+            return .delegate(
+                router: delegate.router,
+                candidates: delegate.candidates,
+                maxHops: delegate.maxHops
+            )
+        }
         return .single(prompt.id)
     }
 
@@ -112,6 +133,8 @@ public enum CompositionPlan: Equatable, Sendable {
         case .refine(let producer, let critic, _, _):
             return [producer, critic]
         case .orchestrator(let router, let candidates):
+            return [router] + candidates
+        case .delegate(let router, let candidates, _):
             return [router] + candidates
         }
     }

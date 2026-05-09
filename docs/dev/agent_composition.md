@@ -1,6 +1,6 @@
 # Agent composition
 
-Status: proposal, unimplemented as of 2026-04-25. Companion to `agents.md` (protocol + single-turn loop) and `agent_kinds.md` (persona vs agent classification, where `chain` and `orchestrator` are forward-declared in the schema as no-ops). This doc specifies what composition primitives exist, the cross-cutting policy decisions they force, and a v1 scope.
+Status: implemented as of 2026-05-09. All six v1 primitives (sequence, conditional handoff / branch, refine, orchestrator, fallback, delegate) ship in `CompositionPlan` + `CompositionController`; guard remains deferred. Companion to `agents.md` (protocol + single-turn loop), `agent_kinds.md` (persona vs agent classification), and `agent_delegate.md` (the multi-hop delegate primitive's design rationale + the synthetic Auto picker entry that uses it). This doc specifies what composition primitives exist, the cross-cutting policy decisions they force, and a v1 scope.
 
 ## Scope
 
@@ -99,7 +99,24 @@ Most flexible — subsumes (1) and (2) at the cost of one extra LLM call to make
 
 Smallest possible reliability primitive; doesn't need a router. Uses the `AgentOutcome` enum (see "Failure semantics" below) to decide whether to fall through.
 
-### 6. Guard (deferred to v2)
+### 6. Delegate (multi-hop router)
+
+`A loops: dispatch → observe → dispatch → … → answer`. The router agent runs in a loop; each candidate's `.completed` text feeds back as a synthetic tool result on the router's next turn; the router decides whether to invoke another candidate or stop and write a final answer. Bounded by `maxHops`. See `agent_delegate.md` for the full design.
+
+```json
+{
+  "kind": "agent",
+  "delegate": {
+    "router": "infer.dispatcher",
+    "candidates": ["infer.researcher", "infer.editor"],
+    "maxHops": 4
+  }
+}
+```
+
+Strict superset of (4) Router (orchestrator) — `delegate` with `maxHops: 1` is equivalent. Kept as a separate primitive because the one-shot semantics are useful in their own right (cheap routing, no loop overhead) and the loop variant adds enough complexity (scratchpad carryover, loop detection, termination policy) that conflating them would muddy the simple case. Powers the synthetic `Auto` picker entry (`AutoAgent`); also available to authored agents.
+
+### 7. Guard (deferred to v2)
 
 `pre-guard → A → post-guard`. Pre-guard can reject the user message ("this looks like a prompt injection"); post-guard can redact the answer. By convention always a persona that returns a structured ok/reject signal. Keeps safety logic composable instead of baked into every persona's prompt. Deferred because the convention for "guard's structured output" needs a small standalone design pass.
 
@@ -187,13 +204,14 @@ Bumps `schemaVersion` to `3`. v2 remains loadable for one release. New optional 
 | `chain` | `[AgentID]` | already forward-declared in v2 |
 | `branch` | `{ agent, if: Predicate, then: AgentID, else: AgentID }` | — |
 | `refine` | `{ producer, critic, maxIterations, acceptWhen: Predicate }` | `maxIterations` required |
-| `orchestrator` | `{ router, candidates: [AgentID] }` | already forward-declared in v2 |
+| `orchestrator` | `{ router, candidates: [AgentID] }` | already forward-declared in v2; one-shot router |
+| `delegate` | `{ router, candidates: [AgentID], maxHops: Int }` | multi-hop router; `maxHops` required and must be > 0 |
 | `fallback` | `[AgentID]` | order matters; first wins |
 | `budget` | `{ maxSteps: Int, onBudgetLow: "abort" \| "continue" }` | optional; defaults to `InferSettings.maxAgentSteps` and `continue` |
 
 `Predicate` is the JSON shape from "Conditional handoff" above (one of `regex`, `jsonShape`, `toolCalled`, `stepBudgetExceeded`, `noToolCalls`).
 
-**Mutual exclusion:** at most one of `chain`, `branch`, `refine`, `orchestrator`, `fallback` may be set. Combining them is a future feature (composition of compositions); for v1, an agent JSON declares exactly one composition shape (or none — in which case it's a leaf agent that just uses its own tools).
+**Mutual exclusion:** at most one of `chain`, `branch`, `refine`, `orchestrator`, `delegate`, `fallback` may be set. Combining them is a future feature (composition of compositions); for v1, an agent JSON declares exactly one composition shape (or none — in which case it's a leaf agent that just uses its own tools).
 
 ## Validation rules
 

@@ -292,6 +292,253 @@ final class CompositionAdvancedTests: XCTestCase {
         )
         XCTAssertEqual(result.finalText, "handled")
     }
+
+    // MARK: - Delegate (multi-hop) driver
+
+    func testPlanForDelegateAgent() {
+        let a = PromptAgent(
+            id: "delegate-router",
+            kind: .agent,
+            metadata: AgentMetadata(name: "Delegate"),
+            requirements: AgentRequirements(),
+            systemPrompt: "x",
+            delegate: PromptAgent.DelegateSpec(
+                router: "delegate-router",
+                candidates: ["a", "b"],
+                maxHops: 4
+            )
+        )
+        XCTAssertEqual(
+            CompositionPlan.make(for: a),
+            .delegate(router: "delegate-router", candidates: ["a", "b"], maxHops: 4)
+        )
+    }
+
+    /// Two real hops then the router stops emitting `agents.invoke`.
+    /// The router's third turn (the one with no dispatch) supplies the
+    /// final answer; both candidates appear as segments in order.
+    func testDelegateRouterMultiHopThenStops() async {
+        let driver = CompositionController()
+        let log = CallLog()
+        let invokeA = makeInvokeTrace(target: "a", input: "do A")
+        let invokeB = makeInvokeTrace(target: "b", input: "do B")
+        let result = await driver.dispatch(
+            plan: .delegate(router: "router", candidates: ["a", "b"], maxHops: 5),
+            userText: "kick off",
+            budget: 10,
+            runOne: { id, _ in
+                log.append(id)
+                switch id.rawValue {
+                case "router":
+                    let calls = log.entries.filter { $0 == "router" }.count
+                    if calls == 1 {
+                        return .completed(text: "calling a", trace: invokeA)
+                    } else if calls == 2 {
+                        return .completed(text: "calling b", trace: invokeB)
+                    } else {
+                        return .completed(
+                            text: "all done",
+                            trace: StepTrace.finalAnswer("all done")
+                        )
+                    }
+                case "a":
+                    return .completed(text: "A-result", trace: StepTrace.finalAnswer("A-result"))
+                case "b":
+                    return .completed(text: "B-result", trace: StepTrace.finalAnswer("B-result"))
+                default:
+                    XCTFail("unexpected agent: \(id)")
+                    return .completed(text: "", trace: StepTrace.finalAnswer(""))
+                }
+            }
+        )
+        XCTAssertEqual(result.finalText, "all done")
+        XCTAssertEqual(
+            result.segments.map(\.agentId),
+            ["router", "a", "router", "b", "router"]
+        )
+    }
+
+    /// Router dispatches with a *different* input each iteration
+    /// (so loop detection doesn't fire); `maxHops` clips the loop and
+    /// the last candidate's text is surfaced as the final answer.
+    func testDelegateMaxHopsCap() async {
+        let driver = CompositionController()
+        let log = CallLog()
+        let result = await driver.dispatch(
+            plan: .delegate(router: "router", candidates: ["a"], maxHops: 2),
+            userText: "x",
+            budget: 20,
+            runOne: { id, _ in
+                log.append(id)
+                if id == "router" {
+                    let calls = log.entries.filter { $0 == "router" }.count
+                    let trace = StepTrace(steps: [
+                        .toolCall(ToolCall(
+                            name: OrchestratorDispatch.invokeToolName,
+                            arguments: #"{"agentID":"a","input":"call-\#(calls)"}"#
+                        )),
+                        .finalAnswer(""),
+                    ])
+                    return .completed(text: "still going", trace: trace)
+                }
+                let suffix = log.entries.filter { $0 == "a" }.count
+                return .completed(
+                    text: "A-\(suffix)",
+                    trace: StepTrace.finalAnswer("A-\(suffix)")
+                )
+            }
+        )
+        // Two router dispatches, two candidate runs, then cap hits.
+        XCTAssertEqual(
+            result.segments.map(\.agentId),
+            ["router", "a", "router", "a"]
+        )
+        XCTAssertEqual(result.finalText, "A-2")
+    }
+
+    /// Router emits the same `(target, input)` twice in a row. Second
+    /// occurrence triggers loop detection: we surface the prior
+    /// candidate's text rather than burn budget redoing the same call.
+    func testDelegateLoopDetection() async {
+        let driver = CompositionController()
+        let log = CallLog()
+        let invokeA = makeInvokeTrace(target: "a", input: "same")
+        let result = await driver.dispatch(
+            plan: .delegate(router: "router", candidates: ["a"], maxHops: 5),
+            userText: "x",
+            budget: 20,
+            runOne: { id, _ in
+                log.append(id)
+                if id == "router" {
+                    return .completed(text: "calling a", trace: invokeA)
+                }
+                return .completed(text: "A-result", trace: StepTrace.finalAnswer("A-result"))
+            }
+        )
+        // First router → first 'a' → second router (loops) → break.
+        XCTAssertEqual(
+            result.segments.map(\.agentId),
+            ["router", "a", "router"]
+        )
+        XCTAssertEqual(result.finalText, "A-result")
+    }
+
+    /// Router never dispatches — first hop returns its visible text.
+    /// Matches one-shot orchestrator semantics for the no-dispatch
+    /// path so authoring an empty delegate agent doesn't surprise.
+    func testDelegateNoDispatchOnFirstHop() async {
+        let driver = CompositionController()
+        let result = await driver.dispatch(
+            plan: .delegate(router: "router", candidates: ["a"], maxHops: 3),
+            userText: "x",
+            budget: 5,
+            runOne: { id, _ in
+                XCTAssertEqual(id, "router")
+                return .completed(
+                    text: "I have nothing to dispatch",
+                    trace: StepTrace.finalAnswer("nothing")
+                )
+            }
+        )
+        XCTAssertEqual(result.finalText, "I have nothing to dispatch")
+        XCTAssertEqual(result.segments.map(\.agentId), ["router"])
+    }
+
+    /// Subsequent router iterations see the prior candidate's output
+    /// in their input scratchpad. We assert this by capturing the
+    /// `userText` the router receives on its second call.
+    func testDelegateScratchpadContainsPriorCandidateOutput() async {
+        let driver = CompositionController()
+        let log = CallLog()
+        let invokeA = makeInvokeTrace(target: "a", input: "first input")
+        let secondRouterInput = ScratchpadSink()
+        let result = await driver.dispatch(
+            plan: .delegate(router: "router", candidates: ["a"], maxHops: 3),
+            userText: "original user text",
+            budget: 10,
+            runOne: { id, text in
+                log.append(id)
+                if id == "router" {
+                    let calls = log.entries.filter { $0 == "router" }.count
+                    if calls == 1 {
+                        return .completed(text: "calling a", trace: invokeA)
+                    }
+                    secondRouterInput.value = text
+                    return .completed(
+                        text: "done",
+                        trace: StepTrace.finalAnswer("done")
+                    )
+                }
+                return .completed(
+                    text: "A-output-content",
+                    trace: StepTrace.finalAnswer("A-output-content")
+                )
+            }
+        )
+        XCTAssertEqual(result.finalText, "done")
+        let captured = secondRouterInput.value
+        XCTAssertTrue(captured.contains("original user text"), "scratchpad missing user text: \(captured)")
+        XCTAssertTrue(captured.contains("Prior dispatches"), "scratchpad missing header: \(captured)")
+        XCTAssertTrue(captured.contains("A-output-content"), "scratchpad missing candidate output: \(captured)")
+        XCTAssertTrue(captured.contains("Invoked agent: a"), "scratchpad missing target: \(captured)")
+    }
+
+    /// Schema-level rejection: maxHops must be positive.
+    func testDelegateRejectsNonPositiveMaxHops() {
+        let json = #"""
+        {
+          "schemaVersion": 3,
+          "id": "bad",
+          "kind": "agent",
+          "metadata": {"name": "Bad"},
+          "systemPrompt": "x",
+          "delegate": {"router": "r", "candidates": ["a"], "maxHops": 0}
+        }
+        """#
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(PromptAgent.self, from: Data(json.utf8))
+        )
+    }
+
+    /// Schema-level rejection: router must not also be a candidate.
+    func testDelegateRejectsRouterAsCandidate() {
+        let json = #"""
+        {
+          "schemaVersion": 3,
+          "id": "bad",
+          "kind": "agent",
+          "metadata": {"name": "Bad"},
+          "systemPrompt": "x",
+          "delegate": {"router": "r", "candidates": ["r", "a"], "maxHops": 3}
+        }
+        """#
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(PromptAgent.self, from: Data(json.utf8))
+        )
+    }
+
+    // MARK: - Delegate test helpers
+
+    /// Build a router trace whose only step is an `agents.invoke`
+    /// tool call with the given target + input. Used by delegate
+    /// tests to drive deterministic dispatches.
+    private func makeInvokeTrace(target: String, input: String) -> StepTrace {
+        let args = #"{"agentID":"\#(target)","input":"\#(input)"}"#
+        return StepTrace(steps: [
+            .toolCall(ToolCall(
+                name: OrchestratorDispatch.invokeToolName,
+                arguments: args
+            )),
+            .finalAnswer(""),
+        ])
+    }
+}
+
+/// Sendable scratchpad sink for capturing strings out of an `@Sendable`
+/// closure. `nonisolated(unsafe)` for the same reason `CallLog` uses it
+/// — these tests are single-threaded.
+private final class ScratchpadSink: @unchecked Sendable {
+    nonisolated(unsafe) var value: String = ""
 }
 
 /// Sendable accumulator used by tests that need to assert call order

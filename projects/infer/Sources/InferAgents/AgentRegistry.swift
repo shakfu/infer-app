@@ -166,6 +166,22 @@ public actor AgentRegistry {
                     ))
                 }
             }
+            if let d = agent.delegate {
+                if !known.contains(d.router) {
+                    errors.append(PersonaLoadError(
+                        url: url,
+                        message: "agent \"\(agent.id)\" delegate.router \"\(d.router)\" not found",
+                        severity: .warning
+                    ))
+                }
+                for cand in d.candidates where !known.contains(cand) {
+                    errors.append(PersonaLoadError(
+                        url: url,
+                        message: "agent \"\(agent.id)\" delegate candidate \"\(cand)\" not found",
+                        severity: .warning
+                    ))
+                }
+            }
         }
 
         // Detect chain cycles. An agent's chain says "after I'm done,

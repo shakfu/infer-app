@@ -359,7 +359,7 @@ Out of PR 1: any tool calls, any loop steps, any MCP wiring, `AgentStateStore` (
 
 ## Anti-goals
 
-- **No sub-agents.** "Agent calls agent" is a rabbit hole of recursion budgets, prompt injection vectors, and cross-agent state. If genuinely needed, model it as a tool that the outer agent calls, not as a first-class nesting relation.
+- **No sub-agents.** "Agent calls agent" is a rabbit hole of recursion budgets, prompt injection vectors, and cross-agent state. If genuinely needed, model it as a tool that the outer agent calls, not as a first-class nesting relation. *(Partially relaxed in May 2026.)* The composition primitives — `chain`, `branch`, `refine`, `orchestrator`, `delegate`, `fallback` — let one agent dispatch to another, but on the spirit-of-the-rule: every cross-agent dispatch is a tool call (`agents.invoke` / `agents.handoff`), the composition driver intercepts it from the trace post-segment, and the loop runtime stays a single-agent loop. There is no recursive call stack and no shared state across segments beyond the visible transcript. See `agent_composition.md` and `agent_delegate.md`. The "no sub-agents" framing still rules out cross-turn agent state, peer-to-peer messaging, and arbitrary recursion depth — those remain off-roadmap.
 
 - **No autonomous background agents.** Every step in Infer runs in response to a user turn. No cron-like agents, no "watch this folder," no long-running agent processes. If that's the feature, it is a different product.
 
@@ -421,7 +421,7 @@ Reference material for where Infer's design sits in the broader landscape. These
 
 - **Single agent with tools.** What Infer is designing.
 
-- **Orchestrator + workers (supervisor / sub-agent).** One agent delegates turns to specialists. LangGraph supervisors, OpenAI Swarm, AutoGen GroupChat manager. Explicitly rejected as a first-class feature in the Anti-goals — if genuinely needed, modelled as a tool call, not a nesting relation.
+- **Orchestrator + workers (supervisor / sub-agent).** One agent delegates turns to specialists. LangGraph supervisors, OpenAI Swarm, AutoGen GroupChat manager. Originally rejected as a first-party feature in the Anti-goals on the principle that, if needed, it should be modelled as a tool call rather than a nesting relation. The position softened in May 2026 when this exact pattern shipped under the name `delegate` (`CompositionPlan.delegate`, see `agent_composition.md` §6 and `agent_delegate.md`). The compromise that made it palatable: the cross-agent dispatch *is* a tool call (`agents.invoke`) — the composition driver just intercepts it post-segment and follows through, so the loop runtime stays the same single-agent loop and the "nesting" is purely scheduling, not a deep call stack. The synthetic `Auto` picker entry uses this primitive to route each user turn to whichever installed agent best matches.
 
 - **Peer-to-peer multi-agent.** Agents message each other freely (AutoGen, CAMEL). Demos well; hard to reason about failure modes. Almost always worse than a single agent with the union of capabilities.
 

@@ -63,10 +63,21 @@ public struct PromptAgent: Agent, Codable, Equatable {
     public let budget: BudgetSpec?
     public let branch: BranchSpec?
     public let refine: RefineSpec?
+    public let delegate: DelegateSpec?
 
     public struct OrchestratorSpec: Codable, Equatable, Sendable {
         public let router: AgentID
         public let candidates: [AgentID]
+    }
+
+    /// Multi-hop delegation loop. Same shape as `OrchestratorSpec`
+    /// plus an explicit `maxHops` cap on the router's tool-calling
+    /// loop. See `docs/dev/agent_delegate.md`. Pattern is ReAct-style
+    /// applied to whole agents instead of fine-grained tools.
+    public struct DelegateSpec: Codable, Equatable, Sendable {
+        public let router: AgentID
+        public let candidates: [AgentID]
+        public let maxHops: Int
     }
 
     /// Per-composition step budget overriding `InferSettings.maxAgentSteps`.
@@ -119,7 +130,8 @@ public struct PromptAgent: Agent, Codable, Equatable {
         orchestrator: OrchestratorSpec? = nil,
         budget: BudgetSpec? = nil,
         branch: BranchSpec? = nil,
-        refine: RefineSpec? = nil
+        refine: RefineSpec? = nil,
+        delegate: DelegateSpec? = nil
     ) {
         self.schemaVersion = Self.currentSchemaVersion
         self.id = id
@@ -136,6 +148,7 @@ public struct PromptAgent: Agent, Codable, Equatable {
         self.budget = budget
         self.branch = branch
         self.refine = refine
+        self.delegate = delegate
     }
 
     public func decodingParams(for context: AgentContext) -> DecodingParams {
@@ -178,6 +191,7 @@ public struct PromptAgent: Agent, Codable, Equatable {
         case budget
         case branch
         case refine
+        case delegate
     }
 
     public init(from decoder: Decoder) throws {
@@ -206,6 +220,7 @@ public struct PromptAgent: Agent, Codable, Equatable {
         let budget = try c.decodeIfPresent(BudgetSpec.self, forKey: .budget)
         let branch = try c.decodeIfPresent(BranchSpec.self, forKey: .branch)
         let refine = try c.decodeIfPresent(RefineSpec.self, forKey: .refine)
+        let delegate = try c.decodeIfPresent(DelegateSpec.self, forKey: .delegate)
 
         // Rule 2: kind present (or auto-derived for v1).
         let kind: AgentKind
@@ -219,6 +234,7 @@ public struct PromptAgent: Agent, Codable, Equatable {
                 || orchestrator != nil
                 || branch != nil
                 || refine != nil
+                || delegate != nil
             kind = (hasTools || hasComposition) ? .agent : .persona
         } else {
             throw AgentError.invalidPersona("kind is required for schemaVersion \(version)")
@@ -236,7 +252,8 @@ public struct PromptAgent: Agent, Codable, Equatable {
                 || orchestrator != nil
                 || budget != nil
                 || branch != nil
-                || refine != nil {
+                || refine != nil
+                || delegate != nil {
                 throw AgentError.invalidPersona(
                     "persona declares composition — use kind: \"agent\""
                 )
@@ -287,6 +304,27 @@ public struct PromptAgent: Agent, Codable, Equatable {
                 throw AgentError.invalidPersona(
                     "orchestrator.candidates contains empty agent id"
                 )
+            }
+        }
+        if let d = delegate {
+            if d.router.isEmpty {
+                throw AgentError.invalidPersona("delegate.router is empty")
+            }
+            if d.candidates.isEmpty {
+                throw AgentError.invalidPersona("delegate.candidates is empty")
+            }
+            if d.candidates.contains(where: { $0.isEmpty }) {
+                throw AgentError.invalidPersona(
+                    "delegate.candidates contains empty agent id"
+                )
+            }
+            if d.candidates.contains(d.router) {
+                throw AgentError.invalidPersona(
+                    "delegate.router cannot also be a candidate"
+                )
+            }
+            if d.maxHops <= 0 {
+                throw AgentError.invalidPersona("delegate.maxHops must be positive")
             }
         }
 
@@ -343,6 +381,7 @@ public struct PromptAgent: Agent, Codable, Equatable {
         self.budget = budget
         self.branch = branch
         self.refine = refine
+        self.delegate = delegate
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -361,6 +400,7 @@ public struct PromptAgent: Agent, Codable, Equatable {
         try c.encodeIfPresent(budget, forKey: .budget)
         try c.encodeIfPresent(branch, forKey: .branch)
         try c.encodeIfPresent(refine, forKey: .refine)
+        try c.encodeIfPresent(delegate, forKey: .delegate)
     }
 
     /// Reject `..` segments and absolute paths. Symlinks are not resolved

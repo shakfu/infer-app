@@ -229,7 +229,13 @@ Bundled agents that demonstrate these:
 - **HN watcher** — `hn.search`, `hn.item`, `hn.user`. Searches Hacker News (Algolia HN API) and summarises stories, threads, or users. No setup; backed by `plugin_hacker_news`. Caps at 3 tool calls per turn; cites by `news.ycombinator.com` permalink rather than the external URL.
 - **Clock assistant** — `builtin.clock.now`, `builtin.text.wordcount`. Demo for verifying tool-call plumbing on a freshly loaded model.
 
-Authoring custom agents: drop a `*.json` file into `~/Library/Application Support/Infer/agents/`. Format mirrors the bundled agents at `projects/infer/Sources/Infer/Resources/agents/*.json` — keys: `id`, `metadata`, `requirements.toolsAllow`, `decodingParams`, `systemPrompt`.
+Authoring custom agents: drop a `*.json` file into `~/Library/Application Support/Infer/agents/`. Format mirrors the bundled agents at `projects/infer/Sources/Infer/Resources/agents/*.json` — keys: `id`, `metadata`, `requirements.toolsAllow`, `decodingParams`, `systemPrompt`. Authored agents may also declare a composition primitive (`chain`, `fallback`, `branch`, `refine`, `orchestrator`, `delegate`) — see `docs/dev/agent_composition.md`.
+
+Two synthetic picker entries on top of any installed agents:
+
+- **Default** — Infer's plain assistant with your configured system prompt and sampling. No tools, no composition.
+- **Auto** — picks the best-matching installed agent for each user turn and can chain multiple within one turn. Backed by a multi-hop delegation loop (`AutoAgent` + `CompositionPlan.delegate`): a router agent reads a `# Available agents` section it gets in user text, emits an `agents.invoke` tool call to dispatch a candidate, observes the candidate's reply via a synthetic scratchpad, and decides whether to invoke another or write a final answer. Bounded by `maxHops = 4` and the standard step budget. See `docs/dev/agent_delegate.md`.
+- **ReAct** — a single-agent Reason-Act-Observe tool-use loop with `Thought:` / `Observation:` / `Final Answer:` sentinels around the model's native tool-call template. Different granularity from Auto: ReAct calls fine-grained tools in one model voice; Auto routes whole turns across specialised agents.
 
 ## Settings
 

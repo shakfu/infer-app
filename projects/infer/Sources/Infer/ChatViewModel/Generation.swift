@@ -167,11 +167,47 @@ extension ChatViewModel {
             // fields in their JSON. Plan resolution falls back to
             // `.single(activeAgentId)` if the registry can't find the
             // agent (Default), which exercises the same dispatch path.
+            //
+            // Auto is special: the picker entry maps to a synthetic
+            // `.delegate` plan whose router is AutoAgent itself and
+            // whose candidates are every compatible non-Default,
+            // non-Auto listing. The router needs to *see* those
+            // candidates, so the user text gets a `# Available agents`
+            // prefix before we hand it to the dispatch driver. See
+            // `AutoAgent.swift`.
             let plan: CompositionPlan
-            if let active = await self.agentController.registry.agent(id: self.activeAgentId) {
+            let dispatchUserText: String
+            if self.activeAgentId == AutoAgent.id {
+                let backendPref = self.currentBackendPreference
+                let candidates = await self.agentController
+                    .autoCandidateListings(backend: backendPref)
+                let candidateIds = candidates.map(\.id)
+                if candidateIds.isEmpty {
+                    // No compatible candidates — fall back to letting
+                    // the router answer directly via `.single`. The
+                    // protocol prompt already covers this case
+                    // ("if no candidate is a clear fit, answer
+                    // yourself"); the user gets a sensible answer
+                    // rather than a no-op dispatch failure.
+                    plan = .single(AutoAgent.id)
+                    dispatchUserText = promptText
+                } else {
+                    plan = .delegate(
+                        router: AutoAgent.id,
+                        candidates: candidateIds,
+                        maxHops: AutoAgent.maxHops
+                    )
+                    dispatchUserText = AutoAgent.renderRouterInput(
+                        userText: promptText,
+                        candidates: candidates
+                    )
+                }
+            } else if let active = await self.agentController.registry.agent(id: self.activeAgentId) {
                 plan = CompositionPlan.make(for: active)
+                dispatchUserText = promptText
             } else {
                 plan = .single(self.activeAgentId)
+                dispatchUserText = promptText
             }
 
             // Phase B: the runOne closure handles per-segment lifecycle
@@ -186,7 +222,7 @@ extension ChatViewModel {
             let driver = CompositionController()
             let result = await driver.dispatch(
                 plan: plan,
-                userText: promptText,
+                userText: dispatchUserText,
                 budget: self.settings.maxAgentSteps,
                 runOne: { @Sendable [weak self] segmentAgentId, segmentText in
                     guard let self else {

@@ -308,6 +308,16 @@ public final class AgentController {
             kind: .agent,
             isDefault: false
         )
+        let autoListing = AgentListing(
+            id: AutoAgent.id,
+            name: "Auto",
+            description: "Routes each turn to the best-matching agent based on the request. Multi-hop: can chain agents within a single turn.",
+            source: .firstParty,
+            backend: .any,
+            templateFamily: nil,
+            kind: .agent,
+            isDefault: false
+        )
         let defaultListing = AgentListing(
             id: DefaultAgent.id,
             name: "Default",
@@ -318,7 +328,7 @@ public final class AgentController {
             kind: .persona,
             isDefault: true
         )
-        self.availableAgents = [defaultListing, reactListing] + registered
+        self.availableAgents = [defaultListing, autoListing, reactListing] + registered
     }
 
     /// Classify any `Agent` conformance for the listing UI. JSON-backed
@@ -397,6 +407,20 @@ public final class AgentController {
         return availableAgents.first { $0.id == activeAgentId }?.name ?? activeAgentId.rawValue
     }
 
+    /// Auto-mode candidate snapshot: every compatible non-Default,
+    /// non-Auto listing in `availableAgents` for the supplied
+    /// backend. Called by `Generation.swift` once per user turn when
+    /// the active agent is `AutoAgent.id`. Compatibility is
+    /// re-evaluated each call so a turn that fires after a model
+    /// switch sees the right set.
+    public func autoCandidateListings(
+        backend: BackendPreference
+    ) -> [AgentListing] {
+        AutoAgent.candidateIds(from: availableAgents) { listing in
+            isCompatible(listing, backend: backend)
+        }
+    }
+
     /// Switch the active agent. Returns the effects the adapter should
     /// apply, in order. No-op (empty list) when the target is already
     /// active or is incompatible with `currentBackend`.
@@ -457,6 +481,8 @@ public final class AgentController {
             agent = DefaultAgent(settings: settings)
         } else if agentId == ReActAgent.id {
             agent = ReActAgent(settings: settings)
+        } else if agentId == AutoAgent.id {
+            agent = AutoAgent(settings: settings)
         } else if let resolved = await registry.agent(id: agentId) {
             agent = resolved
         } else {

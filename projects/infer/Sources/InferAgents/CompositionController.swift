@@ -182,6 +182,17 @@ public actor CompositionController {
                 segments: &segments,
                 runOne: runOne
             )
+
+        case .delegate(let router, let candidates, let maxHops):
+            return await runDelegate(
+                router: router,
+                candidates: candidates,
+                maxHops: maxHops,
+                userText: userText,
+                budget: &remaining,
+                segments: &segments,
+                runOne: runOne
+            )
         }
     }
 
@@ -524,6 +535,200 @@ public actor CompositionController {
             segments: &segments,
             runOne: runOne
         )
+    }
+
+    /// Delegate driver (`agent_delegate.md`). Multi-hop variant of
+    /// `runOrchestrator`: the router runs, dispatches a candidate, then
+    /// runs *again* with the candidate's output appended to its input
+    /// as a synthetic tool-result scratchpad. The loop continues until
+    /// the router stops emitting `agents.invoke`, `maxHops` is reached,
+    /// the same `(target, input)` repeats (loop detection), or the
+    /// budget is exhausted. Pattern is ReAct-style applied to whole
+    /// agents instead of fine-grained tools.
+    ///
+    /// Each candidate's `.completed` text is wrapped into the
+    /// router's next prompt as plain text; the format is
+    /// template-family-agnostic so any underlying chat template can
+    /// render it. Tool-result contents are truncated to
+    /// `Self.toolResultCharCap` characters with a `[truncated]` suffix
+    /// to keep the router's context bounded.
+    ///
+    /// Final answer policy:
+    /// - Router emits no dispatch this iteration → router's visible
+    ///   text is the final answer.
+    /// - `maxHops` reached → last candidate's text is the final answer.
+    /// - Loop detected (same target + input twice) → last candidate's
+    ///   text, with a `.note` step in the router's trace.
+    /// - Budget exhausted at any point → existing `budgetExceeded`
+    ///   path.
+    private func runDelegate(
+        router: AgentID,
+        candidates: [AgentID],
+        maxHops: Int,
+        userText: String,
+        budget: inout Int,
+        segments: inout [Segment],
+        runOne: RunOne
+    ) async -> CompositionResult {
+        var history: [DelegateHop] = []
+        var lastCandidateText: String? = nil
+        var lastCandidateOutcome: AgentOutcome? = nil
+        var lastRouterResult: CompositionResult? = nil
+
+        for _ in 0..<max(maxHops, 1) {
+            guard budget > 0 else {
+                return budgetExceededResult(segments: segments)
+            }
+            let routerInput = Self.buildDelegatePrompt(
+                userText: userText,
+                history: history
+            )
+            let routerResult = await runSingle(
+                id: router,
+                userText: routerInput,
+                budget: &budget,
+                segments: &segments,
+                runOne: runOne
+            )
+            lastRouterResult = routerResult
+
+            // Failed/abandoned router terminates the loop with that
+            // outcome — no point dispatching against a broken router.
+            switch routerResult.outcome {
+            case .failed, .abandoned:
+                return routerResult
+            case .completed, .handoff:
+                break
+            }
+
+            let dispatch = OrchestratorDispatch.parse(
+                routerOutcome: routerResult.outcome,
+                candidates: candidates
+            )
+            guard let dispatch else {
+                // No (or invalid / non-candidate) dispatch this turn.
+                // The router is the synthesiser in a ReAct loop —
+                // when it stops calling candidates, its visible text
+                // is the final answer regardless of whether earlier
+                // candidates contributed to it via the scratchpad.
+                return routerResult
+            }
+
+            // Loop detection: same (target, input) as the previous
+            // hop. Treat as the router failing to make progress;
+            // surface the last candidate's text so the user gets the
+            // most recent useful output instead of a redundant
+            // dispatch. (The router's current turn is just another
+            // copy of the same call.)
+            if let prev = history.last,
+               prev.target == dispatch.target,
+               prev.input == dispatch.input {
+                if let lastText = lastCandidateText,
+                   let lastOutcome = lastCandidateOutcome {
+                    return CompositionResult(
+                        finalText: lastText,
+                        outcome: lastOutcome,
+                        segments: segments
+                    )
+                }
+                return routerResult
+            }
+
+            guard budget > 0 else {
+                return budgetExceededResult(segments: segments)
+            }
+            let candidateResult = await runSingle(
+                id: dispatch.target,
+                userText: dispatch.input,
+                budget: &budget,
+                segments: &segments,
+                runOne: runOne
+            )
+            let candidateText = candidateResult.finalText
+            history.append(DelegateHop(
+                target: dispatch.target,
+                input: dispatch.input,
+                output: candidateText
+            ))
+            lastCandidateText = candidateText
+            lastCandidateOutcome = candidateResult.outcome
+
+            // Candidate failure: surface it. Unlike the router-failure
+            // case above, we *did* make progress (we have a segment),
+            // so the failure is informative.
+            switch candidateResult.outcome {
+            case .failed, .abandoned:
+                return candidateResult
+            case .completed, .handoff:
+                continue
+            }
+        }
+
+        // maxHops reached without the router declining a dispatch.
+        if let lastText = lastCandidateText,
+           let lastOutcome = lastCandidateOutcome {
+            return CompositionResult(
+                finalText: lastText,
+                outcome: lastOutcome,
+                segments: segments
+            )
+        }
+        // maxHops == 0 fallback (shouldn't happen — schema rejects),
+        // or no router result at all.
+        return lastRouterResult ?? CompositionResult(
+            finalText: "",
+            outcome: .failed(
+                message: "delegate: maxHops not positive",
+                trace: StepTrace.finalAnswer("")
+            ),
+            segments: segments
+        )
+    }
+
+    /// One hop in the delegate loop. Used both for loop detection and
+    /// for assembling the router's scratchpad on the next iteration.
+    private struct DelegateHop {
+        let target: AgentID
+        let input: String
+        let output: String
+    }
+
+    /// Cap on per-tool-result text length pasted into the router's
+    /// scratchpad. Long candidate outputs blow up the router's
+    /// context fast. See `agent_delegate.md` open question #3.
+    private static let toolResultCharCap = 4096
+
+    /// Build the router's input for a delegate iteration. First
+    /// iteration is just `userText`; subsequent iterations append a
+    /// "Prior dispatches" section so the router can see what it has
+    /// tried and decide whether to invoke another candidate or stop.
+    ///
+    /// The format is plain text and template-family-agnostic — the
+    /// underlying runner wraps it in the model's chat template
+    /// however it normally would. This keeps the driver decoupled
+    /// from Qwen / Hermes / Llama 3 tool-call syntax.
+    private static func buildDelegatePrompt(
+        userText: String,
+        history: [DelegateHop]
+    ) -> String {
+        guard !history.isEmpty else { return userText }
+        var out = userText
+        out += "\n\n# Prior dispatches\n"
+        for (idx, hop) in history.enumerated() {
+            out += "\n## Step \(idx + 1)\n"
+            out += "Invoked agent: \(hop.target)\n"
+            out += "Input: \(hop.input)\n"
+            out += "Result: \(truncate(hop.output, cap: toolResultCharCap))\n"
+        }
+        out += "\nDecide whether to invoke another candidate via "
+        out += "`agents.invoke` or write your final answer.\n"
+        return out
+    }
+
+    private static func truncate(_ s: String, cap: Int) -> String {
+        guard s.count > cap else { return s }
+        let head = s.prefix(cap)
+        return "\(head)\n[truncated]"
     }
 
     // MARK: - Helpers
