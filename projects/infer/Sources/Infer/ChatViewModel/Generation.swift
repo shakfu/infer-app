@@ -26,6 +26,25 @@ final class SegmentDispatchState: @unchecked Sendable {
 }
 
 extension ChatViewModel {
+    /// User turn → assistant reply.
+    ///
+    /// **Why this does NOT call `ChatTurnDriver.runOneTurn`.** The driver
+    /// is `setHistory` + `respondToUser` + collect; `send()` is
+    /// `respondToUser` + collect, *without* `setHistory`. All three
+    /// runners accumulate conversation state across successive
+    /// `respondToUser` calls — Llama keeps its KV cache, MLX rebuilds
+    /// `ChatSession` from internal `history`, Cloud appends to its
+    /// in-memory `messages`. Calling `setHistory` every turn would
+    /// re-prefill the KV cache from scratch on each user message
+    /// (multi-hundred-millisecond regression that grows with
+    /// conversation length on local models). The chat-VM only invokes
+    /// `setHistory` for preparatory operations — `loadTranscript`
+    /// (`restoreBackendHistory`), end-of-reasoning-turn KV compaction
+    /// (`compactKVForVisibleHistory`) — where the rebuild cost is
+    /// acceptable in exchange for visible-vs-runner-state coherence.
+    /// `ChatTurnDriver` exists as the testable kernel for the
+    /// rebuild-then-send shape; `send()` is the incremental-state
+    /// shape and stays inline.
     func send() {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, modelLoaded, !isGenerating else { return }
@@ -45,6 +64,7 @@ extension ChatViewModel {
             agentLabel: labelSnapshot
         ))
         let assistantIndex = messages.count - 1
+        syncTranscriptMirror()
         input = ""
         pendingImageURL = nil
         isGenerating = true
@@ -705,21 +725,13 @@ extension ChatViewModel {
     /// — the stream loop is breaking out on its own and needs to
     /// finish committing state (vault write, TTS, KV compaction).
     func requestStopCurrentRunner() async {
-        switch self.backend {
-        case .llama: await self.llama.requestStop()
-        case .mlx: await self.mlx.requestStop()
-        case .cloud: await self.cloud.requestStop()
-        }
+        await self.activeChatRunner.requestStop()
     }
 
     func stop() {
-        let b = self.backend
+        let runner = self.activeChatRunner
         Task {
-            switch b {
-            case .llama: await self.llama.requestStop()
-            case .mlx: await self.mlx.requestStop()
-            case .cloud: await self.cloud.requestStop()
-            }
+            await runner.requestStop()
         }
         generationTask?.cancel()
         generationTask = nil
@@ -735,13 +747,9 @@ extension ChatViewModel {
     /// aren't a user→assistant pair, or when no model is loaded.
     func regenerateLast() {
         guard unspoolLastTurn() else { return }
-        let b = self.backend
+        let runner = self.activeChatRunner
         Task {
-            switch b {
-            case .llama: await self.llama.rewindLastTurn()
-            case .mlx: await self.mlx.rewindLastTurn()
-            case .cloud: await self.cloud.rewindLastTurn()
-            }
+            await runner.rewindLastTurn()
             await MainActor.run { self.send() }
         }
     }
@@ -752,13 +760,9 @@ extension ChatViewModel {
     /// restored — but control returns to the user before sending.
     func editLastUserMessage() {
         guard unspoolLastTurn() else { return }
-        let b = self.backend
+        let runner = self.activeChatRunner
         Task {
-            switch b {
-            case .llama: await self.llama.rewindLastTurn()
-            case .mlx: await self.mlx.rewindLastTurn()
-            case .cloud: await self.cloud.rewindLastTurn()
-            }
+            await runner.rewindLastTurn()
         }
     }
 
@@ -1129,6 +1133,7 @@ extension ChatViewModel {
 
         let userTurn = messages[last - 1]
         messages.removeSubrange((last - 1)...last)
+        syncTranscriptMirror()
         input = userTurn.text
         pendingImageURL = userTurn.imageURL
         return true

@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import UniformTypeIdentifiers
+import InferAppCore
 import InferCore
 
 extension ChatViewModel {
@@ -84,6 +85,7 @@ extension ChatViewModel {
             }
             stop()
             messages = loaded
+            syncTranscriptMirror()
             // Imported `.md` is file-only: not linked to any vault row.
             // Next send() will start a fresh vault conversation.
             currentConversationId = nil
@@ -113,27 +115,13 @@ extension ChatViewModel {
     /// cost.
     func compactKVForVisibleHistory() {
         let snapshot = self.messages
-        let b = self.backend
+        let runner = self.activeChatRunner
         Task { [weak self] in
             guard let self else { return }
             let started = Date()
-            let turns = snapshot.filter { $0.role != .system }
+            let history = Self.chatTurns(from: snapshot)
             do {
-                switch b {
-                case .llama:
-                    let history = turns.map { (role: $0.role.rawValue, content: $0.text) }
-                    try await self.llama.setHistory(history)
-                case .mlx:
-                    let history = turns.map { msg in
-                        (role: msg.role.rawValue,
-                         content: msg.text,
-                         imageURLs: msg.imageURL.map { [$0] } ?? [])
-                    }
-                    await self.mlx.setHistory(history)
-                case .cloud:
-                    let history = turns.map { (role: $0.role.rawValue, content: $0.text) }
-                    await self.cloud.setHistory(history)
-                }
+                try await runner.setHistory(history)
                 let elapsed = Date().timeIntervalSince(started)
                 self.logs.logFromBackground(
                     .debug,
@@ -158,29 +146,45 @@ extension ChatViewModel {
     /// Llama's pre-fill can throw (tokenize/decode); on failure we silently
     /// fall back to a reset so the transcript is still readable.
     func restoreBackendHistory(_ restored: [ChatMessage]) {
-        let turns = restored.filter { $0.role != .system }
-        let b = self.backend
+        let history = Self.chatTurns(from: restored)
+        let runner = self.activeChatRunner
         Task {
-            switch b {
-            case .llama:
-                let history = turns.map { (role: $0.role.rawValue, content: $0.text) }
-                do {
-                    try await self.llama.setHistory(history)
-                } catch {
-                    await self.llama.resetConversation()
-                }
-            case .mlx:
-                let history = turns.map { msg in
-                    (role: msg.role.rawValue,
-                     content: msg.text,
-                     imageURLs: msg.imageURL.map { [$0] } ?? [])
-                }
-                await self.mlx.setHistory(history)
-            case .cloud:
-                let history = turns.map { (role: $0.role.rawValue, content: $0.text) }
-                await self.cloud.setHistory(history)
+            do {
+                try await runner.setHistory(history)
+            } catch {
+                // Only Llama can throw (tokenize/decode); fall back to a
+                // reset so the transcript is still readable. Harmless
+                // for MLX/Cloud — their adapters never throw.
+                await runner.resetConversation()
             }
             await MainActor.run { self.refreshTokenUsage() }
+        }
+    }
+
+    /// Build the `ChatRunner.setHistory` snapshot from a `[ChatMessage]`
+    /// slice. System turns are filtered out — the chat-VM tracks the
+    /// current `settings.systemPrompt` separately and applies it via
+    /// each runner's load / configure path; including a system turn
+    /// here would either double-apply (Llama: overwrite the loaded
+    /// prompt) or fight the runner's stored value (MLX/Cloud).
+    /// Image attachments are preserved per turn so MLX VLM-capable
+    /// models keep their multimodal context after a regenerate /
+    /// load-transcript / KV-compaction cycle.
+    static func chatTurns(from messages: [ChatMessage]) -> [ChatTurn] {
+        messages.compactMap { msg in
+            guard msg.role != .system else { return nil }
+            if case .agentDivider = msg.kind { return nil }
+            let role: ChatTurn.Role
+            switch msg.role {
+            case .user: role = .user
+            case .assistant: role = .assistant
+            case .system: return nil // unreachable (filtered above) but exhaustive
+            }
+            return ChatTurn(
+                role: role,
+                content: msg.text,
+                imageURLs: msg.imageURL.map { [$0] } ?? []
+            )
         }
     }
 
@@ -192,5 +196,45 @@ extension ChatViewModel {
             guard let role = ChatMessage.Role(rawValue: turn.role) else { return nil }
             return ChatMessage(role: role, text: turn.text)
         }
+    }
+
+    /// Map a UI-side `ChatMessage` to the value-typed `TranscriptEntry`
+    /// that the `transcriptStore` mirror holds. Lossy on purpose —
+    /// agent attribution, step traces, retrieved-chunk provenance, and
+    /// `<think>`-block disclosure state all live on the UI type and
+    /// don't belong in the runner-history snapshot. `agentDivider`
+    /// rows are filtered upstream (they have no role in prompts) and
+    /// don't reach this helper.
+    static func makeTranscriptEntry(_ msg: ChatMessage) -> TranscriptEntry {
+        let role: ChatTurn.Role
+        switch msg.role {
+        case .user: role = .user
+        case .assistant: role = .assistant
+        case .system: role = .system
+        }
+        return TranscriptEntry(
+            id: msg.id,
+            role: role,
+            text: msg.text,
+            imageURL: msg.imageURL
+        )
+    }
+
+    /// Rebuild `transcriptStore` from the current `messages` array.
+    /// Called at well-defined sync points (`reset`, `loadTranscript`,
+    /// post-`send`, post-`unspoolLastTurn`) so the mirror reflects the
+    /// committed transcript state. Streaming-time chunk writes inside
+    /// `Generation.swift` are intentionally NOT mirrored per-chunk —
+    /// the mirror is end-of-turn-accurate, not per-token-accurate. A
+    /// follow-up can either fold the streaming writes into a
+    /// store-first model or accept the mirror as the source of truth
+    /// for runner history (today the chat-VM builds those snapshots
+    /// inline from `messages` in `restoreBackendHistory` and
+    /// `compactKVForVisibleHistory`).
+    func syncTranscriptMirror() {
+        let entries = messages
+            .filter { if case .agentDivider = $0.kind { return false } else { return true } }
+            .map(Self.makeTranscriptEntry)
+        transcriptStore = TranscriptStore(entries: entries)
     }
 }

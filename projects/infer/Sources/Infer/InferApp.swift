@@ -163,33 +163,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Block the main thread briefly so the llama context is freed and any
         // in-flight decode is cancelled before the process exits.
+        //
+        // **Per-step timeout, not blanket.** The prior implementation
+        // wrapped every shutdown in a single 2-second `DispatchSemaphore`
+        // wait. If any one step stalled (an MCP subprocess wedged on
+        // stdio, an HF download cancel, a SQLite WAL checkpoint), the
+        // whole chain stalled and the app force-exited with later steps
+        // — including `llama_backend_free` — un-run. That left a stale
+        // llama backend across relaunch and either crashed `EXC_BAD_ACCESS`
+        // on `llama_backend_init` or leaked the prior model context.
+        //
+        // The replacement runs each step on a detached task with its
+        // own per-step timeout. Timeouts and slow completions are
+        // logged to stderr so the next user can identify the culprit.
+        // Stuck step A no longer starves step B; `llama_backend_free`
+        // always runs at the end. Worst-case wall time is bounded by
+        // `steps.count * perStepTimeout` (~5s with the values below);
+        // the realistic median is <100ms because every step typically
+        // completes in tens of ms.
         guard let vm = chatVM else { return }
-        let sem = DispatchSemaphore(value: 0)
-        Task.detached {
-            await vm.llama.requestStop()
-            await vm.llama.shutdown()
-            await vm.mlx.requestStop()
-            await vm.mlx.shutdown()
-            await vm.cloud.requestStop()
-            await vm.cloud.shutdown()
-            await vm.sd.requestStop()
-            await vm.sd.shutdown()
-            await vm.cloudImage.requestStop()
-            await vm.cloudImage.shutdown()
-            await vm.embedder.shutdown()
-            await vm.reranker.shutdown()
-            await vm.vectorStore.shutdown()
+        let perStepTimeout: TimeInterval = 0.3
+        let slowStepLogThreshold: TimeInterval = 0.1
+        let overallStarted = Date()
+
+        // Each entry: (label, work). Order matters — `requestStop`
+        // before `shutdown` per runner; `vault.shutdown` last so
+        // anything that wrote to the vault during the prior steps has
+        // its WAL checkpointed.
+        let steps: [(String, @Sendable () async -> Void)] = [
+            ("llama.requestStop",      { await vm.llama.requestStop() }),
+            ("llama.shutdown",         { await vm.llama.shutdown() }),
+            ("mlx.requestStop",        { await vm.mlx.requestStop() }),
+            ("mlx.shutdown",           { await vm.mlx.shutdown() }),
+            ("cloud.requestStop",      { await vm.cloud.requestStop() }),
+            ("cloud.shutdown",         { await vm.cloud.shutdown() }),
+            ("sd.requestStop",         { await vm.sd.requestStop() }),
+            ("sd.shutdown",            { await vm.sd.shutdown() }),
+            ("cloudImage.requestStop", { await vm.cloudImage.requestStop() }),
+            ("cloudImage.shutdown",    { await vm.cloudImage.shutdown() }),
+            ("embedder.shutdown",      { await vm.embedder.shutdown() }),
+            ("reranker.shutdown",      { await vm.reranker.shutdown() }),
+            ("vectorStore.shutdown",   { await vm.vectorStore.shutdown() }),
             // Tear down MCP server subprocesses before the process
             // exits — otherwise the children outlive us and either
             // get reaped by launchd or hold onto file handles we
             // can't release.
-            await vm.mcpHost.shutdown()
-            await MainActor.run { vm.audioRecorder.cancel() }
-            await WhisperRunner.shared.shutdown()
-            await VaultStore.shared.shutdown()
-            llama_backend_free()
-            sem.signal()
+            ("mcpHost.shutdown",       { await vm.mcpHost.shutdown() }),
+            ("audioRecorder.cancel",   { await MainActor.run { vm.audioRecorder.cancel() } }),
+            ("whisper.shutdown",       { await WhisperRunner.shared.shutdown() }),
+            ("vault.shutdown",         { await VaultStore.shared.shutdown() }),
+        ]
+
+        for (label, work) in steps {
+            let stepStarted = Date()
+            let sem = DispatchSemaphore(value: 0)
+            Task.detached {
+                await work()
+                sem.signal()
+            }
+            let result = sem.wait(timeout: .now() + perStepTimeout)
+            let elapsed = Date().timeIntervalSince(stepStarted)
+            if result == .timedOut {
+                FileHandle.standardError.write(Data(
+                    "[shutdown] '\(label)' timed out after \(Self.formatMs(elapsed)) — proceeding (resource may leak)\n".utf8
+                ))
+            } else if elapsed >= slowStepLogThreshold {
+                FileHandle.standardError.write(Data(
+                    "[shutdown] '\(label)' took \(Self.formatMs(elapsed))\n".utf8
+                ))
+            }
         }
-        _ = sem.wait(timeout: .now() + 2.0)
+
+        // Always free the llama backend last, regardless of whether
+        // earlier llama steps timed out — the C call is independent
+        // of the actor and skipping it across relaunch is the exact
+        // crash class this rewrite targets.
+        llama_backend_free()
+
+        let totalElapsed = Date().timeIntervalSince(overallStarted)
+        if totalElapsed >= slowStepLogThreshold {
+            FileHandle.standardError.write(Data(
+                "[shutdown] complete in \(Self.formatMs(totalElapsed))\n".utf8
+            ))
+        }
+    }
+
+    private static func formatMs(_ seconds: TimeInterval) -> String {
+        "\(Int((seconds * 1000).rounded()))ms"
     }
 }

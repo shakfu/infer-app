@@ -140,6 +140,25 @@ let package = Package(
             dependencies: ["InferRAG"],
             path: "Tests/InferRAGTests"
         ),
+        // Pure-Swift nucleus of the chat view-model that *can* live
+        // outside the executable target: `ChatRunner` protocol
+        // (testable surface for the chat-side runners) and
+        // `TranscriptStore` (value-typed message-list with the
+        // edit/resend, regenerate, and stream-append operations the
+        // chat-VM performs on `messages: [ChatMessage]`). No MLX /
+        // llama / SwiftUI deps so the suite runs under `swift test`
+        // without the Metal toolchain. Existing concrete runners do
+        // not conform to `ChatRunner` yet — that is a follow-up
+        // refactor; this target unblocks the test pattern today.
+        .target(
+            name: "InferAppCore",
+            path: "Sources/InferAppCore"
+        ),
+        .testTarget(
+            name: "InferAppCoreTests",
+            dependencies: ["InferAppCore"],
+            path: "Tests/InferAppCoreTests"
+        ),
         // Combined ggml-stack frameworks. One shared `Ggml` xcframework
         // ships libggml*.dylib (base + cpu + metal + blas backends);
         // `LlamaCpp` / `Whisper` / (future) `StableDiffusion` are thin
@@ -200,6 +219,7 @@ let package = Package(
                 .product(name: "STTextView", package: "STTextView"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 "InferRAG",
+                "InferAppCore",
                 .product(name: "PluginAPI", package: "plugin-api"),
                 // BEGIN_GENERATED_PLUGINS_PRODUCTS
                 // Managed by `scripts/gen_plugins.py`. Do not hand-edit

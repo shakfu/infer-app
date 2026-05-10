@@ -568,8 +568,18 @@ actor LlamaRunner {
         // what was produced so the user can see partial output.
         if !assistantText.isEmpty {
             messages.append((role: "assistant", content: assistantText))
-            if let rendered = try? renderTemplate(addAssistant: false) {
+            // If the post-commit template render fails, `prevFormattedLen`
+            // stays stale and the next decode will mis-compute the
+            // prefix delta — log so the underlying template error is
+            // diagnosable from console output rather than surfacing as
+            // a confusing follow-up generation bug.
+            do {
+                let rendered = try renderTemplate(addAssistant: false)
                 prevFormattedLen = ChatPromptDelta.byteLength(of: rendered)
+            } catch {
+                FileHandle.standardError.write(Data(
+                    "[LlamaRunner] post-commit template render failed: \(error) — prevFormattedLen left stale, next decode may mis-compute delta\n".utf8
+                ))
             }
         } else if error != nil {
             // Roll back the user message if we failed without producing anything.

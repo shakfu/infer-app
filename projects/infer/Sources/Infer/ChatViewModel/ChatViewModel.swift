@@ -1,5 +1,6 @@
 import Foundation
 import InferAgents
+import InferAppCore
 import InferCore
 import InferRAG
 
@@ -7,6 +8,15 @@ import InferRAG
 @Observable
 final class ChatViewModel {
     var messages: [ChatMessage] = []
+    /// Parallel value-typed mirror of `messages` from `InferAppCore`.
+    /// Updated at well-defined sync points (today: `reset()` and
+    /// `loadTranscript()`). Once every write path that mutates
+    /// `messages` is mirrored here, this becomes the testable surface
+    /// the runner-history snapshots are built from. `@ObservationIgnored`
+    /// because the SwiftUI views observe `messages` directly; the store
+    /// is for testability and runner-history derivation, not rendering.
+    @ObservationIgnored
+    var transcriptStore = TranscriptStore()
     var input: String = ""
     var backend: Backend = .llama
     var modelLoaded: Bool = false
@@ -732,18 +742,16 @@ final class ChatViewModel {
     func reset() {
         stop()
         messages.removeAll()
+        syncTranscriptMirror()
         generationTokenCount = 0
+        netTokenCount = 0
         generationStart = nil
         generationEnd = nil
         currentConversationId = nil
         pendingImageURL = nil
-        let b = self.backend
+        let runner = self.activeChatRunner
         Task {
-            switch b {
-            case .llama: await self.llama.resetConversation()
-            case .mlx: await self.mlx.resetConversation()
-            case .cloud: await self.cloud.resetConversation()
-            }
+            await runner.resetConversation()
             await MainActor.run { self.refreshTokenUsage() }
         }
     }
@@ -751,5 +759,20 @@ final class ChatViewModel {
     /// Stable identifier string used as the vault's `model_id` column.
     func vaultModelId() -> String {
         currentModelId ?? ""
+    }
+
+    /// The chat runner for the currently-active backend, surfaced as the
+    /// shared `ChatRunner` protocol so call sites that previously had a
+    /// three-way `switch backend` over `setHistory` / `requestStop` /
+    /// `resetConversation` collapse to one line. The concrete `llama` /
+    /// `mlx` / `cloud` properties stay live for the parts of the chat-VM
+    /// that need backend-specific entry points (load, configure,
+    /// updateSettings, sampling, multimodal `sendUserMessage`).
+    var activeChatRunner: any ChatRunner {
+        switch backend {
+        case .llama: return llama
+        case .mlx: return mlx
+        case .cloud: return cloud
+        }
     }
 }

@@ -19,7 +19,7 @@ enum ModelStore {
                 .appendingPathComponent("Library/Application Support/Infer/Models", isDirectory: true)
         }
         if !fm.fileExists(atPath: base.path) {
-            try? fm.createDirectory(at: base, withIntermediateDirectories: true)
+            createDirectoryOrLog(at: base, label: "default GGUF dir")
         }
         return base
     }
@@ -31,9 +31,25 @@ enum ModelStore {
         let url = URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath)
         let fm = FileManager.default
         if !fm.fileExists(atPath: url.path) {
-            try? fm.createDirectory(at: url, withIntermediateDirectories: true)
+            createDirectoryOrLog(at: url, label: "configured GGUF dir")
         }
         return url
+    }
+
+    /// Best-effort directory creation. Logs to stderr on failure so the
+    /// downstream "model file write failed" or "no models found" error
+    /// the user actually sees has explanatory context (otherwise a
+    /// silent `try?` makes the cause invisible).
+    private static func createDirectoryOrLog(at url: URL, label: String) {
+        do {
+            try FileManager.default.createDirectory(
+                at: url, withIntermediateDirectories: true
+            )
+        } catch {
+            FileHandle.standardError.write(Data(
+                "[ModelStore] failed to create \(label) at \(url.path): \(error)\n".utf8
+            ))
+        }
     }
 
     /// True if the .gguf file at `path` exists and is a regular file.
@@ -83,13 +99,24 @@ enum ModelStore {
     }
 
     /// Scan `dir` (non-recursive) for `.gguf` files, returning absolute paths.
+    /// Logs (but does not throw) on enumeration failure — the user
+    /// would otherwise see an empty model list with no explanation
+    /// when their configured directory is unreadable.
     static func scanGGUFDirectory(_ dir: URL) -> [String] {
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(
-            at: dir,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
-        ) else { return [] }
+        let entries: [URL]
+        do {
+            entries = try fm.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            )
+        } catch {
+            FileHandle.standardError.write(Data(
+                "[ModelStore] failed to scan GGUF dir \(dir.path): \(error)\n".utf8
+            ))
+            return []
+        }
         return entries
             .filter { $0.pathExtension.lowercased() == "gguf" }
             .map { $0.path }
