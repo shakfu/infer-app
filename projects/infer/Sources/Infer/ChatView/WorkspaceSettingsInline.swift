@@ -24,6 +24,7 @@ struct WorkspaceSettingsInline: View {
 
     @State private var name: String = ""
     @State private var dataFolder: String = ""
+    @State private var outputDirectory: String = ""
     @State private var seededWorkspaceId: Int64 = -1
     @State private var confirmDelete: Bool = false
     @State private var confirmReset: Bool = false
@@ -44,6 +45,7 @@ struct WorkspaceSettingsInline: View {
             VStack(alignment: .leading, spacing: 8) {
                 nameField
                 dataFolderField
+                outputDirectoryField
                 metadataRow
                 deleteRow
             }
@@ -142,6 +144,60 @@ struct WorkspaceSettingsInline: View {
             }
             if isDataFolderDirty {
                 Button("Apply folder change") { applyDataFolderIfChanged() }
+                    .controlSize(.small)
+                    .font(.caption2)
+            }
+        }
+    }
+
+    /// Per-workspace override for where generated artifacts (Stable
+    /// Diffusion images today; transcript exports later) are written.
+    /// Empty = inherit from Default's row, or — when Default also
+    /// hasn't set a path — fall back to the legacy
+    /// `Application Support/Infer/Generated Images/` location. The
+    /// placeholder always shows the currently-effective path so the
+    /// user can tell what they're departing from. Tilde-paths are
+    /// preserved as authored; expansion happens in
+    /// `effectiveOutputDirectory`.
+    private var outputDirectoryField: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text("Output directory").font(.caption2).foregroundStyle(.secondary)
+                if isOverridingOutputDirectory {
+                    Button {
+                        outputDirectory = ""
+                        applyOutputDirectoryIfChanged()
+                    } label: {
+                        Label("Default", systemImage: "arrow.uturn.backward")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.mini)
+                    .foregroundStyle(.secondary)
+                    .help("Clear this workspace's override; falls back to the path shown in the placeholder.")
+                }
+            }
+            HStack(spacing: 4) {
+                TextField(effectiveOutputDirectoryPlaceholder, text: $outputDirectory)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    .onSubmit { applyOutputDirectoryIfChanged() }
+                Button {
+                    if let url = FileDialogs.openDirectory(
+                        message: "Choose where this workspace's generated images should be written"
+                    ) {
+                        outputDirectory = url.path
+                        applyOutputDirectoryIfChanged()
+                    }
+                } label: {
+                    Image(systemName: "folder")
+                }
+                .controlSize(.small)
+                .help("Choose folder")
+            }
+            if isOutputDirectoryDirty {
+                Button("Apply output directory") { applyOutputDirectoryIfChanged() }
                     .controlSize(.small)
                     .font(.caption2)
             }
@@ -324,6 +380,38 @@ struct WorkspaceSettingsInline: View {
         return value != workspace.dataFolder
     }
 
+    private var isOutputDirectoryDirty: Bool {
+        let value = outputDirectory
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = value.isEmpty ? nil : value
+        return normalized != workspace.outputDirectory
+    }
+
+    /// True when this workspace's `output_directory` column is
+    /// non-NULL — i.e. there's a stored override the `Default` button
+    /// would clear. Distinct from `isOutputDirectoryDirty` (which
+    /// compares the in-flight TextField buffer to the saved value).
+    private var isOverridingOutputDirectory: Bool {
+        workspace.outputDirectory != nil
+    }
+
+    /// What the `outputDirectory` field should show as a placeholder
+    /// when empty — the path the next generation would actually use
+    /// if this workspace doesn't override. Looks up the cascade
+    /// without the active workspace layer (so the placeholder shows
+    /// what falls through, regardless of which workspace is active).
+    private var effectiveOutputDirectoryPlaceholder: String {
+        // Default's row first; legacy fallback otherwise.
+        if let row = vm.workspaces.min(by: { $0.id < $1.id }),
+           row.id != workspace.id,
+           let v = row.outputDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !v.isEmpty
+        {
+            return "Default: \(v)"
+        }
+        return ChatViewModel.legacyOutputDirectory().path
+    }
+
     private func applyNameIfChanged() {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != workspace.name else { return }
@@ -337,10 +425,18 @@ struct WorkspaceSettingsInline: View {
         vm.refreshCorpusStats(workspaceId: workspace.id)
     }
 
+    private func applyOutputDirectoryIfChanged() {
+        let trimmed = outputDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.isEmpty ? nil : trimmed
+        guard normalized != workspace.outputDirectory else { return }
+        vm.setWorkspaceOutputDirectory(id: workspace.id, path: normalized)
+    }
+
     private func seedFields(force: Bool) {
         if force || seededWorkspaceId != workspace.id {
             name = workspace.name
             dataFolder = workspace.dataFolder ?? ""
+            outputDirectory = workspace.outputDirectory ?? ""
             seededWorkspaceId = workspace.id
             vm.refreshCorpusStats(workspaceId: workspace.id)
         }

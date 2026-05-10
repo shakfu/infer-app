@@ -206,8 +206,66 @@ extension ChatViewModel {
             systemPrompt: row.systemPrompt,
             temperature: row.temperature,
             topP: row.topP,
-            maxTokens: row.maxTokens
+            maxTokens: row.maxTokens,
+            outputDirectory: row.outputDirectory
         )
+    }
+
+    /// Effective output directory for the active workspace, as a
+    /// `URL`. Two-layer cascade plus a hardcoded final fallback —
+    /// active workspace's `output_directory` wins, falling through to
+    /// Default's column, falling through to the legacy
+    /// `Application Support/Infer/Generated Images/` path. Tilde
+    /// expansion is applied so a stored `~/Pictures/Infer/` resolves
+    /// against the current `$HOME`.
+    var effectiveOutputDirectory: URL {
+        let resolved = WorkspaceParamCascade.resolve(
+            active: activeWorkspace.map(Self.cascade(from:)),
+            defaults: workspaces.min(by: { $0.id < $1.id }).map(Self.cascade(from:))
+        )
+        if let raw = resolved.outputDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty
+        {
+            let expanded = (raw as NSString).expandingTildeInPath
+            return URL(fileURLWithPath: expanded, isDirectory: true)
+        }
+        return Self.legacyOutputDirectory()
+    }
+
+    /// Hardcoded fallback used when neither the active workspace nor
+    /// Default has an `output_directory` set. Mirrors the original
+    /// `sdOutputDirectory` location so existing users see no change
+    /// on the v6 migration.
+    static func legacyOutputDirectory() -> URL {
+        let base = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first ?? URL(fileURLWithPath: NSHomeDirectory())
+        return base
+            .appendingPathComponent("Infer", isDirectory: true)
+            .appendingPathComponent("Generated Images", isDirectory: true)
+    }
+
+    /// Persist a workspace's `output_directory` override. Pass `nil`
+    /// to clear (falls back to Default's row, then to the legacy
+    /// path). Trimmed to nil-on-empty so a user-cleared field doesn't
+    /// store the empty string.
+    func setWorkspaceOutputDirectory(id: Int64, path: String?) {
+        let normalized: String? = path
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        Task { [vault] in
+            do {
+                try await vault.setWorkspaceParams(id: id, outputDirectory: .value(normalized))
+                await MainActor.run { self.refreshWorkspaces() }
+            } catch {
+                self.logs.logFromBackground(
+                    .error,
+                    source: "workspaces",
+                    message: "failed to set workspace output directory",
+                    payload: String(describing: error)
+                )
+            }
+        }
     }
 
     /// Pull the effective settings into `self.settings`. `applyToRunners`

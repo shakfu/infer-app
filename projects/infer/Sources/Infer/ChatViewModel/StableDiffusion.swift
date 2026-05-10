@@ -13,18 +13,14 @@ struct SDHeavyModelGate: Equatable, Sendable {
 }
 
 extension ChatViewModel {
-    /// Default output directory for generated images. Lives under
-    /// Application Support so the user can browse there in Finder if
-    /// desired, but isn't user-facing in the panel — gallery rows have
-    /// "Reveal in Finder" affordances instead.
-    var sdOutputDirectory: URL {
-        let base = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-            .first ?? URL(fileURLWithPath: NSHomeDirectory())
-        return base
-            .appendingPathComponent("Infer", isDirectory: true)
-            .appendingPathComponent("Generated Images", isDirectory: true)
-    }
+    /// Output directory for generated images. Resolves through the
+    /// per-workspace cascade — active workspace's `output_directory`
+    /// → Default's `output_directory` → the legacy
+    /// `Application Support/Infer/Generated Images/` path. The user
+    /// can override per-workspace via `WorkspaceSettingsInline`'s
+    /// "Output directory" field. See `effectiveOutputDirectory` and
+    /// `setWorkspaceOutputDirectory(id:path:)` in `Workspaces.swift`.
+    var sdOutputDirectory: URL { effectiveOutputDirectory }
 
     /// Directory where downloaded SD model files (HF / URL) land. Reuses
     /// the GGUF directory setting: SD models and llama models are large

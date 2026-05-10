@@ -124,4 +124,54 @@ final class WorkspaceParamCascadeTests: XCTestCase {
         // must surface it.
         XCTAssertTrue(WorkspaceParamCascade(systemPrompt: "").hasAnyOverride)
     }
+
+    // MARK: - outputDirectory (Phase 2)
+
+    func testOutputDirectoryFallsThroughToDefaults() {
+        let defaults = WorkspaceParamCascade(outputDirectory: "~/Pictures/Infer/")
+        let r = WorkspaceParamCascade.resolve(active: nil, defaults: defaults)
+        XCTAssertEqual(r.outputDirectory, "~/Pictures/Infer/")
+    }
+
+    func testOutputDirectoryActiveOverridesDefault() {
+        let defaults = WorkspaceParamCascade(outputDirectory: "/Users/x/Pictures/Default")
+        let active = WorkspaceParamCascade(outputDirectory: "/Users/x/Pictures/Scratch")
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.outputDirectory, "/Users/x/Pictures/Scratch")
+    }
+
+    func testOutputDirectoryActivePartialFallsThroughForOtherFields() {
+        // Active workspace overrides only outputDirectory; sampling
+        // fields cascade from defaults. Confirms outputDirectory is
+        // an independent axis in the cascade.
+        let defaults = WorkspaceParamCascade(
+            systemPrompt: "default",
+            temperature: 0.7,
+            outputDirectory: "/old/path"
+        )
+        let active = WorkspaceParamCascade(outputDirectory: "/new/path")
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.outputDirectory, "/new/path")
+        XCTAssertEqual(r.systemPrompt, "default")
+        XCTAssertEqual(r.temperature, 0.7)
+    }
+
+    func testOutputDirectoryEmptyStringIsAnOverride() {
+        // Same shape as `testActiveCanOverrideToEmptyString`: an
+        // explicit empty string is a real override (user cleared the
+        // field), distinct from nil / "no override here." The
+        // `setWorkspaceOutputDirectory` chat-VM helper trims and
+        // normalises empty-to-nil before persistence so this case
+        // shouldn't reach the store in practice — but the cascade
+        // resolver itself must honour what it's given.
+        let defaults = WorkspaceParamCascade(outputDirectory: "/has/path")
+        let active = WorkspaceParamCascade(outputDirectory: "")
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.outputDirectory, "")
+    }
+
+    func testHasAnyOverrideIncludesOutputDirectory() {
+        XCTAssertTrue(WorkspaceParamCascade(outputDirectory: "/x").hasAnyOverride)
+        XCTAssertTrue(WorkspaceParamCascade(outputDirectory: "").hasAnyOverride)
+    }
 }

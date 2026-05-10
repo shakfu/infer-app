@@ -31,6 +31,13 @@ struct WorkspaceSummary: Identifiable, Sendable, Equatable {
     let temperature: Double?
     let topP: Double?
     let maxTokens: Int?
+    /// Per-workspace output directory for generated artifacts (Stable
+    /// Diffusion images today; transcript exports later). `nil` = fall
+    /// back to Default's row, then to the legacy hardcoded path
+    /// (`Application Support/Infer/Generated Images/`). Phase 2 of the
+    /// per-workspace-params feature; see
+    /// `docs/dev/per-workspace-params.md`.
+    let outputDirectory: String?
 }
 
 struct VaultConversationSummary: Identifiable, Sendable, Equatable {
@@ -254,6 +261,15 @@ actor VaultStore {
             try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN temperature REAL")
             try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN top_p REAL")
             try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN max_tokens INTEGER")
+        }
+        // v6: per-workspace output directory for generated artifacts
+        // (Stable Diffusion images today; transcript exports later).
+        // `NULL` = inherit from the Default workspace's row; if both
+        // are `NULL`, the chat-VM substitutes the legacy hardcoded
+        // path. Default's row is left `NULL` on first launch so
+        // existing users see no change without a data write.
+        m.registerMigration("v6_workspace_output_dir") { db in
+            try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN output_directory TEXT")
         }
         return m
     }()
@@ -619,6 +635,7 @@ actor VaultStore {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT w.id, w.name, w.data_folder, w.created_at, w.updated_at,
                        w.system_prompt, w.temperature, w.top_p, w.max_tokens,
+                       w.output_directory,
                        (SELECT COUNT(*) FROM conversations c WHERE c.workspace_id = w.id) AS cnt
                     FROM workspaces w
                     ORDER BY (w.name = 'Default') DESC,
@@ -724,6 +741,7 @@ actor VaultStore {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT w.id, w.name, w.data_folder, w.created_at, w.updated_at,
                        w.system_prompt, w.temperature, w.top_p, w.max_tokens,
+                       w.output_directory,
                        (SELECT COUNT(*) FROM conversations c WHERE c.workspace_id = w.id) AS cnt
                     FROM workspaces w
                     WHERE w.id = ?
@@ -747,7 +765,8 @@ actor VaultStore {
         systemPrompt: ParamWrite<String?> = .unchanged,
         temperature: ParamWrite<Double?> = .unchanged,
         topP: ParamWrite<Double?> = .unchanged,
-        maxTokens: ParamWrite<Int?> = .unchanged
+        maxTokens: ParamWrite<Int?> = .unchanged,
+        outputDirectory: ParamWrite<String?> = .unchanged
     ) async throws {
         var fragments: [String] = []
         var args: [DatabaseValueConvertible?] = []
@@ -766,6 +785,10 @@ actor VaultStore {
         if case .value(let v) = maxTokens {
             fragments.append("max_tokens = ?")
             args.append(v.map { Int64($0) })
+        }
+        if case .value(let v) = outputDirectory {
+            fragments.append("output_directory = ?")
+            args.append(v)
         }
         guard !fragments.isEmpty else { return }
         let now = Int64(Date().timeIntervalSince1970)
@@ -800,7 +823,8 @@ actor VaultStore {
             systemPrompt: row["system_prompt"],
             temperature: row["temperature"],
             topP: row["top_p"],
-            maxTokens: (row["max_tokens"] as Int64?).map { Int($0) }
+            maxTokens: (row["max_tokens"] as Int64?).map { Int($0) },
+            outputDirectory: row["output_directory"]
         )
     }
 
