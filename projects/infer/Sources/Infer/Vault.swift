@@ -69,6 +69,16 @@ struct WorkspaceSummary: Identifiable, Sendable, Equatable {
     /// (e.g. a "private" workspace where you don't want web fetches
     /// happening).
     let enabledTools: [String]?
+    /// Per-workspace allow-list of MCP server ids whose tools are
+    /// exposed to the active agent. Same JSON-encoded `[String]?`
+    /// shape. Distinct from `enabledTools` in scope (whole servers,
+    /// not individual tools): when a server id is allow-listed out,
+    /// every `mcp.<serverID>.*` tool the registry knows about is
+    /// subtracted from the effective tool surface. Servers themselves
+    /// run app-globally — this is a per-workspace VISIBILITY filter,
+    /// not a subprocess gate. Phase 4c of per-workspace-params; see
+    /// `docs/dev/per-workspace-params.md` §12.3.
+    let enabledMCPServers: [String]?
 }
 
 struct VaultConversationSummary: Identifiable, Sendable, Equatable {
@@ -331,6 +341,14 @@ actor VaultStore {
         // workspace" (private / security-sensitive contexts).
         m.registerMigration("v9_workspace_enabled_tools") { db in
             try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN enabled_tools TEXT")
+        }
+        // v10: per-workspace MCP server allow-list. Last set-axis in
+        // Phase 4. The gate is a visibility filter, not a subprocess
+        // gate — MCP servers run app-globally; this column controls
+        // which of their tools surface to the active workspace's
+        // agent.
+        m.registerMigration("v10_workspace_enabled_mcp_servers") { db in
+            try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN enabled_mcp_servers TEXT")
         }
         return m
     }()
@@ -697,7 +715,7 @@ actor VaultStore {
                 SELECT w.id, w.name, w.data_folder, w.created_at, w.updated_at,
                        w.system_prompt, w.temperature, w.top_p, w.max_tokens,
                        w.output_directory, w.active_agent_id, w.enabled_agents,
-                       w.enabled_tools,
+                       w.enabled_tools, w.enabled_mcp_servers,
                        (SELECT COUNT(*) FROM conversations c WHERE c.workspace_id = w.id) AS cnt
                     FROM workspaces w
                     ORDER BY (w.name = 'Default') DESC,
@@ -804,7 +822,7 @@ actor VaultStore {
                 SELECT w.id, w.name, w.data_folder, w.created_at, w.updated_at,
                        w.system_prompt, w.temperature, w.top_p, w.max_tokens,
                        w.output_directory, w.active_agent_id, w.enabled_agents,
-                       w.enabled_tools,
+                       w.enabled_tools, w.enabled_mcp_servers,
                        (SELECT COUNT(*) FROM conversations c WHERE c.workspace_id = w.id) AS cnt
                     FROM workspaces w
                     WHERE w.id = ?
@@ -832,7 +850,8 @@ actor VaultStore {
         outputDirectory: ParamWrite<String?> = .unchanged,
         activeAgentId: ParamWrite<String?> = .unchanged,
         enabledAgents: ParamWrite<[String]?> = .unchanged,
-        enabledTools: ParamWrite<[String]?> = .unchanged
+        enabledTools: ParamWrite<[String]?> = .unchanged,
+        enabledMCPServers: ParamWrite<[String]?> = .unchanged
     ) async throws {
         var fragments: [String] = []
         var args: [DatabaseValueConvertible?] = []
@@ -884,6 +903,15 @@ actor VaultStore {
                 args.append(nil)
             }
         }
+        if case .value(let v) = enabledMCPServers {
+            fragments.append("enabled_mcp_servers = ?")
+            if let v {
+                let data = try JSONEncoder().encode(v)
+                args.append(String(data: data, encoding: .utf8) ?? "[]")
+            } else {
+                args.append(nil)
+            }
+        }
         guard !fragments.isEmpty else { return }
         let now = Int64(Date().timeIntervalSince1970)
         fragments.append("updated_at = ?")
@@ -921,7 +949,8 @@ actor VaultStore {
             outputDirectory: row["output_directory"],
             activeAgentId: row["active_agent_id"],
             enabledAgents: Self.decodeStringArray(row["enabled_agents"]),
-            enabledTools: Self.decodeStringArray(row["enabled_tools"])
+            enabledTools: Self.decodeStringArray(row["enabled_tools"]),
+            enabledMCPServers: Self.decodeStringArray(row["enabled_mcp_servers"])
         )
     }
 

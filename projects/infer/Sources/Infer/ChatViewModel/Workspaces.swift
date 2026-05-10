@@ -213,7 +213,8 @@ extension ChatViewModel {
             outputDirectory: row.outputDirectory,
             activeAgentId: row.activeAgentId,
             enabledAgents: row.enabledAgents,
-            enabledTools: row.enabledTools
+            enabledTools: row.enabledTools,
+            enabledMCPServers: row.enabledMCPServers
         )
     }
 
@@ -265,25 +266,129 @@ extension ChatViewModel {
     }
 
     /// Resolved set of tool names the active workspace permits.
-    /// `nil` return = "no allow-list active at any cascade layer" →
-    /// every tool the active agent declares is available. A non-nil
-    /// return is the explicit allow-list (possibly empty); the
-    /// agent's declared tool surface is intersected with this set
-    /// inside `AgentController.activate` before being assigned to
-    /// `activeToolSpecs`. Phase 4b of per-workspace-params.
+    /// Composes Phase 4b (`enabled_tools` per-tool list) and Phase 4c
+    /// (`enabled_mcp_servers` per-server list). `nil` return = "no
+    /// allow-list active at either axis" → every tool the active
+    /// agent declares is available. A non-nil return is the
+    /// effective tool surface; the agent's declared tools are
+    /// intersected with this inside `AgentController.activate`
+    /// before being assigned to `activeToolSpecs`.
+    ///
+    /// Composition rule:
+    ///   - Both nil → return nil (no filter).
+    ///   - Phase 4b non-nil → start with that set.
+    ///   - Phase 4b nil, Phase 4c non-nil → start with the universe
+    ///     (`availableToolNames`).
+    ///   - Phase 4c non-nil → subtract tool names of the form
+    ///     `mcp.<disallowedServerID>.*` (every MCP-derived tool whose
+    ///     owning server is NOT in the allow-list). MCP tool names
+    ///     are constructed by `MCPBuiltinTool.init` as
+    ///     `mcp.<serverID>.<rawToolName>`; the parse here mirrors that.
     ///
     /// **No safety net.** Unlike `effectiveEnabledAgents` (which
-    /// always insists on `DefaultAgent.id`), the empty set here
-    /// genuinely means "no tools available" — that's a legitimate
-    /// workspace shape (private / security-sensitive contexts where
-    /// the user explicitly doesn't want tool invocation).
+    /// always insists on `DefaultAgent.id`), an empty resolved set
+    /// genuinely means "no tools available" — legitimate for
+    /// security-sensitive workspaces.
     var effectiveEnabledTools: Set<String>? {
         let resolved = WorkspaceParamCascade.resolve(
             active: activeWorkspace.map(Self.cascade(from:)),
             defaults: workspaces.min(by: { $0.id < $1.id }).map(Self.cascade(from:))
         )
-        guard let raw = resolved.enabledTools else { return nil }
+        let phase4b = resolved.enabledTools.map { Set($0) }
+        let phase4c = resolved.enabledMCPServers.map { Set($0) }
+        if phase4b == nil && phase4c == nil { return nil }
+        // Build the starting set. If Phase 4b set the per-tool list,
+        // use that; otherwise (Phase 4c is what's active) start with
+        // the registry universe.
+        var allowed: Set<String>
+        if let phase4b {
+            allowed = phase4b
+        } else {
+            allowed = Set(availableToolNames)
+        }
+        if let phase4c {
+            // Subtract `mcp.<server>.*` for every server NOT in the
+            // allow-list. Tools the registry knows about that don't
+            // start with `mcp.` are unaffected.
+            allowed = allowed.filter { name in
+                guard name.hasPrefix("mcp.") else { return true }
+                let stripped = String(name.dropFirst("mcp.".count))
+                guard let dot = stripped.firstIndex(of: ".") else { return true }
+                let serverID = String(stripped[..<dot])
+                return phase4c.contains(serverID)
+            }
+        }
+        return allowed
+    }
+
+    /// Resolved set of MCP server ids the active workspace permits.
+    /// `nil` = no per-server allow-list active → every running
+    /// server's tools are visible (subject to Phase 4b's per-tool
+    /// filter). A non-nil set (possibly empty) is the explicit
+    /// list; the consumer is `effectiveEnabledTools` above which
+    /// subtracts tools of disallowed servers.
+    var effectiveEnabledMCPServers: Set<String>? {
+        let resolved = WorkspaceParamCascade.resolve(
+            active: activeWorkspace.map(Self.cascade(from:)),
+            defaults: workspaces.min(by: { $0.id < $1.id }).map(Self.cascade(from:))
+        )
+        guard let raw = resolved.enabledMCPServers else { return nil }
         return Set(raw)
+    }
+
+    /// True when the workspace allow-list permits the named MCP
+    /// server. `false` only when an allow-list is active and excludes
+    /// this server. Drives the per-row checkbox state in the
+    /// workspace sheet's MCP servers disclosure.
+    func isMCPServerEnabledInActiveWorkspace(_ serverID: String) -> Bool {
+        guard let allow = effectiveEnabledMCPServers else { return true }
+        return allow.contains(serverID)
+    }
+
+    /// Persist a new MCP server allow-list. Same semantics as
+    /// `setWorkspaceEnabledTools`: nil clears, [] silences (no MCP
+    /// tools), explicit list pins. After the write, refresh the
+    /// workspace list and force-recompose tool specs so the running
+    /// prompt picks up the new server-derived filter immediately.
+    func setWorkspaceEnabledMCPServers(id: Int64, ids: [String]?) {
+        Task { [vault] in
+            do {
+                try await vault.setWorkspaceParams(id: id, enabledMCPServers: .value(ids))
+                await MainActor.run {
+                    self.refreshWorkspaces()
+                    self.refreshActiveAgentToolSpecs()
+                }
+            } catch {
+                self.logs.logFromBackground(
+                    .error,
+                    source: "workspaces",
+                    message: "failed to persist MCP servers allow-list",
+                    payload: String(describing: error)
+                )
+            }
+        }
+    }
+
+    /// Flip a single MCP server's membership in the named workspace's
+    /// allow-list. Same first-toggle-materialises-everything-except-
+    /// this idiom as the agents and tools allow-lists. The "universe"
+    /// is the current set of `mcpServers` summaries — runtime-
+    /// discovered, so a server that wasn't running when the user
+    /// opened the sheet won't appear; refresh on sheet-open.
+    func toggleMCPServerInAllowList(workspaceId: Int64, serverID: String, universe: [String]) {
+        guard let row = workspaces.first(where: { $0.id == workspaceId }) else { return }
+        let current = row.enabledMCPServers
+        let next: [String]
+        if let current {
+            if current.contains(serverID) {
+                next = current.filter { $0 != serverID }
+            } else {
+                next = current + [serverID]
+            }
+        } else {
+            next = universe.filter { $0 != serverID }
+        }
+        setWorkspaceEnabledMCPServers(id: workspaceId, ids: next)
     }
 
     /// True when the workspace allow-list permits the named tool.

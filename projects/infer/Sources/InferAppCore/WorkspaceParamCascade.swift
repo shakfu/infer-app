@@ -54,6 +54,14 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
     /// empty list legitimately means zero tools, because there's
     /// no workflow tools must always satisfy.
     public var enabledTools: [String]?
+    /// Per-workspace MCP server allow-list (Phase 4c). Same set-axis
+    /// cascade as the others. The CONSUMER composes this with
+    /// `enabledTools` by subtracting `mcp.<disallowedServerID>.*`
+    /// tool names from the effective set; the resolver itself just
+    /// passes the list through. No safety net — an empty list means
+    /// "no MCP-derived tools available" (workspace explicitly
+    /// excluding all MCP servers from its agent's surface).
+    public var enabledMCPServers: [String]?
 
     public init(
         systemPrompt: String? = nil,
@@ -63,7 +71,8 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
         outputDirectory: String? = nil,
         activeAgentId: String? = nil,
         enabledAgents: [String]? = nil,
-        enabledTools: [String]? = nil
+        enabledTools: [String]? = nil,
+        enabledMCPServers: [String]? = nil
     ) {
         self.systemPrompt = systemPrompt
         self.temperature = temperature
@@ -73,6 +82,7 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
         self.activeAgentId = activeAgentId
         self.enabledAgents = enabledAgents
         self.enabledTools = enabledTools
+        self.enabledMCPServers = enabledMCPServers
     }
 
     /// Two-layer cascade: each field on `active` wins when non-nil,
@@ -98,7 +108,8 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
             outputDirectory: active?.outputDirectory ?? defaults?.outputDirectory,
             activeAgentId: active?.activeAgentId ?? defaults?.activeAgentId,
             enabledAgents: active?.enabledAgents ?? defaults?.enabledAgents,
-            enabledTools: active?.enabledTools ?? defaults?.enabledTools
+            enabledTools: active?.enabledTools ?? defaults?.enabledTools,
+            enabledMCPServers: active?.enabledMCPServers ?? defaults?.enabledMCPServers
         )
     }
 
@@ -115,5 +126,6 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
             || activeAgentId != nil
             || enabledAgents != nil
             || enabledTools != nil
+            || enabledMCPServers != nil
     }
 }

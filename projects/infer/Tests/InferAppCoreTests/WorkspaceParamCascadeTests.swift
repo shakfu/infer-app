@@ -358,4 +358,71 @@ final class WorkspaceParamCascadeTests: XCTestCase {
         XCTAssertTrue(WorkspaceParamCascade(enabledTools: []).hasAnyOverride,
                       "explicit empty tools list IS an override (workspace-silenced state)")
     }
+
+    // MARK: - enabledMCPServers (Phase 4c — set / allow-list cascade)
+
+    func testEnabledMCPServersFallsThroughToDefaults() {
+        let defaults = WorkspaceParamCascade(enabledMCPServers: ["filesystem", "github"])
+        let r = WorkspaceParamCascade.resolve(active: nil, defaults: defaults)
+        XCTAssertEqual(r.enabledMCPServers, ["filesystem", "github"])
+    }
+
+    func testEnabledMCPServersActiveOverridesDefault() {
+        let defaults = WorkspaceParamCascade(enabledMCPServers: ["filesystem"])
+        let active = WorkspaceParamCascade(enabledMCPServers: ["github"])
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.enabledMCPServers, ["github"])
+    }
+
+    func testEnabledMCPServersEmptyArrayIsExplicitSilence() {
+        // Same set-axis semantics as enabledTools: empty list is the
+        // workspace-silenced state, distinct from nil. The consumer
+        // (`ChatViewModel.effectiveEnabledTools`) subtracts every
+        // `mcp.*` tool when this resolves to an empty set.
+        let defaults = WorkspaceParamCascade(enabledMCPServers: ["filesystem"])
+        let active = WorkspaceParamCascade(enabledMCPServers: [])
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.enabledMCPServers, [], "empty MCP servers list overrides defaults")
+    }
+
+    func testEnabledMCPServersIndependentFromEnabledTools() {
+        // The two set-axis fields resolve independently in the
+        // cascade. Composition (subtracting MCP-derived tools when
+        // their server is allow-listed out) happens in the chat-VM
+        // consumer, not in the resolver — verified by
+        // `testEnabledMCPServersResolverIsPurePassthrough` below
+        // and by the chat-VM-side composition tests separately.
+        let defaults = WorkspaceParamCascade(
+            enabledTools: ["http.fetch"],
+            enabledMCPServers: ["filesystem"]
+        )
+        let active = WorkspaceParamCascade(enabledMCPServers: ["github"])
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.enabledTools, ["http.fetch"], "tools list inherits from defaults")
+        XCTAssertEqual(r.enabledMCPServers, ["github"], "MCP servers list overridden by active")
+    }
+
+    func testHasAnyOverrideIncludesEnabledMCPServers() {
+        XCTAssertTrue(WorkspaceParamCascade(enabledMCPServers: ["x"]).hasAnyOverride)
+        XCTAssertTrue(WorkspaceParamCascade(enabledMCPServers: []).hasAnyOverride,
+                      "explicit empty MCP servers list IS an override")
+    }
+
+    func testEnabledMCPServersResolverIsPurePassthrough() {
+        // Mirror of the Phase 4a `testEnabledAgentsResolverDoesNotInjectSafetyNet`
+        // contract: the resolver does no composition with other axes.
+        // The consumer composes Phase 4b + Phase 4c (subtracting
+        // tools whose server is disallowed). Decoupling that
+        // composition from the resolver keeps `InferAppCore`
+        // independent of MCP tool-naming conventions (which live in
+        // `InferAgents` via `MCPBuiltinTool.init`).
+        let active = WorkspaceParamCascade(
+            enabledTools: ["mcp.filesystem.read", "mcp.github.search"],
+            enabledMCPServers: ["github"]
+        )
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: nil)
+        XCTAssertEqual(r.enabledTools, ["mcp.filesystem.read", "mcp.github.search"],
+                       "resolver returns the tools list as stored — composition is the consumer's job")
+        XCTAssertEqual(r.enabledMCPServers, ["github"])
+    }
 }

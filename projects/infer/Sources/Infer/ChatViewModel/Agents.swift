@@ -366,9 +366,20 @@ extension ChatViewModel {
             // Capturing `self` weakly is overkill — bootstrap runs
             // once at app start and the VM lives the whole session.
             let summaries = await mcpHost.summaries
+            // Snapshot tool names for the per-workspace allow-list
+            // editor (Phase 4b/4c). MCP tools have just registered;
+            // taking the snapshot here means the workspace sheet's
+            // "Available tools" disclosure has the right universe
+            // even before the user opens the sheet, and the
+            // composed `effectiveEnabledTools` resolver (which falls
+            // back to `availableToolNames` when Phase 4b is nil but
+            // Phase 4c is non-nil) sees the full set on the very
+            // first agent activation.
+            let toolNames = await registry.allSpecs().map(\.name).sorted()
             await MainActor.run { [weak self] in
                 self?.mcpServers = summaries
                 self?.mcpDiagnostics = mcpDiagnostics
+                self?.availableToolNames = toolNames
             }
             let specs = await registry.allSpecs()
             let catalog = ToolCatalog(tools: specs)

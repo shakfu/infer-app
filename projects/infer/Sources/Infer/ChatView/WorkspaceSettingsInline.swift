@@ -31,6 +31,7 @@ struct WorkspaceSettingsInline: View {
     @State private var confirmReset: Bool = false
     @State private var availableAgentsOpen: Bool = false
     @State private var availableToolsOpen: Bool = false
+    @State private var availableMCPServersOpen: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -51,6 +52,7 @@ struct WorkspaceSettingsInline: View {
                 outputDirectoryField
                 availableAgentsDisclosure
                 availableToolsDisclosure
+                availableMCPServersDisclosure
                 metadataRow
                 deleteRow
             }
@@ -372,6 +374,93 @@ struct WorkspaceSettingsInline: View {
 
     private var availableToolsSummary: String {
         if let allow = workspace.enabledTools {
+            return "(\(allow.count) allowed)"
+        }
+        if vm.isDefaultWorkspace(workspace.id) {
+            return "(everything available)"
+        }
+        return "(inheriting Default)"
+    }
+
+    /// Per-workspace allow-list of MCP servers whose tools are
+    /// exposed to the active agent. Phase 4c. Same disclosure shape
+    /// as agents/tools — collapsed by default, header summary,
+    /// `↺ Default` button when this row's `enabled_mcp_servers` is
+    /// non-NULL. The body lists every running / configured server
+    /// from `vm.mcpServers` (the existing `@Observable` summary
+    /// mirror); toggling a server flips its membership and triggers
+    /// a force-refresh of the active agent's tool specs so the
+    /// effect lands on the next turn.
+    @ViewBuilder
+    private var availableMCPServersDisclosure: some View {
+        DisclosureGroup(isExpanded: $availableMCPServersOpen) {
+            availableMCPServersBody
+        } label: {
+            HStack(spacing: 6) {
+                Text("Available MCP servers").font(.caption2).foregroundStyle(.secondary)
+                Text(availableMCPServersSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                if workspace.enabledMCPServers != nil {
+                    Button {
+                        vm.setWorkspaceEnabledMCPServers(id: workspace.id, ids: nil)
+                    } label: {
+                        Label("Default", systemImage: "arrow.uturn.backward")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.mini)
+                    .foregroundStyle(.secondary)
+                    .help("Clear this workspace's MCP server allow-list; falls back to the Default workspace's list.")
+                }
+                Spacer()
+            }
+        }
+    }
+
+    private var availableMCPServersBody: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if vm.mcpServers.isEmpty {
+                Text("No MCP servers configured.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ForEach(vm.mcpServers) { server in
+                    let isEnabled: Bool = {
+                        if let allow = workspace.enabledMCPServers {
+                            return allow.contains(server.id)
+                        }
+                        return vm.isMCPServerEnabledInActiveWorkspace(server.id)
+                    }()
+                    let universe = vm.mcpServers.map(\.id)
+                    Toggle(isOn: Binding(
+                        get: { isEnabled },
+                        set: { _ in
+                            vm.toggleMCPServerInAllowList(
+                                workspaceId: workspace.id,
+                                serverID: server.id,
+                                universe: universe
+                            )
+                        }
+                    )) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(server.displayName).font(.caption)
+                            Text(server.id)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private var availableMCPServersSummary: String {
+        if let allow = workspace.enabledMCPServers {
             return "(\(allow.count) allowed)"
         }
         if vm.isDefaultWorkspace(workspace.id) {
