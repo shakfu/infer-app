@@ -303,4 +303,59 @@ final class WorkspaceParamCascadeTests: XCTestCase {
         XCTAssertEqual(r.enabledAgents, [],
                        "resolver returns the list as stored; safety net is the consumer's job")
     }
+
+    // MARK: - enabledTools (Phase 4b — set / allow-list cascade, no safety net)
+
+    func testEnabledToolsFallsThroughToDefaults() {
+        let defaults = WorkspaceParamCascade(enabledTools: ["http.fetch", "fs.read"])
+        let r = WorkspaceParamCascade.resolve(active: nil, defaults: defaults)
+        XCTAssertEqual(r.enabledTools, ["http.fetch", "fs.read"])
+    }
+
+    func testEnabledToolsActiveOverridesDefault() {
+        let defaults = WorkspaceParamCascade(enabledTools: ["http.fetch"])
+        let active = WorkspaceParamCascade(enabledTools: ["fs.read"])
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.enabledTools, ["fs.read"])
+    }
+
+    func testEnabledToolsEmptyArrayReallyMeansNoTools() {
+        // Unlike enabledAgents (which has a DefaultAgent safety net
+        // at the chat-VM consumer), an empty tools allow-list is
+        // semantically "no tools available" — that's a legitimate
+        // workspace shape (security-sensitive contexts). The
+        // resolver returns the empty array; the consumer
+        // (`ChatViewModel.effectiveEnabledTools`) returns
+        // `Set<String>()` — distinct from `nil`.
+        let defaults = WorkspaceParamCascade(enabledTools: ["http.fetch"])
+        let active = WorkspaceParamCascade(enabledTools: [])
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.enabledTools, [], "empty tools list overrides defaults — workspace-silenced state")
+    }
+
+    func testEnabledToolsBothLayersNilProducesNil() {
+        let r = WorkspaceParamCascade.resolve(active: nil, defaults: nil)
+        XCTAssertNil(r.enabledTools)
+    }
+
+    func testEnabledToolsIndependentFromEnabledAgents() {
+        // Both set-axis fields can be present at different cascade
+        // layers and resolve independently. Catches a class of bug
+        // where a refactor accidentally couples the two through a
+        // shared resolver path.
+        let defaults = WorkspaceParamCascade(
+            enabledAgents: ["coder"],
+            enabledTools: ["http.fetch"]
+        )
+        let active = WorkspaceParamCascade(enabledTools: ["fs.read"])
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.enabledAgents, ["coder"], "agents allow-list inherits from defaults")
+        XCTAssertEqual(r.enabledTools, ["fs.read"], "tools allow-list overridden by active")
+    }
+
+    func testHasAnyOverrideIncludesEnabledTools() {
+        XCTAssertTrue(WorkspaceParamCascade(enabledTools: ["x"]).hasAnyOverride)
+        XCTAssertTrue(WorkspaceParamCascade(enabledTools: []).hasAnyOverride,
+                      "explicit empty tools list IS an override (workspace-silenced state)")
+    }
 }

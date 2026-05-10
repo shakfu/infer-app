@@ -424,17 +424,25 @@ public final class AgentController {
     /// Switch the active agent. Returns the effects the adapter should
     /// apply, in order. No-op (empty list) when the target is already
     /// active or is incompatible with `currentBackend`.
+    ///
+    /// Phase 4b adds `enabledTools` — when non-nil, the agent's
+    /// declared tool surface is intersected with this allow-list
+    /// (by `ToolSpec.name`) before being assigned to
+    /// `activeToolSpecs`. `nil` is the historical "no filter, all
+    /// the agent's tools available" behaviour.
     public func switchAgent(
         to listing: AgentListing,
         currentBackend: BackendPreference,
-        settings: InferSettings
+        settings: InferSettings,
+        enabledTools: Set<String>? = nil
     ) async -> [AgentEffect] {
         guard listing.id != activeAgentId else { return [] }
         guard isCompatible(listing, backend: currentBackend) else { return [] }
         let runnerEffects = await activate(
             agentId: listing.id,
             currentBackend: currentBackend,
-            settings: settings
+            settings: settings,
+            enabledTools: enabledTools
         )
         return [
             .insertDivider(agentName: listing.name),
@@ -451,16 +459,29 @@ public final class AgentController {
     /// logical user turn, not separate ones. Returns runner-state
     /// effects only; the caller appends a fresh assistant message for
     /// the new segment with its own agent attribution.
+    ///
+    /// Phase 4b additions: `enabledTools` filter (see `switchAgent`),
+    /// and `forceRefresh` — when true, skips the
+    /// "already-active → no-op" guard so callers can force a
+    /// re-computation of `activeToolSpecs` after the workspace's tool
+    /// allow-list changes (the active agent stays the same, but its
+    /// effective tool surface flips). Without `forceRefresh`, a
+    /// no-op same-id call would leave the runner with stale specs.
     public func activateForSegment(
         agentId: AgentID,
         currentBackend: BackendPreference,
-        settings: InferSettings
+        settings: InferSettings,
+        enabledTools: Set<String>? = nil,
+        forceRefresh: Bool = false
     ) async -> [AgentEffect] {
-        guard agentId != activeAgentId else { return [] }
+        if !forceRefresh {
+            guard agentId != activeAgentId else { return [] }
+        }
         return await activate(
             agentId: agentId,
             currentBackend: currentBackend,
-            settings: settings
+            settings: settings,
+            enabledTools: enabledTools
         )
     }
 
@@ -472,7 +493,8 @@ public final class AgentController {
     private func activate(
         agentId: AgentID,
         currentBackend: BackendPreference,
-        settings: InferSettings
+        settings: InferSettings,
+        enabledTools: Set<String>? = nil
     ) async -> [AgentEffect] {
         activeAgentId = agentId
 
@@ -514,16 +536,32 @@ public final class AgentController {
             )
             basePrompt = ""
         }
-        let tools: [ToolSpec]
+        let toolsBeforeFilter: [ToolSpec]
         do {
-            tools = try await agent.toolsAvailable(for: ctx)
+            toolsBeforeFilter = try await agent.toolsAvailable(for: ctx)
         } catch {
             warn(
                 "agents",
                 "agent \(agentId) toolsAvailable threw; falling back to no tools",
                 String(describing: error)
             )
-            tools = []
+            toolsBeforeFilter = []
+        }
+        // Phase 4b: workspace's per-tool allow-list intersects the
+        // agent's declared surface. `nil` allow-list means "no
+        // filter, surface every tool the agent declared." Empty set
+        // means "no tools allowed" (workspace-silenced state); the
+        // agent's prompt won't list any tools and the model has
+        // nothing to call. Filtering happens here (at spec
+        // assignment) rather than at the registry's `invoke` site
+        // because the agent's prompt is built from
+        // `activeToolSpecs` — gating earlier means the model never
+        // sees disabled tools and won't hallucinate calls to them.
+        let tools: [ToolSpec]
+        if let allow = enabledTools {
+            tools = toolsBeforeFilter.filter { allow.contains($0.name) }
+        } else {
+            tools = toolsBeforeFilter
         }
         self.activeToolSpecs = tools
         // The agent declares which family its tool-call syntax targets.

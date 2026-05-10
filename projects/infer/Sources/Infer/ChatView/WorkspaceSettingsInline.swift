@@ -30,6 +30,7 @@ struct WorkspaceSettingsInline: View {
     @State private var confirmDelete: Bool = false
     @State private var confirmReset: Bool = false
     @State private var availableAgentsOpen: Bool = false
+    @State private var availableToolsOpen: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -49,6 +50,7 @@ struct WorkspaceSettingsInline: View {
                 dataFolderField
                 outputDirectoryField
                 availableAgentsDisclosure
+                availableToolsDisclosure
                 metadataRow
                 deleteRow
             }
@@ -293,6 +295,89 @@ struct WorkspaceSettingsInline: View {
             }
         }
         .padding(.top, 4)
+    }
+
+    /// Per-workspace allow-list of tools available to the active
+    /// agent. Phase 4b — sibling of `availableAgentsDisclosure`.
+    /// Same rendering shape: collapsed by default, header summary,
+    /// `↺ Default` button when this row's `enabled_tools` column
+    /// is non-NULL. Body lists every tool currently in the registry
+    /// (`vm.availableToolNames`, snapshotted onAppear so MCP-
+    /// discovered tools that register at runtime are visible) with
+    /// per-row checkboxes. **No safety net** — DefaultAgent stays
+    /// available even when every tool is silenced; the empty list
+    /// is a legitimate "no tools" workspace shape.
+    @ViewBuilder
+    private var availableToolsDisclosure: some View {
+        DisclosureGroup(isExpanded: $availableToolsOpen) {
+            availableToolsBody
+        } label: {
+            HStack(spacing: 6) {
+                Text("Available tools").font(.caption2).foregroundStyle(.secondary)
+                Text(availableToolsSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                if workspace.enabledTools != nil {
+                    Button {
+                        vm.setWorkspaceEnabledTools(id: workspace.id, ids: nil)
+                    } label: {
+                        Label("Default", systemImage: "arrow.uturn.backward")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.mini)
+                    .foregroundStyle(.secondary)
+                    .help("Clear this workspace's tool allow-list; falls back to the Default workspace's list.")
+                }
+                Spacer()
+            }
+        }
+    }
+
+    private var availableToolsBody: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if vm.availableToolNames.isEmpty {
+                Text("No tools registered yet.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ForEach(vm.availableToolNames, id: \.self) { name in
+                    let isEnabled: Bool = {
+                        if let allow = workspace.enabledTools {
+                            return allow.contains(name)
+                        }
+                        return vm.isToolEnabledInActiveWorkspace(name)
+                    }()
+                    Toggle(isOn: Binding(
+                        get: { isEnabled },
+                        set: { _ in
+                            vm.toggleToolInAllowList(
+                                workspaceId: workspace.id,
+                                toolName: name,
+                                universe: vm.availableToolNames
+                            )
+                        }
+                    )) {
+                        Text(name)
+                            .font(.caption.monospaced())
+                    }
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    private var availableToolsSummary: String {
+        if let allow = workspace.enabledTools {
+            return "(\(allow.count) allowed)"
+        }
+        if vm.isDefaultWorkspace(workspace.id) {
+            return "(everything available)"
+        }
+        return "(inheriting Default)"
     }
 
     /// One-liner status the disclosure header shows next to the
@@ -548,6 +633,12 @@ struct WorkspaceSettingsInline: View {
             outputDirectory = workspace.outputDirectory ?? ""
             seededWorkspaceId = workspace.id
             vm.refreshCorpusStats(workspaceId: workspace.id)
+            // Refresh the tool catalogue snapshot so the
+            // "Available tools" disclosure shows the current
+            // registry — MCP tools register / unregister at
+            // runtime, so a snapshot from VM-init time would go
+            // stale.
+            vm.refreshAvailableToolNames()
         }
     }
 

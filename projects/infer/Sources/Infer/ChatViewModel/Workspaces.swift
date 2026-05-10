@@ -212,7 +212,8 @@ extension ChatViewModel {
             maxTokens: row.maxTokens,
             outputDirectory: row.outputDirectory,
             activeAgentId: row.activeAgentId,
-            enabledAgents: row.enabledAgents
+            enabledAgents: row.enabledAgents,
+            enabledTools: row.enabledTools
         )
     }
 
@@ -261,6 +262,127 @@ extension ChatViewModel {
     /// `effectiveEnabledAgents`.
     func isVisibleAgent(_ listing: AgentListing) -> Bool {
         isCompatible(listing) && isAgentEnabledInActiveWorkspace(listing.id)
+    }
+
+    /// Resolved set of tool names the active workspace permits.
+    /// `nil` return = "no allow-list active at any cascade layer" →
+    /// every tool the active agent declares is available. A non-nil
+    /// return is the explicit allow-list (possibly empty); the
+    /// agent's declared tool surface is intersected with this set
+    /// inside `AgentController.activate` before being assigned to
+    /// `activeToolSpecs`. Phase 4b of per-workspace-params.
+    ///
+    /// **No safety net.** Unlike `effectiveEnabledAgents` (which
+    /// always insists on `DefaultAgent.id`), the empty set here
+    /// genuinely means "no tools available" — that's a legitimate
+    /// workspace shape (private / security-sensitive contexts where
+    /// the user explicitly doesn't want tool invocation).
+    var effectiveEnabledTools: Set<String>? {
+        let resolved = WorkspaceParamCascade.resolve(
+            active: activeWorkspace.map(Self.cascade(from:)),
+            defaults: workspaces.min(by: { $0.id < $1.id }).map(Self.cascade(from:))
+        )
+        guard let raw = resolved.enabledTools else { return nil }
+        return Set(raw)
+    }
+
+    /// True when the workspace allow-list permits the named tool.
+    /// `false` only when an allow-list is active and excludes this
+    /// tool. Drives the per-row checkbox state in the workspace
+    /// sheet's tools disclosure.
+    func isToolEnabledInActiveWorkspace(_ toolName: String) -> Bool {
+        guard let allow = effectiveEnabledTools else { return true }
+        return allow.contains(toolName)
+    }
+
+    /// Persist a new tool allow-list for the named workspace.
+    /// Same semantics as `setWorkspaceEnabledAgents`: `nil` clears
+    /// the override, `[]` is the workspace-silenced state, an
+    /// explicit list pins. After the write, refreshes the workspace
+    /// list and **force-refreshes the active agent's tool specs**
+    /// (`refreshActiveAgentToolSpecs`) so the change takes effect on
+    /// the next turn without requiring an agent switch.
+    func setWorkspaceEnabledTools(id: Int64, ids: [String]?) {
+        Task { [vault] in
+            do {
+                try await vault.setWorkspaceParams(id: id, enabledTools: .value(ids))
+                await MainActor.run {
+                    self.refreshWorkspaces()
+                    self.refreshActiveAgentToolSpecs()
+                }
+            } catch {
+                self.logs.logFromBackground(
+                    .error,
+                    source: "workspaces",
+                    message: "failed to persist tools allow-list",
+                    payload: String(describing: error)
+                )
+            }
+        }
+    }
+
+    /// Refresh `availableToolNames` from the registry. Async because
+    /// `toolRegistry.allSpecs()` hops the actor; the result is
+    /// committed back on the main actor for SwiftUI observation.
+    /// Called from the workspace sheet's onAppear so the per-row
+    /// checkbox list reflects the latest tool catalogue (MCP tools
+    /// can register / unregister at runtime, so a snapshot at
+    /// VM-init time would go stale).
+    func refreshAvailableToolNames() {
+        Task { [weak self, registry = self.toolRegistry] in
+            let names = await registry.allSpecs().map(\.name).sorted()
+            await MainActor.run { self?.availableToolNames = names }
+        }
+    }
+
+    /// Force-recompute the active agent's `activeToolSpecs` against
+    /// the current workspace allow-list, without changing the
+    /// active agent. Called after `setWorkspaceEnabledTools` so the
+    /// running prompt picks up the new filter immediately rather
+    /// than waiting for the next agent switch. Routes through the
+    /// `AgentController.activateForSegment(...forceRefresh: true)`
+    /// path that bypasses the same-id no-op guard.
+    @MainActor
+    func refreshActiveAgentToolSpecs() {
+        let currentAgent = agentController.activeAgentId
+        let backend = currentBackendPreference
+        let settings = self.settings
+        let enabled = effectiveEnabledTools
+        Task { [controller = self.agentController] in
+            let effects = await controller.activateForSegment(
+                agentId: currentAgent,
+                currentBackend: backend,
+                settings: settings,
+                enabledTools: enabled,
+                forceRefresh: true
+            )
+            await MainActor.run { self.apply(effects) }
+        }
+    }
+
+    /// Flip a single tool's membership in the named workspace's
+    /// allow-list. Same first-toggle-materialises-everything-except-
+    /// this semantics as `toggleAgentInAllowList`. The "universe" of
+    /// tools is whatever the registry currently knows (may include
+    /// MCP-derived tools — those are runtime-discovered, so the
+    /// universe is dynamic).
+    func toggleToolInAllowList(workspaceId: Int64, toolName: String, universe: [String]) {
+        guard let row = workspaces.first(where: { $0.id == workspaceId }) else { return }
+        let current = row.enabledTools
+        let next: [String]
+        if let current {
+            if current.contains(toolName) {
+                next = current.filter { $0 != toolName }
+            } else {
+                next = current + [toolName]
+            }
+        } else {
+            // No allow-list yet → user is removing one item from
+            // the implicit "everything." Materialise the explicit
+            // list with everything except the toggled name.
+            next = universe.filter { $0 != toolName }
+        }
+        setWorkspaceEnabledTools(id: workspaceId, ids: next)
     }
 
     /// Flip a single agent's membership in the named workspace's
@@ -457,6 +579,7 @@ extension ChatViewModel {
             )
         }
         let settingsSnapshot = self.settings
+        let enabledToolsSnapshot = self.effectiveEnabledTools
         let mode: AgentRecomposeMode = insertDivider ? .switchAgent : .activateForSegment
         Task { [controller = self.agentController] in
             let effects: [AgentEffect]
@@ -465,13 +588,15 @@ extension ChatViewModel {
                 effects = await controller.switchAgent(
                     to: listing,
                     currentBackend: backend,
-                    settings: settingsSnapshot
+                    settings: settingsSnapshot,
+                    enabledTools: enabledToolsSnapshot
                 )
             case .activateForSegment:
                 effects = await controller.activateForSegment(
                     agentId: listing.id,
                     currentBackend: backend,
-                    settings: settingsSnapshot
+                    settings: settingsSnapshot,
+                    enabledTools: enabledToolsSnapshot
                 )
             }
             await MainActor.run { self.apply(effects) }

@@ -56,6 +56,19 @@ struct WorkspaceSummary: Identifiable, Sendable, Equatable {
     /// of the per-workspace-params feature; see
     /// `docs/dev/per-workspace-params.md` §12.3.
     let enabledAgents: [String]?
+    /// Per-workspace allow-list of tool names visible to the active
+    /// agent. Same JSON-encoded `[String]?` shape as `enabledAgents`.
+    /// `nil` = inherit from Default; `nil` on Default = all tools
+    /// available; `[]` = no tools (workspace-silenced); `["a","b"]` =
+    /// curated subset. Phase 4b of per-workspace-params; see
+    /// `docs/dev/per-workspace-params.md` §12.3. **No safety net**
+    /// (unlike `enabledAgents` which always allows `DefaultAgent`):
+    /// an empty list really does mean "no tools," because there's no
+    /// equivalent of "the user must always be able to escape" for
+    /// tools — running zero tools is a legitimate workspace shape
+    /// (e.g. a "private" workspace where you don't want web fetches
+    /// happening).
+    let enabledTools: [String]?
 }
 
 struct VaultConversationSummary: Identifiable, Sendable, Equatable {
@@ -311,6 +324,13 @@ actor VaultStore {
         // tools and MCP server allow-lists.
         m.registerMigration("v8_workspace_enabled_agents") { db in
             try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN enabled_agents TEXT")
+        }
+        // v9: per-workspace tool allow-list. Same JSON-encoded
+        // `[String]` pattern as `enabled_agents`. No safety net — an
+        // empty list legitimately means "no tools available in this
+        // workspace" (private / security-sensitive contexts).
+        m.registerMigration("v9_workspace_enabled_tools") { db in
+            try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN enabled_tools TEXT")
         }
         return m
     }()
@@ -677,6 +697,7 @@ actor VaultStore {
                 SELECT w.id, w.name, w.data_folder, w.created_at, w.updated_at,
                        w.system_prompt, w.temperature, w.top_p, w.max_tokens,
                        w.output_directory, w.active_agent_id, w.enabled_agents,
+                       w.enabled_tools,
                        (SELECT COUNT(*) FROM conversations c WHERE c.workspace_id = w.id) AS cnt
                     FROM workspaces w
                     ORDER BY (w.name = 'Default') DESC,
@@ -783,6 +804,7 @@ actor VaultStore {
                 SELECT w.id, w.name, w.data_folder, w.created_at, w.updated_at,
                        w.system_prompt, w.temperature, w.top_p, w.max_tokens,
                        w.output_directory, w.active_agent_id, w.enabled_agents,
+                       w.enabled_tools,
                        (SELECT COUNT(*) FROM conversations c WHERE c.workspace_id = w.id) AS cnt
                     FROM workspaces w
                     WHERE w.id = ?
@@ -809,7 +831,8 @@ actor VaultStore {
         maxTokens: ParamWrite<Int?> = .unchanged,
         outputDirectory: ParamWrite<String?> = .unchanged,
         activeAgentId: ParamWrite<String?> = .unchanged,
-        enabledAgents: ParamWrite<[String]?> = .unchanged
+        enabledAgents: ParamWrite<[String]?> = .unchanged,
+        enabledTools: ParamWrite<[String]?> = .unchanged
     ) async throws {
         var fragments: [String] = []
         var args: [DatabaseValueConvertible?] = []
@@ -845,6 +868,15 @@ actor VaultStore {
             // is impossible for `[String]` but the throwing call
             // shape forces the do/catch — we propagate the error so
             // the caller sees it instead of silently writing NULL.
+            if let v {
+                let data = try JSONEncoder().encode(v)
+                args.append(String(data: data, encoding: .utf8) ?? "[]")
+            } else {
+                args.append(nil)
+            }
+        }
+        if case .value(let v) = enabledTools {
+            fragments.append("enabled_tools = ?")
             if let v {
                 let data = try JSONEncoder().encode(v)
                 args.append(String(data: data, encoding: .utf8) ?? "[]")
@@ -888,7 +920,8 @@ actor VaultStore {
             maxTokens: (row["max_tokens"] as Int64?).map { Int($0) },
             outputDirectory: row["output_directory"],
             activeAgentId: row["active_agent_id"],
-            enabledAgents: Self.decodeStringArray(row["enabled_agents"])
+            enabledAgents: Self.decodeStringArray(row["enabled_agents"]),
+            enabledTools: Self.decodeStringArray(row["enabled_tools"])
         )
     }
 

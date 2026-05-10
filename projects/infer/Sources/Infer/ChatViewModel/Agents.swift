@@ -422,11 +422,13 @@ extension ChatViewModel {
         let currentBackend = self.currentBackendPreference
         let settings = self.settings
         let activeWorkspaceId = self.activeWorkspaceId
+        let enabledTools = self.effectiveEnabledTools
         Task { [controller = self.agentController, vault = self.vault] in
             let effects = await controller.switchAgent(
                 to: listing,
                 currentBackend: currentBackend,
-                settings: settings
+                settings: settings,
+                enabledTools: enabledTools
             )
             await MainActor.run {
                 self.apply(effects)

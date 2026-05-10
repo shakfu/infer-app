@@ -46,6 +46,14 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
     /// Same nil-fall-through semantics as the scalar axes — `??`
     /// works because the unit is the whole array.
     public var enabledAgents: [String]?
+    /// Per-workspace tool allow-list (Phase 4b). Same set-axis
+    /// cascade shape as `enabledAgents` — `nil` falls through, `[]`
+    /// is the explicit "no tools" silenced state, an array names a
+    /// curated subset. **No safety net** at the consumer (unlike
+    /// `enabledAgents` which always allows `DefaultAgent`): an
+    /// empty list legitimately means zero tools, because there's
+    /// no workflow tools must always satisfy.
+    public var enabledTools: [String]?
 
     public init(
         systemPrompt: String? = nil,
@@ -54,7 +62,8 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
         maxTokens: Int? = nil,
         outputDirectory: String? = nil,
         activeAgentId: String? = nil,
-        enabledAgents: [String]? = nil
+        enabledAgents: [String]? = nil,
+        enabledTools: [String]? = nil
     ) {
         self.systemPrompt = systemPrompt
         self.temperature = temperature
@@ -63,6 +72,7 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
         self.outputDirectory = outputDirectory
         self.activeAgentId = activeAgentId
         self.enabledAgents = enabledAgents
+        self.enabledTools = enabledTools
     }
 
     /// Two-layer cascade: each field on `active` wins when non-nil,
@@ -87,7 +97,8 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
             maxTokens: active?.maxTokens ?? defaults?.maxTokens,
             outputDirectory: active?.outputDirectory ?? defaults?.outputDirectory,
             activeAgentId: active?.activeAgentId ?? defaults?.activeAgentId,
-            enabledAgents: active?.enabledAgents ?? defaults?.enabledAgents
+            enabledAgents: active?.enabledAgents ?? defaults?.enabledAgents,
+            enabledTools: active?.enabledTools ?? defaults?.enabledTools
         )
     }
 
@@ -103,5 +114,6 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
             || outputDirectory != nil
             || activeAgentId != nil
             || enabledAgents != nil
+            || enabledTools != nil
     }
 }

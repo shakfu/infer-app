@@ -359,7 +359,8 @@ extension ChatViewModel {
             let effects = await self.agentController.activateForSegment(
                 agentId: agentId,
                 currentBackend: self.currentBackendPreference,
-                settings: self.settings
+                settings: self.settings,
+                enabledTools: self.effectiveEnabledTools
             )
             self.apply(effects)
 

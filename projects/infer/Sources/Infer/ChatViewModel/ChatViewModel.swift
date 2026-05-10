@@ -409,6 +409,14 @@ final class ChatViewModel {
     /// `MCPBuiltinTool` adapter per discovered tool. The agent loop's
     /// `invoke(name:arguments:)` path consumes the merged catalog.
     let toolRegistry = ToolRegistry()
+    /// Snapshot of tool names currently in the registry (built-ins +
+    /// plugin-registered + MCP-discovered). Refreshed on demand by
+    /// `refreshAvailableToolNames`; consumed by the per-workspace
+    /// "Available tools" disclosure in `WorkspaceSettingsInline`
+    /// which needs to enumerate every tool in order to render
+    /// per-row checkboxes. Sorted alphabetically so the rendered
+    /// list is stable across refreshes.
+    var availableToolNames: [String] = []
 
     /// Owns the running MCP server subprocesses. Bootstrapped during
     /// `bootstrapAgents` from `~/Library/Application Support/Infer/mcp/`
