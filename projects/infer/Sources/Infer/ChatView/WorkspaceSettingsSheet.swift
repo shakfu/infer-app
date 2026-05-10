@@ -2,72 +2,87 @@ import SwiftUI
 import AppKit
 import InferAgents
 
-/// Inline workspace settings — name, data folder, RAG status, retrieval
-/// toggles, stats, delete — surfaced as collapsible disclosures inside
-/// `WikiSidebar`. Replaces the modal `WorkspaceSheet` for the editing
-/// path; creation still goes through the modal because the
-/// "name a new thing" flow is a single decision point that benefits
-/// from focus.
+/// Workspace settings sheet — modal panel opened from the cog button
+/// in the wiki sidebar's footer. Tabbed into three sections: General
+/// (identity + storage + reset/delete), Agents & Tools (the three
+/// Phase 4 allow-lists), and RAG (corpus controls). For the Default
+/// workspace the panel edits the global floor (name disabled,
+/// "delete" replaced by a parameter-reset button); for other
+/// workspaces it edits that workspace's overrides + identity.
 ///
-/// Saves are explicit (Apply button per section) rather than per-
-/// keystroke so partial edits don't churn the vault. The state lives
-/// locally and is reseeded any time the active workspace changes;
-/// dirty state is exposed via `hasPendingNameOrFolder` so the Apply
-/// button can be disabled when nothing has changed.
-struct WorkspaceSettingsInline: View {
+/// Phase 1 inference parameters (system prompt, temperature, top-p,
+/// max tokens) are deliberately NOT in this panel — they stay in the
+/// right-sidebar Parameters disclosure where the user adjusts them
+/// during a session. This panel is the workspace-identity surface,
+/// not the runtime-tuning one.
+///
+/// Replaces the prior inline-disclosure embedding in `WikiSidebar`'s
+/// scroll view (file kept at the same path for git-history
+/// continuity; struct renamed).
+struct WorkspaceSettingsSheet: View {
     @Bindable var vm: ChatViewModel
     let workspace: WorkspaceSummary
+    @Binding var isPresented: Bool
 
-    /// Section open/closed state — persisted via @AppStorage so the
-    /// user's last fold state survives relaunch.
-    @AppStorage("infer.wiki.sidebar.fold.workspace") private var workspaceFoldOpen: Bool = true
-    @AppStorage("infer.wiki.sidebar.fold.rag") private var ragFoldOpen: Bool = false
-
+    @State private var selectedTab: Tab = .general
     @State private var name: String = ""
     @State private var dataFolder: String = ""
     @State private var outputDirectory: String = ""
     @State private var seededWorkspaceId: Int64 = -1
     @State private var confirmDelete: Bool = false
     @State private var confirmReset: Bool = false
-    @State private var availableAgentsOpen: Bool = false
-    @State private var availableToolsOpen: Bool = false
-    @State private var availableMCPServersOpen: Bool = false
+    // (Phase 4 disclosure-fold state removed — each allow-list now
+    //  has its own tab in the workspace settings sheet, so the
+    //  inline collapsibility is redundant.)
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            workspaceDisclosure
-            ragDisclosure
+    enum Tab: String, CaseIterable, Identifiable {
+        case general
+        case agents
+        case tools
+        case mcpServers
+        case rag
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .general: return "General"
+            case .agents: return "Agents"
+            case .tools: return "Tools"
+            case .mcpServers: return "MCP"
+            case .rag: return "RAG"
+            }
         }
-        .onAppear { seedFields(force: false) }
-        .onChange(of: workspace.id) { _, _ in seedFields(force: true) }
+        var icon: String {
+            switch self {
+            case .general: return "gearshape"
+            case .agents: return "person.crop.circle"
+            case .tools: return "wrench.and.screwdriver"
+            case .mcpServers: return "server.rack"
+            case .rag: return "doc.text.magnifyingglass"
+            }
+        }
     }
 
-    // MARK: - Disclosures
-
-    private var workspaceDisclosure: some View {
-        DisclosureGroup(isExpanded: $workspaceFoldOpen) {
-            VStack(alignment: .leading, spacing: 8) {
-                nameField
-                dataFolderField
-                outputDirectoryField
-                availableAgentsDisclosure
-                availableToolsDisclosure
-                availableMCPServersDisclosure
-                metadataRow
-                deleteRow
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            tabBar
+            Divider()
+            ScrollView {
+                tabContent
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.top, 4)
-        } label: {
-            Text("Workspace")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 10)
+        .frame(minWidth: 480, idealWidth: 520, minHeight: 480, idealHeight: 560)
+        .onAppear { seedFields(force: false) }
+        .onChange(of: workspace.id) { _, _ in seedFields(force: true) }
         .alert("Delete workspace?",
                isPresented: $confirmDelete,
                actions: {
                    Button("Delete", role: .destructive) {
                        vm.deleteWorkspace(id: workspace.id)
+                       isPresented = false
                    }
                    Button("Cancel", role: .cancel) {}
                },
@@ -76,22 +91,119 @@ struct WorkspaceSettingsInline: View {
                })
     }
 
-    private var ragDisclosure: some View {
-        DisclosureGroup(isExpanded: $ragFoldOpen) {
-            VStack(alignment: .leading, spacing: 8) {
-                embeddingModelStatus
-                if !dataFolder.isEmpty {
-                    scanSection
-                }
-                retrievalTogglesSection
-            }
-            .padding(.top, 4)
-        } label: {
-            Text("RAG corpus")
-                .font(.caption)
+    // MARK: - Chrome
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "gearshape")
+                .font(.title3)
                 .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(vm.isDefaultWorkspace(workspace.id) ? "Default workspace settings" : "Workspace settings")
+                    .font(.headline)
+                Text(workspace.name)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Done") { isPresented = false }
+                .keyboardShortcut(.defaultAction)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private var tabBar: some View {
+        HStack(spacing: 0) {
+            ForEach(Tab.allCases) { tab in
+                let isSelected = selectedTab == tab
+                Button {
+                    selectedTab = tab
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: tab.icon)
+                        Text(tab.label)
+                    }
+                    .font(.callout)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+                    .background(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var tabContent: some View {
+        switch selectedTab {
+        case .general: generalTab
+        case .agents: agentsTab
+        case .tools: toolsTab
+        case .mcpServers: mcpServersTab
+        case .rag: ragTab
+        }
+    }
+
+    // MARK: - Tabs
+
+    private var generalTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            nameField
+            dataFolderField
+            outputDirectoryField
+            Divider()
+            metadataRow
+            deleteRow
+        }
+    }
+
+    private var agentsTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            AllowListStatusBanner(
+                title: agentsBannerTitle,
+                detail: agentsBannerDetail,
+                isOverriding: workspace.enabledAgents != nil,
+                onClearOverride: { vm.setWorkspaceEnabledAgents(id: workspace.id, ids: nil) }
+            )
+            agentsToggleList
+        }
+    }
+
+    private var toolsTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            AllowListStatusBanner(
+                title: toolsBannerTitle,
+                detail: toolsBannerDetail,
+                isOverriding: workspace.enabledTools != nil,
+                onClearOverride: { vm.setWorkspaceEnabledTools(id: workspace.id, ids: nil) }
+            )
+            toolsToggleList
+        }
+    }
+
+    private var mcpServersTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            AllowListStatusBanner(
+                title: mcpServersBannerTitle,
+                detail: mcpServersBannerDetail,
+                isOverriding: workspace.enabledMCPServers != nil,
+                onClearOverride: { vm.setWorkspaceEnabledMCPServers(id: workspace.id, ids: nil) }
+            )
+            mcpServersToggleList
+        }
+    }
+
+    private var ragTab: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            embeddingModelStatus
+            if !dataFolder.isEmpty {
+                scanSection
+            }
+            retrievalTogglesSection
+        }
     }
 
     // MARK: - Workspace fields
@@ -211,49 +323,16 @@ struct WorkspaceSettingsInline: View {
         }
     }
 
-    /// Per-workspace allow-list of agents visible in the picker /
-    /// library for THIS workspace. Phase 4a of per-workspace-params.
-    /// Collapsed by default — most users don't need to curate this
-    /// per-workspace, and unfolding it surfaces the full agent
-    /// catalogue which is long.
-    ///
-    /// Layout: header summarises current state (`(allow-list active)`
-    /// / `(inheriting Default)` / `(everything available)`), with a
-    /// `↺ Default` button when this row's `enabled_agents` column
-    /// is non-NULL. The unfolded body lists every known agent with
-    /// a checkbox; toggling fires `vm.toggleAgentInAllowList`,
-    /// which materialises an explicit list on first toggle (so
-    /// flipping a single switch produces "everything except this"
-    /// rather than "only this").
-    @ViewBuilder
-    private var availableAgentsDisclosure: some View {
-        DisclosureGroup(isExpanded: $availableAgentsOpen) {
-            availableAgentsBody
-        } label: {
-            HStack(spacing: 6) {
-                Text("Available agents").font(.caption2).foregroundStyle(.secondary)
-                Text(availableAgentsSummary)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                if workspace.enabledAgents != nil {
-                    Button {
-                        vm.setWorkspaceEnabledAgents(id: workspace.id, ids: nil)
-                    } label: {
-                        Label("Default", systemImage: "arrow.uturn.backward")
-                            .labelStyle(.titleAndIcon)
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.borderless)
-                    .controlSize(.mini)
-                    .foregroundStyle(.secondary)
-                    .help("Clear this workspace's allow-list; falls back to the Default workspace's list.")
-                }
-                Spacer()
-            }
-        }
-    }
-
-    private var availableAgentsBody: some View {
+    /// Per-row toggle grid for the Phase 4a agents allow-list.
+    /// Banner above the grid (`AllowListStatusBanner` driven by
+    /// `agentsBannerTitle` / `agentsBannerDetail`) communicates the
+    /// effective state and offers a clear-override action;
+    /// previously this was a cryptic `(N allowed)` chip on a
+    /// disclosure header. Toggling a row fires
+    /// `vm.toggleAgentInAllowList`, which materialises an explicit
+    /// list on first toggle (so flipping a single switch produces
+    /// "everything except this" rather than "only this").
+    private var agentsToggleList: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(vm.availableAgents) { listing in
                 let agentId = listing.id
@@ -299,45 +378,13 @@ struct WorkspaceSettingsInline: View {
         .padding(.top, 4)
     }
 
-    /// Per-workspace allow-list of tools available to the active
-    /// agent. Phase 4b — sibling of `availableAgentsDisclosure`.
-    /// Same rendering shape: collapsed by default, header summary,
-    /// `↺ Default` button when this row's `enabled_tools` column
-    /// is non-NULL. Body lists every tool currently in the registry
-    /// (`vm.availableToolNames`, snapshotted onAppear so MCP-
-    /// discovered tools that register at runtime are visible) with
-    /// per-row checkboxes. **No safety net** — DefaultAgent stays
-    /// available even when every tool is silenced; the empty list
-    /// is a legitimate "no tools" workspace shape.
-    @ViewBuilder
-    private var availableToolsDisclosure: some View {
-        DisclosureGroup(isExpanded: $availableToolsOpen) {
-            availableToolsBody
-        } label: {
-            HStack(spacing: 6) {
-                Text("Available tools").font(.caption2).foregroundStyle(.secondary)
-                Text(availableToolsSummary)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                if workspace.enabledTools != nil {
-                    Button {
-                        vm.setWorkspaceEnabledTools(id: workspace.id, ids: nil)
-                    } label: {
-                        Label("Default", systemImage: "arrow.uturn.backward")
-                            .labelStyle(.titleAndIcon)
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.borderless)
-                    .controlSize(.mini)
-                    .foregroundStyle(.secondary)
-                    .help("Clear this workspace's tool allow-list; falls back to the Default workspace's list.")
-                }
-                Spacer()
-            }
-        }
-    }
-
-    private var availableToolsBody: some View {
+    /// Per-row toggle grid for the Phase 4b tools allow-list.
+    /// Same flat shape as `agentsToggleList`. Universe is whatever
+    /// tools are currently in the registry (`vm.availableToolNames`,
+    /// snapshotted at `bootstrapAgents` end and re-snapshotted on
+    /// sheet appear so MCP-discovered tools register-at-runtime
+    /// show up).
+    private var toolsToggleList: some View {
         VStack(alignment: .leading, spacing: 4) {
             if vm.availableToolNames.isEmpty {
                 Text("No tools registered yet.")
@@ -372,54 +419,9 @@ struct WorkspaceSettingsInline: View {
         .padding(.top, 4)
     }
 
-    private var availableToolsSummary: String {
-        if let allow = workspace.enabledTools {
-            return "(\(allow.count) allowed)"
-        }
-        if vm.isDefaultWorkspace(workspace.id) {
-            return "(everything available)"
-        }
-        return "(inheriting Default)"
-    }
-
-    /// Per-workspace allow-list of MCP servers whose tools are
-    /// exposed to the active agent. Phase 4c. Same disclosure shape
-    /// as agents/tools — collapsed by default, header summary,
-    /// `↺ Default` button when this row's `enabled_mcp_servers` is
-    /// non-NULL. The body lists every running / configured server
-    /// from `vm.mcpServers` (the existing `@Observable` summary
-    /// mirror); toggling a server flips its membership and triggers
-    /// a force-refresh of the active agent's tool specs so the
-    /// effect lands on the next turn.
-    @ViewBuilder
-    private var availableMCPServersDisclosure: some View {
-        DisclosureGroup(isExpanded: $availableMCPServersOpen) {
-            availableMCPServersBody
-        } label: {
-            HStack(spacing: 6) {
-                Text("Available MCP servers").font(.caption2).foregroundStyle(.secondary)
-                Text(availableMCPServersSummary)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                if workspace.enabledMCPServers != nil {
-                    Button {
-                        vm.setWorkspaceEnabledMCPServers(id: workspace.id, ids: nil)
-                    } label: {
-                        Label("Default", systemImage: "arrow.uturn.backward")
-                            .labelStyle(.titleAndIcon)
-                            .font(.caption2)
-                    }
-                    .buttonStyle(.borderless)
-                    .controlSize(.mini)
-                    .foregroundStyle(.secondary)
-                    .help("Clear this workspace's MCP server allow-list; falls back to the Default workspace's list.")
-                }
-                Spacer()
-            }
-        }
-    }
-
-    private var availableMCPServersBody: some View {
+    /// Per-row toggle grid for the Phase 4c MCP server allow-list.
+    /// Same flat shape as `agentsToggleList` / `toolsToggleList`.
+    private var mcpServersToggleList: some View {
         VStack(alignment: .leading, spacing: 4) {
             if vm.mcpServers.isEmpty {
                 Text("No MCP servers configured.")
@@ -459,32 +461,92 @@ struct WorkspaceSettingsInline: View {
         .padding(.top, 4)
     }
 
-    private var availableMCPServersSummary: String {
-        if let allow = workspace.enabledMCPServers {
-            return "(\(allow.count) allowed)"
+    // MARK: - Banner state strings
+    //
+    // Each tab's banner reads from its workspace column and the
+    // active workspace's id-vs-Default check. `enabledX != nil`
+    // means an explicit override is stored (possibly the empty
+    // array for "silenced"); `enabledX == nil` means the cascade
+    // falls through. The wording deliberately spells out what's
+    // happening — replaces the old `(N allowed)` chip that left
+    // users guessing what state they were in.
+
+    private var agentsBannerTitle: String {
+        if let allow = workspace.enabledAgents {
+            if allow.isEmpty {
+                return "Only DefaultAgent available"
+            }
+            return "\(allow.count) of \(vm.availableAgents.count) agents available"
         }
         if vm.isDefaultWorkspace(workspace.id) {
-            return "(everything available)"
+            return "All agents available"
         }
-        return "(inheriting Default)"
+        return "Inheriting from Default"
     }
 
-    /// One-liner status the disclosure header shows next to the
-    /// title so the user can tell at a glance whether their
-    /// workspace overrides the list or inherits.
-    private var availableAgentsSummary: String {
+    private var agentsBannerDetail: String {
         if let allow = workspace.enabledAgents {
-            // Explicit list on this row.
-            let count = allow.count
-            return "(\(count) allowed)"
+            if allow.isEmpty {
+                return "This workspace silences every agent. DefaultAgent stays available — it's the safety net so you can never lock yourself out."
+            }
+            return "This workspace overrides the Default workspace's agent list. Toggle agents below to edit; click Use Default to clear."
         }
-        // Inheriting from the cascade. Distinguish "this is Default
-        // and inherits 'everything'" from "this is non-Default and
-        // inherits Default's list."
         if vm.isDefaultWorkspace(workspace.id) {
-            return "(everything available)"
+            return "Default workspace inherits no further. Toggling any agent below starts an explicit list — the safety net keeps DefaultAgent always on."
         }
-        return "(inheriting Default)"
+        return "Falling back to the Default workspace's list. Toggle any agent below to start customizing this workspace."
+    }
+
+    private var toolsBannerTitle: String {
+        if let allow = workspace.enabledTools {
+            if allow.isEmpty {
+                return "No tools available"
+            }
+            return "\(allow.count) of \(vm.availableToolNames.count) tools available"
+        }
+        if vm.isDefaultWorkspace(workspace.id) {
+            return "All tools available"
+        }
+        return "Inheriting from Default"
+    }
+
+    private var toolsBannerDetail: String {
+        if let allow = workspace.enabledTools {
+            if allow.isEmpty {
+                return "Workspace-silenced — the active agent will see no tools in its prompt. Legitimate for security-sensitive contexts."
+            }
+            return "This workspace overrides the Default workspace's tool list. Tools whose owning MCP server is disabled (in the MCP tab) are also subtracted — composition is automatic."
+        }
+        if vm.isDefaultWorkspace(workspace.id) {
+            return "Default workspace inherits no further. Toggling any tool below starts an explicit list."
+        }
+        return "Falling back to the Default workspace's list. Toggle any tool below to customize."
+    }
+
+    private var mcpServersBannerTitle: String {
+        if let allow = workspace.enabledMCPServers {
+            if allow.isEmpty {
+                return "No MCP-derived tools available"
+            }
+            return "\(allow.count) of \(vm.mcpServers.count) servers' tools available"
+        }
+        if vm.isDefaultWorkspace(workspace.id) {
+            return "All MCP servers' tools available"
+        }
+        return "Inheriting from Default"
+    }
+
+    private var mcpServersBannerDetail: String {
+        if let allow = workspace.enabledMCPServers {
+            if allow.isEmpty {
+                return "Every MCP server's tools are removed from this workspace's agent prompt. The servers themselves stay running — this is a per-workspace visibility filter, not a subprocess gate."
+            }
+            return "Tools from disallowed servers are removed from this workspace's agent prompt. Visibility filter only — the servers themselves keep running."
+        }
+        if vm.isDefaultWorkspace(workspace.id) {
+            return "Default workspace inherits no further. Toggling any server below starts an explicit list."
+        }
+        return "Falling back to the Default workspace's list. Toggle any server below to customize."
     }
 
     private var metadataRow: some View {
@@ -744,5 +806,47 @@ struct WorkspaceSettingsInline: View {
         f.dateStyle = .short
         f.timeStyle = .none
         return f.string(from: date)
+    }
+}
+
+/// Status banner used at the top of each Phase 4 allow-list tab in
+/// the workspace settings sheet. Replaces the prior cryptic
+/// `(N allowed)` disclosure-header chip with a sentence-form
+/// description of the current effective state and a clear-override
+/// action when applicable. Tinted background sets it apart from the
+/// per-row toggle list below; the rounded panel idiom matches
+/// macOS settings-sheet conventions.
+private struct AllowListStatusBanner: View {
+    let title: String
+    let detail: String
+    let isOverriding: Bool
+    let onClearOverride: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.callout.weight(.medium))
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            if isOverriding {
+                Button {
+                    onClearOverride()
+                } label: {
+                    Label("Use Default", systemImage: "arrow.uturn.backward")
+                        .font(.caption)
+                }
+                .controlSize(.small)
+                .help("Clear this workspace's override; falls back to the Default workspace's list.")
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }

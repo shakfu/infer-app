@@ -55,6 +55,11 @@ struct WikiSidebar: View {
     @Bindable var vm: ChatViewModel
     @State private var promptingNewFolder = false
     @State private var newFolderName = ""
+    /// Drives the workspace-settings sheet presentation. Opened by
+    /// the cog button in the footer; auto-closes if the active
+    /// workspace changes mid-edit so the sheet always reflects the
+    /// workspace the user thinks they're editing.
+    @State private var showingWorkspaceSettings = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -66,11 +71,6 @@ struct WikiSidebar: View {
                 ScrollView {
                     VStack(spacing: 8) {
                         pageList
-                        Divider().padding(.vertical, 4)
-                        if let active = vm.workspaces.first(where: { $0.id == vm.activeWorkspaceId }) {
-                            WorkspaceSettingsInline(vm: vm, workspace: active)
-                                .padding(.bottom, 8)
-                        }
                     }
                 }
             }
@@ -79,7 +79,22 @@ struct WikiSidebar: View {
         }
         .frame(maxHeight: .infinity)
         .onAppear { vm.refreshWiki() }
-        .onChange(of: vm.activeWorkspaceId) { _, _ in vm.refreshWiki() }
+        .onChange(of: vm.activeWorkspaceId) { _, _ in
+            vm.refreshWiki()
+            // Close the settings sheet on workspace switch so the
+            // user never sees the sheet pinned to a workspace
+            // they're no longer in.
+            showingWorkspaceSettings = false
+        }
+        .sheet(isPresented: $showingWorkspaceSettings) {
+            if let active = vm.workspaces.first(where: { $0.id == vm.activeWorkspaceId }) {
+                WorkspaceSettingsSheet(
+                    vm: vm,
+                    workspace: active,
+                    isPresented: $showingWorkspaceSettings
+                )
+            }
+        }
     }
 
     // MARK: - Sections
@@ -203,22 +218,38 @@ struct WikiSidebar: View {
 
     @ViewBuilder
     private var footer: some View {
-        if let stats = vm.wikiContextStats {
-            HStack(spacing: 4) {
-                Image(systemName: "pin.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-                Text("\(stats.pageCount)/\(WikiStore.maxPinCount) pinned · ~\(formattedTokens(stats.approximateTokens)) tok every turn")
-                    .font(.caption2)
+        HStack(spacing: 8) {
+            // Cog at the bottom-left opens the modal workspace
+            // settings sheet for the active workspace. Replaces the
+            // prior inline-disclosure embedding above the footer.
+            Button {
+                showingWorkspaceSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
-                Spacer()
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .help("Pinned pages always inject. The rest of the wiki is searchable via RAG (when the embedding model is downloaded).")
-        } else {
-            EmptyView()
+            .buttonStyle(.borderless)
+            .help(vm.isDefaultWorkspace(vm.activeWorkspaceId ?? -1)
+                ? "Default workspace settings (global defaults for new workspaces)"
+                : "Workspace settings")
+            .disabled(vm.activeWorkspaceId == nil)
+
+            if let stats = vm.wikiContextStats {
+                HStack(spacing: 4) {
+                    Image(systemName: "pin.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                    Text("\(stats.pageCount)/\(WikiStore.maxPinCount) pinned · ~\(formattedTokens(stats.approximateTokens)) tok every turn")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .help("Pinned pages always inject. The rest of the wiki is searchable via RAG (when the embedding model is downloaded).")
+            }
+            Spacer()
         }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
     }
 
     /// Compact token formatter — "8.2k" instead of "8200" so the
