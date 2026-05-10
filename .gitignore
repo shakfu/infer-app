@@ -11,6 +11,8 @@ __pycache__/
 .*_cache
 .cache
 
+REVIEW.md
+
 ## User settings
 xcuserdata/
 

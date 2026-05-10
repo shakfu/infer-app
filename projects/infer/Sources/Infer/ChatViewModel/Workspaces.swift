@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import InferAgents
 import InferAppCore
 import InferCore
 import InferRAG
@@ -75,6 +76,7 @@ extension ChatViewModel {
                     self.workspaces = list
                     self.restoreActiveWorkspaceSelection()
                     self.recomposeSettingsFromActiveWorkspace(applyToRunners: false)
+                    self.recomposeActiveAgentFromActiveWorkspace(insertDivider: false)
                 }
             } catch {
                 self.logs.logFromBackground(
@@ -172,6 +174,7 @@ extension ChatViewModel {
             logs.log(.info, source: "workspaces", message: "switched to \(name)")
         }
         recomposeSettingsFromActiveWorkspace(applyToRunners: true)
+        recomposeActiveAgentFromActiveWorkspace(insertDivider: true)
     }
 
     /// Resolve the four per-workspace fields (`systemPrompt`,
@@ -207,7 +210,8 @@ extension ChatViewModel {
             temperature: row.temperature,
             topP: row.topP,
             maxTokens: row.maxTokens,
-            outputDirectory: row.outputDirectory
+            outputDirectory: row.outputDirectory,
+            activeAgentId: row.activeAgentId
         )
     }
 
@@ -281,6 +285,95 @@ extension ChatViewModel {
         } else {
             settings = effective
         }
+    }
+
+    /// Resolve the effective active-agent id from the workspace
+    /// cascade and align `agentController.activeAgentId` with it.
+    /// Called from boot (`insertDivider: false`, runs through the
+    /// silent `activateForSegment` path which produces only
+    /// runner-state effects) and from workspace switch
+    /// (`insertDivider: true`, runs through the full `switchAgent`
+    /// path which prepends a transcript divider and invalidates the
+    /// vault conversation row, same as a manual agent switch).
+    ///
+    /// **Graceful degradation.** If the resolved agent id isn't
+    /// listed in `availableAgents` (registry evicted it, or it
+    /// requires a backend the active runner doesn't speak), fall
+    /// back to `DefaultAgent.id`. Three reasons this can fire:
+    /// (1) the saved agent id was a persona the user later deleted;
+    /// (2) the workspace's saved agent is incompatible with the
+    /// currently-active backend (e.g. a vision-only agent saved
+    /// while llama is loaded); (3) Phase 4's tool allow-list
+    /// later disables the tools the saved agent depends on. The
+    /// caller's UI still works because `DefaultAgent` is always
+    /// compatible.
+    @MainActor
+    func recomposeActiveAgentFromActiveWorkspace(insertDivider: Bool) {
+        let resolved = WorkspaceParamCascade.resolve(
+            active: activeWorkspace.map(Self.cascade(from:)),
+            defaults: workspaces.min(by: { $0.id < $1.id }).map(Self.cascade(from:))
+        )
+        // No persisted preference at either layer → leave the
+        // controller at whatever it was. Boot leaves it at
+        // `DefaultAgent.id`; subsequent calls leave the running
+        // agent untouched.
+        guard let rawId = resolved.activeAgentId, !rawId.isEmpty else { return }
+        let target = AgentID(rawValue: rawId)
+        guard target != agentController.activeAgentId else { return }
+        // Find the listing and check compatibility; fall back to
+        // Default if the saved id is no longer reachable.
+        let backend = currentBackendPreference
+        let candidate = availableAgents.first { $0.id == target }
+        let listing: AgentListing
+        if let candidate, agentController.isCompatible(candidate, backend: backend) {
+            listing = candidate
+        } else {
+            // Saved id is unreachable — unknown / evicted / incompatible.
+            // Fall back to Default; that listing is always present
+            // (it's the synthetic Default entry the controller
+            // always exposes) and always compatible.
+            guard let fallback = availableAgents.first(where: { $0.id == DefaultAgent.id }) else {
+                return
+            }
+            // If we already have Default active, no-op.
+            guard fallback.id != agentController.activeAgentId else { return }
+            listing = fallback
+            logs.log(
+                .warning,
+                source: "agents",
+                message: "workspace's saved agent '\(rawId)' is unreachable for backend \(backend); falling back to Default"
+            )
+        }
+        let settingsSnapshot = self.settings
+        let mode: AgentRecomposeMode = insertDivider ? .switchAgent : .activateForSegment
+        Task { [controller = self.agentController] in
+            let effects: [AgentEffect]
+            switch mode {
+            case .switchAgent:
+                effects = await controller.switchAgent(
+                    to: listing,
+                    currentBackend: backend,
+                    settings: settingsSnapshot
+                )
+            case .activateForSegment:
+                effects = await controller.activateForSegment(
+                    agentId: listing.id,
+                    currentBackend: backend,
+                    settings: settingsSnapshot
+                )
+            }
+            await MainActor.run { self.apply(effects) }
+        }
+    }
+
+    /// Indirection for `recomposeActiveAgentFromActiveWorkspace` so the
+    /// boot-vs-switch dispatch is at the call site rather than buried
+    /// in a string flag. Boot wants the silent activation path
+    /// (`activateForSegment`); workspace switch wants the full path
+    /// (`switchAgent`) including the transcript divider.
+    private enum AgentRecomposeMode {
+        case switchAgent
+        case activateForSegment
     }
 
     /// Create a new workspace and switch to it. Shown in the "New

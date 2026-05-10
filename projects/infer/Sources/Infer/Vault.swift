@@ -38,6 +38,12 @@ struct WorkspaceSummary: Identifiable, Sendable, Equatable {
     /// per-workspace-params feature; see
     /// `docs/dev/per-workspace-params.md`.
     let outputDirectory: String?
+    /// Per-workspace active agent / persona id (raw `AgentID` value).
+    /// `nil` = inherit from Default's row, then to the synthetic
+    /// `DefaultAgent.id`. Phase 3 of per-workspace-params; see
+    /// `docs/dev/per-workspace-params.md` §12.5 for the
+    /// graceful-degradation flow on workspace switch.
+    let activeAgentId: String?
 }
 
 struct VaultConversationSummary: Identifiable, Sendable, Equatable {
@@ -270,6 +276,18 @@ actor VaultStore {
         // existing users see no change without a data write.
         m.registerMigration("v6_workspace_output_dir") { db in
             try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN output_directory TEXT")
+        }
+        // v7: per-workspace active agent / persona id. `NULL` =
+        // inherit from Default; if both are NULL the chat-VM falls
+        // back to the synthetic `DefaultAgent.id`. Phase 3 of the
+        // per-workspace-params feature. There is no legacy
+        // `UserDefaults` source to seed Default with — `activeAgentId`
+        // was never persisted before this migration; it defaulted to
+        // `DefaultAgent.id` on every launch. So Default's column
+        // stays NULL on first v7 launch and the existing default
+        // behaviour is preserved without a data write.
+        m.registerMigration("v7_workspace_active_agent") { db in
+            try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN active_agent_id TEXT")
         }
         return m
     }()
@@ -635,7 +653,7 @@ actor VaultStore {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT w.id, w.name, w.data_folder, w.created_at, w.updated_at,
                        w.system_prompt, w.temperature, w.top_p, w.max_tokens,
-                       w.output_directory,
+                       w.output_directory, w.active_agent_id,
                        (SELECT COUNT(*) FROM conversations c WHERE c.workspace_id = w.id) AS cnt
                     FROM workspaces w
                     ORDER BY (w.name = 'Default') DESC,
@@ -741,7 +759,7 @@ actor VaultStore {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT w.id, w.name, w.data_folder, w.created_at, w.updated_at,
                        w.system_prompt, w.temperature, w.top_p, w.max_tokens,
-                       w.output_directory,
+                       w.output_directory, w.active_agent_id,
                        (SELECT COUNT(*) FROM conversations c WHERE c.workspace_id = w.id) AS cnt
                     FROM workspaces w
                     WHERE w.id = ?
@@ -766,7 +784,8 @@ actor VaultStore {
         temperature: ParamWrite<Double?> = .unchanged,
         topP: ParamWrite<Double?> = .unchanged,
         maxTokens: ParamWrite<Int?> = .unchanged,
-        outputDirectory: ParamWrite<String?> = .unchanged
+        outputDirectory: ParamWrite<String?> = .unchanged,
+        activeAgentId: ParamWrite<String?> = .unchanged
     ) async throws {
         var fragments: [String] = []
         var args: [DatabaseValueConvertible?] = []
@@ -788,6 +807,10 @@ actor VaultStore {
         }
         if case .value(let v) = outputDirectory {
             fragments.append("output_directory = ?")
+            args.append(v)
+        }
+        if case .value(let v) = activeAgentId {
+            fragments.append("active_agent_id = ?")
             args.append(v)
         }
         guard !fragments.isEmpty else { return }
@@ -824,7 +847,8 @@ actor VaultStore {
             temperature: row["temperature"],
             topP: row["top_p"],
             maxTokens: (row["max_tokens"] as Int64?).map { Int($0) },
-            outputDirectory: row["output_directory"]
+            outputDirectory: row["output_directory"],
+            activeAgentId: row["active_agent_id"]
         )
     }
 

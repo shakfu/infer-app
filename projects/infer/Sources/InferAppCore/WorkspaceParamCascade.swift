@@ -23,19 +23,29 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
     /// at the active layer falls through to Default; `nil` at both
     /// means the chat-VM substitutes the legacy hardcoded path.
     public var outputDirectory: String?
+    /// Per-workspace active agent / persona id (Phase 3). Stored as
+    /// the raw `AgentID` rawValue (a String). `nil` at the active
+    /// layer falls through to Default; `nil` at both means the
+    /// synthetic `DefaultAgent.id`. Graceful degradation if the
+    /// resolved id is missing from the registry or incompatible with
+    /// the current backend lives in the chat-VM, not here — this
+    /// type just resolves the cascade.
+    public var activeAgentId: String?
 
     public init(
         systemPrompt: String? = nil,
         temperature: Double? = nil,
         topP: Double? = nil,
         maxTokens: Int? = nil,
-        outputDirectory: String? = nil
+        outputDirectory: String? = nil,
+        activeAgentId: String? = nil
     ) {
         self.systemPrompt = systemPrompt
         self.temperature = temperature
         self.topP = topP
         self.maxTokens = maxTokens
         self.outputDirectory = outputDirectory
+        self.activeAgentId = activeAgentId
     }
 
     /// Two-layer cascade: each field on `active` wins when non-nil,
@@ -58,7 +68,8 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
             temperature: active?.temperature ?? defaults?.temperature,
             topP: active?.topP ?? defaults?.topP,
             maxTokens: active?.maxTokens ?? defaults?.maxTokens,
-            outputDirectory: active?.outputDirectory ?? defaults?.outputDirectory
+            outputDirectory: active?.outputDirectory ?? defaults?.outputDirectory,
+            activeAgentId: active?.activeAgentId ?? defaults?.activeAgentId
         )
     }
 
@@ -72,5 +83,6 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
             || topP != nil
             || maxTokens != nil
             || outputDirectory != nil
+            || activeAgentId != nil
     }
 }

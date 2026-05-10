@@ -410,10 +410,19 @@ extension ChatViewModel {
     /// Swap the active agent for the current conversation. Delegates
     /// state to the controller and applies the returned effects to the
     /// VM (transcript, runners, vault id).
+    ///
+    /// Phase 3: also persists the selection to the active workspace's
+    /// `active_agent_id` column so the choice sticks across restarts
+    /// and across workspace switches. Persistence is gated on
+    /// `effects.isEmpty == false` — the controller returns an empty
+    /// effects array when the target is incompatible or already
+    /// active, and we don't want to write a no-op to the workspace
+    /// row in either case.
     func switchAgent(to listing: AgentListing) {
         let currentBackend = self.currentBackendPreference
         let settings = self.settings
-        Task { [controller = self.agentController] in
+        let activeWorkspaceId = self.activeWorkspaceId
+        Task { [controller = self.agentController, vault = self.vault] in
             let effects = await controller.switchAgent(
                 to: listing,
                 currentBackend: currentBackend,
@@ -428,6 +437,21 @@ extension ChatViewModel {
                         message: "switched to \(listing.name)"
                     )
                 }
+            }
+            guard !effects.isEmpty, let workspaceId = activeWorkspaceId else { return }
+            do {
+                try await vault.setWorkspaceParams(
+                    id: workspaceId,
+                    activeAgentId: .value(listing.id.rawValue)
+                )
+                await MainActor.run { self.refreshWorkspaces() }
+            } catch {
+                self.logs.logFromBackground(
+                    .error,
+                    source: "workspaces",
+                    message: "failed to persist active agent to workspace",
+                    payload: String(describing: error)
+                )
             }
         }
     }

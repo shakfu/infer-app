@@ -174,4 +174,56 @@ final class WorkspaceParamCascadeTests: XCTestCase {
         XCTAssertTrue(WorkspaceParamCascade(outputDirectory: "/x").hasAnyOverride)
         XCTAssertTrue(WorkspaceParamCascade(outputDirectory: "").hasAnyOverride)
     }
+
+    // MARK: - activeAgentId (Phase 3)
+
+    func testActiveAgentIdFallsThroughToDefaults() {
+        let defaults = WorkspaceParamCascade(activeAgentId: "default-agent")
+        let r = WorkspaceParamCascade.resolve(active: nil, defaults: defaults)
+        XCTAssertEqual(r.activeAgentId, "default-agent")
+    }
+
+    func testActiveAgentIdActiveOverridesDefault() {
+        let defaults = WorkspaceParamCascade(activeAgentId: "default")
+        let active = WorkspaceParamCascade(activeAgentId: "code-helper")
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.activeAgentId, "code-helper")
+    }
+
+    func testActiveAgentIdIndependentFromOtherAxes() {
+        // Active workspace pins an agent but inherits sampling +
+        // outputDirectory from defaults. Confirms activeAgentId is
+        // an independent cascade axis.
+        let defaults = WorkspaceParamCascade(
+            systemPrompt: "default sp",
+            temperature: 0.7,
+            outputDirectory: "/path/to/x",
+            activeAgentId: "default-agent"
+        )
+        let active = WorkspaceParamCascade(activeAgentId: "researcher")
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.activeAgentId, "researcher")
+        XCTAssertEqual(r.systemPrompt, "default sp")
+        XCTAssertEqual(r.temperature, 0.7)
+        XCTAssertEqual(r.outputDirectory, "/path/to/x")
+    }
+
+    func testActiveAgentIdEmptyStringIsAnOverride() {
+        // Symmetric with the systemPrompt / outputDirectory cases:
+        // empty string is a real override, distinct from nil.
+        // The chat-VM's `recomposeActiveAgentFromActiveWorkspace`
+        // guards on `rawId.isEmpty` and treats empty as no-op so
+        // empty overrides don't reach the activation pipeline,
+        // but the cascade resolver itself must honour what it's
+        // given.
+        let defaults = WorkspaceParamCascade(activeAgentId: "default")
+        let active = WorkspaceParamCascade(activeAgentId: "")
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.activeAgentId, "")
+    }
+
+    func testHasAnyOverrideIncludesActiveAgentId() {
+        XCTAssertTrue(WorkspaceParamCascade(activeAgentId: "x").hasAnyOverride)
+        XCTAssertTrue(WorkspaceParamCascade(activeAgentId: "").hasAnyOverride)
+    }
 }
