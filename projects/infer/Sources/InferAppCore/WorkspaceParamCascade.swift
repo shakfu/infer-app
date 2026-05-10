@@ -31,6 +31,21 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
     /// the current backend lives in the chat-VM, not here — this
     /// type just resolves the cascade.
     public var activeAgentId: String?
+    /// Per-workspace agent allow-list (Phase 4a). Set-axis cascade —
+    /// distinct from the scalar fields above in two ways:
+    ///   1. The unit of override is the entire collection, not a
+    ///      per-id signal. `nil` means "this workspace doesn't
+    ///      override the layer below"; an explicit `[]` means
+    ///      "workspace-silenced, only the safety-net agents are
+    ///      available."
+    ///   2. The DefaultAgent-always-allowed rule is enforced at the
+    ///      *consumer* (`ChatViewModel.effectiveEnabledAgents`),
+    ///      not here. The cascade resolver returns the list as
+    ///      stored; the consumer adds the safety net so the user
+    ///      can't lock themselves out.
+    /// Same nil-fall-through semantics as the scalar axes — `??`
+    /// works because the unit is the whole array.
+    public var enabledAgents: [String]?
 
     public init(
         systemPrompt: String? = nil,
@@ -38,7 +53,8 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
         topP: Double? = nil,
         maxTokens: Int? = nil,
         outputDirectory: String? = nil,
-        activeAgentId: String? = nil
+        activeAgentId: String? = nil,
+        enabledAgents: [String]? = nil
     ) {
         self.systemPrompt = systemPrompt
         self.temperature = temperature
@@ -46,6 +62,7 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
         self.maxTokens = maxTokens
         self.outputDirectory = outputDirectory
         self.activeAgentId = activeAgentId
+        self.enabledAgents = enabledAgents
     }
 
     /// Two-layer cascade: each field on `active` wins when non-nil,
@@ -69,7 +86,8 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
             topP: active?.topP ?? defaults?.topP,
             maxTokens: active?.maxTokens ?? defaults?.maxTokens,
             outputDirectory: active?.outputDirectory ?? defaults?.outputDirectory,
-            activeAgentId: active?.activeAgentId ?? defaults?.activeAgentId
+            activeAgentId: active?.activeAgentId ?? defaults?.activeAgentId,
+            enabledAgents: active?.enabledAgents ?? defaults?.enabledAgents
         )
     }
 
@@ -84,5 +102,6 @@ public struct WorkspaceParamCascade: Sendable, Equatable {
             || maxTokens != nil
             || outputDirectory != nil
             || activeAgentId != nil
+            || enabledAgents != nil
     }
 }

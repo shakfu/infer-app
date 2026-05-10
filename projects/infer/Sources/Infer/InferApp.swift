@@ -18,7 +18,7 @@ struct InferApp: App {
     /// Mirrors the dropdown sectioning in `AgentPickerMenu` so the
     /// `⌘⌥N` shortcut maps to the Nth row a user actually sees.
     private func quickActivateTargets() -> [AgentListing] {
-        let listings = chatVM.availableAgents.filter { chatVM.isCompatible($0) }
+        let listings = chatVM.availableAgents.filter { chatVM.isVisibleAgent($0) }
         let personas = listings.filter { $0.kind == .persona }
         let agents = listings.filter { $0.kind == .agent }
         return personas + agents

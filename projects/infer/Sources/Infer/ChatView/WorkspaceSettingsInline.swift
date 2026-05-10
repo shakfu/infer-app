@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import InferAgents
 
 /// Inline workspace settings — name, data folder, RAG status, retrieval
 /// toggles, stats, delete — surfaced as collapsible disclosures inside
@@ -28,6 +29,7 @@ struct WorkspaceSettingsInline: View {
     @State private var seededWorkspaceId: Int64 = -1
     @State private var confirmDelete: Bool = false
     @State private var confirmReset: Bool = false
+    @State private var availableAgentsOpen: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -46,6 +48,7 @@ struct WorkspaceSettingsInline: View {
                 nameField
                 dataFolderField
                 outputDirectoryField
+                availableAgentsDisclosure
                 metadataRow
                 deleteRow
             }
@@ -202,6 +205,112 @@ struct WorkspaceSettingsInline: View {
                     .font(.caption2)
             }
         }
+    }
+
+    /// Per-workspace allow-list of agents visible in the picker /
+    /// library for THIS workspace. Phase 4a of per-workspace-params.
+    /// Collapsed by default — most users don't need to curate this
+    /// per-workspace, and unfolding it surfaces the full agent
+    /// catalogue which is long.
+    ///
+    /// Layout: header summarises current state (`(allow-list active)`
+    /// / `(inheriting Default)` / `(everything available)`), with a
+    /// `↺ Default` button when this row's `enabled_agents` column
+    /// is non-NULL. The unfolded body lists every known agent with
+    /// a checkbox; toggling fires `vm.toggleAgentInAllowList`,
+    /// which materialises an explicit list on first toggle (so
+    /// flipping a single switch produces "everything except this"
+    /// rather than "only this").
+    @ViewBuilder
+    private var availableAgentsDisclosure: some View {
+        DisclosureGroup(isExpanded: $availableAgentsOpen) {
+            availableAgentsBody
+        } label: {
+            HStack(spacing: 6) {
+                Text("Available agents").font(.caption2).foregroundStyle(.secondary)
+                Text(availableAgentsSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                if workspace.enabledAgents != nil {
+                    Button {
+                        vm.setWorkspaceEnabledAgents(id: workspace.id, ids: nil)
+                    } label: {
+                        Label("Default", systemImage: "arrow.uturn.backward")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.mini)
+                    .foregroundStyle(.secondary)
+                    .help("Clear this workspace's allow-list; falls back to the Default workspace's list.")
+                }
+                Spacer()
+            }
+        }
+    }
+
+    private var availableAgentsBody: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(vm.availableAgents) { listing in
+                let agentId = listing.id
+                let isEnabled: Bool = {
+                    if let allow = workspace.enabledAgents {
+                        return allow.contains(agentId.rawValue)
+                    }
+                    // No override on this row → effective is the
+                    // cascade fall-through. The toggle still
+                    // shows accurately by reading the resolved
+                    // allow-list at the consumer level.
+                    return vm.isAgentEnabledInActiveWorkspace(agentId)
+                }()
+                let isDefaultAgent = (agentId == DefaultAgent.id)
+                Toggle(isOn: Binding(
+                    get: { isEnabled },
+                    set: { _ in
+                        vm.toggleAgentInAllowList(workspaceId: workspace.id, agentId: agentId)
+                    }
+                )) {
+                    HStack(spacing: 6) {
+                        Text(listing.name).font(.caption)
+                        if isDefaultAgent {
+                            Text("(always available)")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+                .disabled(isDefaultAgent) // safety net — can't be toggled off
+                .help(isDefaultAgent
+                    ? "DefaultAgent is always available — the safety net so you can never lock yourself out of a workspace."
+                    : listing.description)
+            }
+            if vm.availableAgents.isEmpty {
+                Text("No agents loaded.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    /// One-liner status the disclosure header shows next to the
+    /// title so the user can tell at a glance whether their
+    /// workspace overrides the list or inherits.
+    private var availableAgentsSummary: String {
+        if let allow = workspace.enabledAgents {
+            // Explicit list on this row.
+            let count = allow.count
+            return "(\(count) allowed)"
+        }
+        // Inheriting from the cascade. Distinguish "this is Default
+        // and inherits 'everything'" from "this is non-Default and
+        // inherits Default's list."
+        if vm.isDefaultWorkspace(workspace.id) {
+            return "(everything available)"
+        }
+        return "(inheriting Default)"
     }
 
     private var metadataRow: some View {

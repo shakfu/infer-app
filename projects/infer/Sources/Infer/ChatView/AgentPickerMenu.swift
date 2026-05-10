@@ -23,8 +23,15 @@ struct AgentPickerMenu: View {
     var body: some View {
         Menu {
             let listings = vm.availableAgents
-            let compatible = listings.filter { vm.isCompatible($0) }
-            let incompatible = listings.filter { !vm.isCompatible($0) }
+            // Phase 4a: filter by the per-workspace agent allow-list
+            // alongside the existing backend-compatibility check.
+            // `isVisibleAgent` returns true when both pass; failing
+            // the allow-list lands the agent in the same
+            // "incompatible" bucket so it's still discoverable
+            // (with reasoning surfaced via the existing tooltip
+            // path) — not silently disappeared.
+            let compatible = listings.filter { vm.isVisibleAgent($0) }
+            let incompatible = listings.filter { !vm.isVisibleAgent($0) }
             // Default row is a persona-shaped synthetic; pin it to the
             // top of the Personas section.
             let personas = compatible.filter { $0.kind == .persona }

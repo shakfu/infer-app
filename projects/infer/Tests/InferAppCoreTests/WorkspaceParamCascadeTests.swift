@@ -226,4 +226,81 @@ final class WorkspaceParamCascadeTests: XCTestCase {
         XCTAssertTrue(WorkspaceParamCascade(activeAgentId: "x").hasAnyOverride)
         XCTAssertTrue(WorkspaceParamCascade(activeAgentId: "").hasAnyOverride)
     }
+
+    // MARK: - enabledAgents (Phase 4a — set / allow-list cascade)
+
+    func testEnabledAgentsFallsThroughToDefaults() {
+        let defaults = WorkspaceParamCascade(enabledAgents: ["coder", "researcher"])
+        let r = WorkspaceParamCascade.resolve(active: nil, defaults: defaults)
+        XCTAssertEqual(r.enabledAgents, ["coder", "researcher"])
+    }
+
+    func testEnabledAgentsActiveOverridesDefault() {
+        let defaults = WorkspaceParamCascade(enabledAgents: ["coder", "researcher"])
+        let active = WorkspaceParamCascade(enabledAgents: ["editor"])
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.enabledAgents, ["editor"])
+    }
+
+    func testEnabledAgentsEmptyArrayIsExplicitSilence() {
+        // The set-axis analogue of empty-string-is-an-override: an
+        // explicit `[]` means "this workspace silences every agent
+        // (except the safety net the consumer adds). Distinct from
+        // nil (which falls through). The cascade resolver must
+        // honour the empty array as the override; the
+        // DefaultAgent safety net is the consumer's job
+        // (`ChatViewModel.effectiveEnabledAgents`).
+        let defaults = WorkspaceParamCascade(enabledAgents: ["coder", "researcher"])
+        let active = WorkspaceParamCascade(enabledAgents: [])
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.enabledAgents, [], "empty active list must override defaults, not fall through")
+    }
+
+    func testEnabledAgentsBothLayersNilProducesNil() {
+        // `nil` at both layers means "no allow-list active anywhere"
+        // — the consumer reads this as "everything available."
+        // Distinct from the empty-array case above.
+        let r = WorkspaceParamCascade.resolve(active: nil, defaults: nil)
+        XCTAssertNil(r.enabledAgents)
+    }
+
+    func testEnabledAgentsIndependentFromOtherAxes() {
+        // Active workspace pins an allow-list but inherits sampling +
+        // outputDirectory from defaults.
+        let defaults = WorkspaceParamCascade(
+            systemPrompt: "default",
+            temperature: 0.7,
+            outputDirectory: "/path",
+            activeAgentId: "default-agent",
+            enabledAgents: ["a", "b"]
+        )
+        let active = WorkspaceParamCascade(enabledAgents: ["c"])
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: defaults)
+        XCTAssertEqual(r.enabledAgents, ["c"])
+        XCTAssertEqual(r.systemPrompt, "default")
+        XCTAssertEqual(r.temperature, 0.7)
+        XCTAssertEqual(r.outputDirectory, "/path")
+        XCTAssertEqual(r.activeAgentId, "default-agent")
+    }
+
+    func testHasAnyOverrideIncludesEnabledAgents() {
+        XCTAssertTrue(WorkspaceParamCascade(enabledAgents: ["x"]).hasAnyOverride)
+        XCTAssertTrue(WorkspaceParamCascade(enabledAgents: []).hasAnyOverride,
+                      "explicit empty list IS an override (workspace-silenced state)")
+    }
+
+    func testEnabledAgentsResolverDoesNotInjectSafetyNet() {
+        // The DefaultAgent-always-allowed safety net is enforced at
+        // the consumer (`ChatViewModel.effectiveEnabledAgents`), NOT
+        // here. The cascade resolver returns the list as stored, so
+        // an empty array stays empty after `resolve`. This contract
+        // matters because moving the safety net into the resolver
+        // would couple `InferAppCore` to the chat-VM's notion of a
+        // "default agent" (which lives in `InferAgents`); keeping it
+        // out preserves the dependency graph.
+        let active = WorkspaceParamCascade(enabledAgents: [])
+        let r = WorkspaceParamCascade.resolve(active: active, defaults: nil)
+        XCTAssertEqual(r.enabledAgents, [],
+                       "resolver returns the list as stored; safety net is the consumer's job")
+    }
 }

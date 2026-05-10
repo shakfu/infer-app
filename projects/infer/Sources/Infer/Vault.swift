@@ -44,6 +44,18 @@ struct WorkspaceSummary: Identifiable, Sendable, Equatable {
     /// `docs/dev/per-workspace-params.md` §12.5 for the
     /// graceful-degradation flow on workspace switch.
     let activeAgentId: String?
+    /// Per-workspace allow-list of agent ids visible to the user.
+    /// `nil` = inherit from Default's column. `nil` on Default = the
+    /// implicit "everything" — every agent in the global registry is
+    /// available. An explicit `[]` is the user-silenced state — only
+    /// `DefaultAgent.id` is available (the safety net is enforced at
+    /// read time in `ChatViewModel.effectiveEnabledAgents`, not in
+    /// the cascade resolver). An explicit `["coder", "researcher"]`
+    /// is a curated subset; `DefaultAgent.id` is always added by the
+    /// resolver so the user can never lock themselves out. Phase 4a
+    /// of the per-workspace-params feature; see
+    /// `docs/dev/per-workspace-params.md` §12.3.
+    let enabledAgents: [String]?
 }
 
 struct VaultConversationSummary: Identifiable, Sendable, Equatable {
@@ -288,6 +300,17 @@ actor VaultStore {
         // behaviour is preserved without a data write.
         m.registerMigration("v7_workspace_active_agent") { db in
             try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN active_agent_id TEXT")
+        }
+        // v8: per-workspace agent allow-list, JSON-encoded `[String]`.
+        // `NULL` = inherit from Default; `NULL` on Default = "all
+        // agents from the registry are available." Explicit `"[]"` =
+        // workspace-silenced (`DefaultAgent` still allowed via the
+        // chat-VM's safety net). Explicit `'["a","b"]'` = curated
+        // subset. Phase 4a of per-workspace-params; the same JSON-
+        // text-column pattern will be replicated in v9 / v10 for the
+        // tools and MCP server allow-lists.
+        m.registerMigration("v8_workspace_enabled_agents") { db in
+            try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN enabled_agents TEXT")
         }
         return m
     }()
@@ -653,7 +676,7 @@ actor VaultStore {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT w.id, w.name, w.data_folder, w.created_at, w.updated_at,
                        w.system_prompt, w.temperature, w.top_p, w.max_tokens,
-                       w.output_directory, w.active_agent_id,
+                       w.output_directory, w.active_agent_id, w.enabled_agents,
                        (SELECT COUNT(*) FROM conversations c WHERE c.workspace_id = w.id) AS cnt
                     FROM workspaces w
                     ORDER BY (w.name = 'Default') DESC,
@@ -759,7 +782,7 @@ actor VaultStore {
             let rows = try Row.fetchAll(db, sql: """
                 SELECT w.id, w.name, w.data_folder, w.created_at, w.updated_at,
                        w.system_prompt, w.temperature, w.top_p, w.max_tokens,
-                       w.output_directory, w.active_agent_id,
+                       w.output_directory, w.active_agent_id, w.enabled_agents,
                        (SELECT COUNT(*) FROM conversations c WHERE c.workspace_id = w.id) AS cnt
                     FROM workspaces w
                     WHERE w.id = ?
@@ -785,7 +808,8 @@ actor VaultStore {
         topP: ParamWrite<Double?> = .unchanged,
         maxTokens: ParamWrite<Int?> = .unchanged,
         outputDirectory: ParamWrite<String?> = .unchanged,
-        activeAgentId: ParamWrite<String?> = .unchanged
+        activeAgentId: ParamWrite<String?> = .unchanged,
+        enabledAgents: ParamWrite<[String]?> = .unchanged
     ) async throws {
         var fragments: [String] = []
         var args: [DatabaseValueConvertible?] = []
@@ -812,6 +836,21 @@ actor VaultStore {
         if case .value(let v) = activeAgentId {
             fragments.append("active_agent_id = ?")
             args.append(v)
+        }
+        if case .value(let v) = enabledAgents {
+            fragments.append("enabled_agents = ?")
+            // JSON-encode the array so the column stays human-
+            // readable (sqlite browser, sql dumps). `nil` writes a
+            // NULL; an empty array writes `"[]"`. Failure to encode
+            // is impossible for `[String]` but the throwing call
+            // shape forces the do/catch — we propagate the error so
+            // the caller sees it instead of silently writing NULL.
+            if let v {
+                let data = try JSONEncoder().encode(v)
+                args.append(String(data: data, encoding: .utf8) ?? "[]")
+            } else {
+                args.append(nil)
+            }
         }
         guard !fragments.isEmpty else { return }
         let now = Int64(Date().timeIntervalSince1970)
@@ -848,8 +887,23 @@ actor VaultStore {
             topP: row["top_p"],
             maxTokens: (row["max_tokens"] as Int64?).map { Int($0) },
             outputDirectory: row["output_directory"],
-            activeAgentId: row["active_agent_id"]
+            activeAgentId: row["active_agent_id"],
+            enabledAgents: Self.decodeStringArray(row["enabled_agents"])
         )
+    }
+
+    /// Decode a JSON-encoded `[String]` from a TEXT column into
+    /// `[String]?`. Returns `nil` for NULL columns, `[]` for the
+    /// literal `"[]"`. Malformed JSON returns `nil` rather than
+    /// throwing — the column is user-data-shaped (could be
+    /// hand-edited via a sqlite browser), and crashing the whole
+    /// row read on a parse failure would block startup. The chat-VM
+    /// surfaces this as "no allow-list" which is the safe direction
+    /// (every agent visible).
+    private static func decodeStringArray(_ raw: String?) -> [String]? {
+        guard let raw else { return nil }
+        guard let data = raw.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode([String].self, from: data)
     }
 
     // MARK: - Helpers

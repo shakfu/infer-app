@@ -211,8 +211,117 @@ extension ChatViewModel {
             topP: row.topP,
             maxTokens: row.maxTokens,
             outputDirectory: row.outputDirectory,
-            activeAgentId: row.activeAgentId
+            activeAgentId: row.activeAgentId,
+            enabledAgents: row.enabledAgents
         )
+    }
+
+    /// Resolved set of agent ids the active workspace is willing to
+    /// expose. `nil` return = "no allow-list active at any cascade
+    /// layer" → every agent in the global registry is available.
+    /// A non-nil return is the explicit allow-list (possibly empty),
+    /// with `DefaultAgent.id` always merged in as a safety net so
+    /// the user can never lock themselves out of a workspace.
+    /// Phase 4a of the per-workspace-params feature; see
+    /// `docs/dev/per-workspace-params.md` §12.3.
+    var effectiveEnabledAgents: Set<AgentID>? {
+        let resolved = WorkspaceParamCascade.resolve(
+            active: activeWorkspace.map(Self.cascade(from:)),
+            defaults: workspaces.min(by: { $0.id < $1.id }).map(Self.cascade(from:))
+        )
+        guard let raw = resolved.enabledAgents else { return nil }
+        var set = Set(raw.map { AgentID(rawValue: $0) })
+        // Safety net: DefaultAgent is always allowed regardless of
+        // the persisted list. Enforced here (the consumer) rather
+        // than in the cascade resolver so the cascade type stays
+        // dependency-free (it doesn't know about `DefaultAgent`).
+        set.insert(DefaultAgent.id)
+        return set
+    }
+
+    /// True when the workspace allow-list explicitly excludes the
+    /// given agent. `false` covers two cases: (a) no allow-list is
+    /// active at any cascade layer (everything allowed); (b) the
+    /// allow-list is active and includes this agent. Used by the
+    /// agent picker to grey out / hide agents the user has
+    /// silenced for this workspace.
+    func isAgentEnabledInActiveWorkspace(_ id: AgentID) -> Bool {
+        guard let allow = effectiveEnabledAgents else { return true }
+        return allow.contains(id)
+    }
+
+    /// Combined visibility check: a listing is visible to the user
+    /// when both (a) its declared backend / capabilities match the
+    /// active runner (the existing `isCompatible` check) and (b)
+    /// it isn't allow-listed away by the active workspace. Picker
+    /// + sidebar callers replaced their bare `isCompatible` filter
+    /// with this in Phase 4a so the workspace allow-list is
+    /// honoured everywhere agents render. `DefaultAgent.id` always
+    /// passes the allow-list half via the safety net in
+    /// `effectiveEnabledAgents`.
+    func isVisibleAgent(_ listing: AgentListing) -> Bool {
+        isCompatible(listing) && isAgentEnabledInActiveWorkspace(listing.id)
+    }
+
+    /// Flip a single agent's membership in the named workspace's
+    /// allow-list. If no allow-list is currently set, the toggle
+    /// materialises one — populated with every currently-available
+    /// agent except the one being toggled (so flipping a single
+    /// switch produces "everything except this one" rather than
+    /// "only this one"). This matches the intent of "I'm editing
+    /// the list and want to remove this." Subsequent toggles flip
+    /// individual ids in/out.
+    func toggleAgentInAllowList(workspaceId: Int64, agentId: AgentID) {
+        guard let row = workspaces.first(where: { $0.id == workspaceId }) else { return }
+        let current = row.enabledAgents
+        let universe = availableAgents.map(\.id.rawValue)
+        let target = agentId.rawValue
+        let next: [String]
+        if let current {
+            if current.contains(target) {
+                next = current.filter { $0 != target }
+            } else {
+                next = current + [target]
+            }
+        } else {
+            // No allow-list yet → user is starting from "everything
+            // allowed" and removing one item. Materialise an
+            // explicit list with everything except the toggled id.
+            next = universe.filter { $0 != target }
+        }
+        setWorkspaceEnabledAgents(id: workspaceId, ids: next)
+    }
+
+    /// Persist a new allow-list for the named workspace. `nil`
+    /// clears the override (workspace falls back to Default's
+    /// list, which itself may be `nil` = everything). An explicit
+    /// `[]` is the workspace-silenced state; `DefaultAgent` is
+    /// still available via the read-time safety net. After the
+    /// write, refreshes the workspace list and re-runs the Phase 3
+    /// active-agent recompose so a now-disallowed active agent
+    /// gracefully degrades to Default.
+    func setWorkspaceEnabledAgents(id: Int64, ids: [String]?) {
+        Task { [vault] in
+            do {
+                try await vault.setWorkspaceParams(id: id, enabledAgents: .value(ids))
+                await MainActor.run {
+                    self.refreshWorkspaces()
+                    // Re-run the Phase 3 recompose so an active
+                    // agent that just got allow-listed-out
+                    // degrades to Default. `insertDivider: true`
+                    // because this is a user-driven mid-session
+                    // change — same shape as a workspace switch.
+                    self.recomposeActiveAgentFromActiveWorkspace(insertDivider: true)
+                }
+            } catch {
+                self.logs.logFromBackground(
+                    .error,
+                    source: "workspaces",
+                    message: "failed to persist agents allow-list",
+                    payload: String(describing: error)
+                )
+            }
+        }
     }
 
     /// Effective output directory for the active workspace, as a
@@ -325,7 +434,10 @@ extension ChatViewModel {
         let backend = currentBackendPreference
         let candidate = availableAgents.first { $0.id == target }
         let listing: AgentListing
-        if let candidate, agentController.isCompatible(candidate, backend: backend) {
+        if let candidate,
+           agentController.isCompatible(candidate, backend: backend),
+           isAgentEnabledInActiveWorkspace(candidate.id)
+        {
             listing = candidate
         } else {
             // Saved id is unreachable — unknown / evicted / incompatible.
