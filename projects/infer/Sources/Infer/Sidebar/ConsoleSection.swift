@@ -123,6 +123,13 @@ private struct ConsoleBody: View {
 
             Spacer()
 
+            // Action buttons are icon-only because the sidebar is
+            // narrow (240pt with the wiki tree + tab bar already
+            // in the column) and Label-style buttons truncate to
+            // a single character ("C…", "Re…", "Cl…") at this
+            // width. Tooltips carry the full action name so the
+            // affordance stays discoverable on hover. Standard
+            // macOS toolbar convention.
             Button {
                 let text = vm.logs.formatForCopy(filter)
                 let pb = NSPasteboard.general
@@ -130,18 +137,43 @@ private struct ConsoleBody: View {
                 pb.setString(text, forType: .string)
                 vm.toasts.show("Copied \(vm.logs.events.filter(filter.matches).count) log line(s).")
             } label: {
-                Label("Copy", systemImage: "doc.on.doc")
+                Image(systemName: "doc.on.doc")
             }
             .controlSize(.small)
             .disabled(vm.logs.events.isEmpty)
+            .help("Copy log lines to clipboard (respects the current filter).")
+
+            // Persistent JSONL files live in
+            // `Application Support/Infer/logs/`. Reveal-in-Finder
+            // is the simplest export: the user grabs whatever
+            // daily files they want and hands them to support.
+            // Disabled when persistence is off (test-fixture
+            // construction or future deployments that opt out).
+            if let dir = vm.logs.logDirectory {
+                Button {
+                    // Create the dir on first reveal so the user
+                    // doesn't see "folder does not exist" on a
+                    // fresh install before any log has rolled.
+                    try? FileManager.default.createDirectory(
+                        at: dir,
+                        withIntermediateDirectories: true
+                    )
+                    NSWorkspace.shared.activateFileViewerSelecting([dir])
+                } label: {
+                    Image(systemName: "folder")
+                }
+                .controlSize(.small)
+                .help("Reveal log files in Finder. Daily-rotated JSONL with 14-day retention.")
+            }
 
             Button(role: .destructive) {
                 vm.logs.clear()
             } label: {
-                Label("Clear", systemImage: "trash")
+                Image(systemName: "trash")
             }
             .controlSize(.small)
             .disabled(vm.logs.events.isEmpty)
+            .help("Clear the in-memory Console log. On-disk JSONL files are NOT touched — those rotate daily and are pruned at the 14-day horizon.")
         }
     }
 

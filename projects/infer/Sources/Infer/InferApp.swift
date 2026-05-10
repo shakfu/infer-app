@@ -212,6 +212,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ("audioRecorder.cancel",   { await MainActor.run { vm.audioRecorder.cancel() } }),
             ("whisper.shutdown",       { await WhisperRunner.shared.shutdown() }),
             ("vault.shutdown",         { await VaultStore.shared.shutdown() }),
+            // Flush the persistent log file last so any messages
+            // from the prior shutdown steps land on disk.
+            ("logs.shutdown",          { await MainActor.run { vm.logs.shutdown() } }),
         ]
 
         for (label, work) in steps {

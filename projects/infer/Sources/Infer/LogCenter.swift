@@ -86,6 +86,23 @@ final class LogCenter {
     /// scroll the Console to the bottom without diffing the full array.
     private(set) var appendCount: Int = 0
 
+    /// On-disk JSONL persistence. Daily-rotated files under
+    /// `Application Support/Infer/logs/` with 14-day retention.
+    /// Held nullable so unit-test fixtures can construct a
+    /// `LogCenter` without writing to the user's filesystem (pass
+    /// `persistence: nil`); production always has one.
+    @ObservationIgnored
+    private let persister: LogPersister?
+
+    init(persister: LogPersister? = LogPersister()) {
+        self.persister = persister
+    }
+
+    /// Path to the on-disk log directory, when persistence is
+    /// active. Surfaced so the Console tab's "Reveal logs…" button
+    /// can hand it directly to `NSWorkspace`.
+    var logDirectory: URL? { persister?.directory }
+
     func log(
         _ level: LogLevel,
         source: String,
@@ -113,6 +130,18 @@ final class LogCenter {
         if let payload, !payload.isEmpty { line += " — " + payload }
         line += "\n"
         FileHandle.standardError.write(Data(line.utf8))
+        // And persist to the on-disk JSONL file so user-reported
+        // issues from days ago are diagnosable. Best-effort —
+        // failures inside the persister are silent.
+        persister?.append(event)
+    }
+
+    /// Flush + close the persistent log file. Called from
+    /// `AppDelegate.applicationWillTerminate` alongside the rest
+    /// of the shutdown sequence so any kernel-buffered bytes
+    /// reach disk before exit.
+    func shutdown() {
+        persister?.close()
     }
 
     func clear() {
