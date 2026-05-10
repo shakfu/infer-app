@@ -315,6 +315,19 @@ final class WhisperModelManager {
                 onFinish: { [weak self] result in
                     switch result {
                     case .success(let tmp):
+                        // Always clean up the URLSession tmp file on
+                        // exit, regardless of which throw fires
+                        // below. After a successful `moveItem` the
+                        // tmp URL no longer points to anything (the
+                        // move was atomic) and the deferred remove
+                        // is a `try?` no-op; if the move or any
+                        // earlier step throws, the deferred remove
+                        // is what prevents `tmp` from leaking under
+                        // `NSTemporaryDirectory()` until the OS
+                        // eventually reaps it. (REVIEW.md F-6.)
+                        defer {
+                            try? FileManager.default.removeItem(at: tmp)
+                        }
                         do {
                             try? FileManager.default.removeItem(at: dest)
                             try FileManager.default.createDirectory(
