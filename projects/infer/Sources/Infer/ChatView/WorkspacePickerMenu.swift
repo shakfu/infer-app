@@ -11,6 +11,12 @@ import SwiftUI
 /// current conversation.
 struct WorkspacePickerMenu: View {
     let vm: ChatViewModel
+    /// Fired when the user picks "Manage current workspace…". The
+    /// sidebar owns the sheet presentation state; the picker just
+    /// signals the request. Optional so callers that don't surface a
+    /// settings sheet (currently none, but kept additive) can omit
+    /// the entry.
+    var onManageWorkspace: (() -> Void)? = nil
 
     var body: some View {
         Menu {
@@ -28,12 +34,19 @@ struct WorkspacePickerMenu: View {
             Button("New workspace…") {
                 vm.openCreateWorkspaceSheet()
             }
-            // "Manage workspaces…" lived here in pre-Phase-2b builds
-            // and routed to a modal sheet. Since Phase 2b, settings
-            // for the active workspace live inline in `WikiSidebar`
-            // (`WorkspaceSettingsInline`); switching to a different
-            // workspace via the list above + scrolling the sidebar
-            // covers every previous use case.
+            // Discoverability path for the workspace settings sheet
+            // alongside the dedicated cog at the sidebar's bottom-
+            // left. Both paths land on the same modal panel; macOS
+            // apps routinely offer multiple paths to the same
+            // action and users naturally explore in different
+            // places. Disabled when no workspace is active (boot
+            // edge case before `refreshWorkspaces` finishes).
+            if let onManageWorkspace {
+                Button("Manage current workspace…") {
+                    onManageWorkspace()
+                }
+                .disabled(vm.activeWorkspaceId == nil)
+            }
         } label: {
             label
         }

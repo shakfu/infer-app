@@ -74,7 +74,12 @@ struct WikiSidebar: View {
                     }
                 }
             }
-            Divider()
+            // No divider above the footer — keeps the sidebar's
+            // bottom edge symmetric with the chat / right-sidebar
+            // panes which don't draw a horizontal rule before
+            // their bottom controls. The cog + pin-stats sit
+            // directly against the page list, separated only by
+            // padding.
             footer
         }
         .frame(maxHeight: .infinity)
@@ -101,8 +106,10 @@ struct WikiSidebar: View {
 
     private var header: some View {
         HStack(spacing: 6) {
-            WorkspacePickerMenu(vm: vm)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            WorkspacePickerMenu(vm: vm) {
+                showingWorkspaceSettings = true
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
