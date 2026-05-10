@@ -91,6 +91,16 @@ struct SidebarView: View {
             if !didSeed { draft = vm.settings; didSeed = true }
             vm.refreshVaultRecents()
         }
+        // Workspace switches and per-field [Use default] clears
+        // recompose `vm.settings` from the active workspace's row;
+        // pull those changes into the local draft so the sliders
+        // snap to the new effective values. Clobbers in-progress
+        // edits — acceptable because the only paths that fire this
+        // are explicit user actions (workspace switch / clear) where
+        // the user intends a reset.
+        .onChange(of: vm.settings) {
+            draft = vm.settings
+        }
     }
 
     var tabBar: some View {

@@ -159,21 +159,22 @@ struct WorkspaceSettingsInline: View {
     @ViewBuilder
     private var deleteRow: some View {
         if vm.isDefaultWorkspace(workspace.id) {
-            // Default workspace: not deletable, but resettable so the
-            // user can wipe its content (wiki pages, RAG corpus)
-            // without losing the workspace row itself or any
-            // conversations assigned to it.
-            Button(role: .destructive) {
+            // Default workspace: not deletable, but the user can reset
+            // its inference parameters (system prompt, temperature,
+            // top-p, max tokens) back to the app's hard-coded
+            // defaults. Wiki pages, RAG corpus, conversations, and
+            // the data folder setting are preserved — reset is now
+            // narrowly scoped to params.
+            Button {
                 confirmReset = true
             } label: {
-                Label("Reset workspace", systemImage: "arrow.counterclockwise")
+                Label("Reset parameters", systemImage: "arrow.counterclockwise")
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .controlSize(.small)
             .buttonStyle(.borderless)
             .font(.caption)
-            .foregroundStyle(.orange)
-            .alert("Reset Default workspace?",
+            .alert("Reset parameters to defaults?",
                    isPresented: $confirmReset,
                    actions: {
                        Button("Reset", role: .destructive) {
@@ -182,7 +183,7 @@ struct WorkspaceSettingsInline: View {
                        Button("Cancel", role: .cancel) {}
                    },
                    message: {
-                       Text("Removes every wiki page, folder, pin, and RAG corpus entry for this workspace. Conversations and the data folder setting stay.")
+                       Text("Clears any per-workspace overrides for system prompt, temperature, top-p, and max tokens. Wiki pages, RAG corpus, conversations, and the data folder setting stay.")
                    })
         } else {
             Button(role: .destructive) {

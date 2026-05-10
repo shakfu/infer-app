@@ -192,11 +192,17 @@ Resolved during scoping:
 
 Resolved:
 
-- **Workspace reset clears overrides.** Reset = restore to factory;
-  consistent with reset's destructive semantics for wiki + RAG.
-  Default reset clobbers the tuned globals back to app defaults;
-  non-Default reset clears sparse overrides so the workspace falls
-  back to Default again.
+- **Workspace reset is now narrowly scoped to params** — it clears the
+  four per-workspace columns and leaves wiki pages, RAG corpus,
+  conversations, name, and `data_folder` intact. Initial design had
+  reset wiping wiki + RAG too "for consistency"; revised after
+  scoping to recognise that wiki content is curated user authoring,
+  not generated state, and conflating it with param-reset is
+  surprising. For Default the four columns clear to NULL, which
+  restores the hard-coded `InferSettings.defaults` floor; for
+  non-Default the sparse overrides clear and the workspace falls
+  back to Default. The button label is now "Reset parameters"
+  rather than "Reset workspace" to match.
 - **New workspace creation: all NULL.** New workspaces inherit live
   from Default. Tuning Default later propagates immediately. Sparse
   overrides set on first edit.

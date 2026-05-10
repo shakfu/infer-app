@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import InferAppCore
 import InferCore
 import InferRAG
 
@@ -43,14 +44,37 @@ extension ChatViewModel {
     /// Load the workspace list from the vault, restore the persisted
     /// active-workspace selection, and log the result. Called once at
     /// VM init and after any CRUD mutation.
+    ///
+    /// On the first v5 launch this also migrates the legacy
+    /// `UserDefaults` global params (`infer.systemPrompt` /
+    /// `.temperature` / `.topP` / `.maxTokens`) into the Default
+    /// workspace's row — the row is the new global floor (see
+    /// `docs/dev/per-workspace-params.md`). Idempotent: subsequent
+    /// launches see Default's columns already populated and skip the
+    /// migration step. After the list reflects post-migration state,
+    /// `recomposeSettingsFromActiveWorkspace()` rebuilds the
+    /// effective settings the runners will see.
     func refreshWorkspaces() {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let list = try await self.vault.listWorkspaces()
+                var list = try await self.vault.listWorkspaces()
+                if let defaultRow = list.first(where: { Self.isDefaultRow($0, in: list) }),
+                   defaultRow.systemPrompt == nil,
+                   defaultRow.temperature == nil,
+                   defaultRow.topP == nil,
+                   defaultRow.maxTokens == nil
+                {
+                    await self.migrateLegacyGlobalsIntoDefault(defaultId: defaultRow.id)
+                    // Re-fetch so the in-memory list reflects the
+                    // freshly-populated Default row before settings
+                    // composition reads from it.
+                    list = try await self.vault.listWorkspaces()
+                }
                 await MainActor.run {
                     self.workspaces = list
                     self.restoreActiveWorkspaceSelection()
+                    self.recomposeSettingsFromActiveWorkspace(applyToRunners: false)
                 }
             } catch {
                 self.logs.logFromBackground(
@@ -61,6 +85,52 @@ extension ChatViewModel {
                 )
             }
         }
+    }
+
+    /// Vault-side migration of legacy `UserDefaults` globals into the
+    /// Default workspace's row. One-shot: caller gates on Default's
+    /// columns being all-NULL, so re-running this method on a
+    /// post-migration vault is a no-op (no DB write because every
+    /// `setWorkspaceParams` field would be `.value(<existing>)` which
+    /// the writer happily UPSERTs but is benign).
+    private func migrateLegacyGlobalsIntoDefault(defaultId: Int64) async {
+        let d = UserDefaults.standard
+        let legacySystemPrompt = d.string(forKey: PersistKey.systemPrompt) ?? ""
+        let legacyTemperature = d.object(forKey: PersistKey.temperature) as? Double
+            ?? InferSettings.defaults.temperature
+        let legacyTopP = d.object(forKey: PersistKey.topP) as? Double
+            ?? InferSettings.defaults.topP
+        let legacyMaxTokens = d.object(forKey: PersistKey.maxTokens) as? Int
+            ?? InferSettings.defaults.maxTokens
+        do {
+            try await vault.setWorkspaceParams(
+                id: defaultId,
+                systemPrompt: .value(legacySystemPrompt),
+                temperature: .value(legacyTemperature),
+                topP: .value(legacyTopP),
+                maxTokens: .value(legacyMaxTokens)
+            )
+            logs.logFromBackground(
+                .info,
+                source: "workspaces",
+                message: "v5: migrated legacy global params into Default workspace"
+            )
+        } catch {
+            logs.logFromBackground(
+                .error,
+                source: "workspaces",
+                message: "v5 legacy params migration failed",
+                payload: String(describing: error)
+            )
+        }
+    }
+
+    /// Default-row identifier (the lowest id in the list — `listWorkspaces`
+    /// pins it first, but resolving by id rather than by sort order keeps
+    /// this honest if listing semantics change).
+    private static func isDefaultRow(_ candidate: WorkspaceSummary, in list: [WorkspaceSummary]) -> Bool {
+        guard let lowest = list.map(\.id).min() else { return false }
+        return candidate.id == lowest
     }
 
     /// Install the saved active-workspace id (from UserDefaults), or
@@ -88,6 +158,11 @@ extension ChatViewModel {
     /// Switch the active workspace. Persists the choice. New
     /// conversations after this point land in the new workspace; the
     /// current conversation (if any) is not reassigned.
+    ///
+    /// Recomposes the effective `InferSettings` (per-workspace fields
+    /// overlaid on Default's row) and applies them to the runner stack
+    /// — the same path a slider drag takes — so the next turn runs
+    /// against the new workspace's params.
     func switchWorkspace(to id: Int64) {
         guard workspaces.contains(where: { $0.id == id }) else { return }
         guard id != activeWorkspaceId else { return }
@@ -95,6 +170,58 @@ extension ChatViewModel {
         UserDefaults.standard.set(NSNumber(value: id), forKey: PersistKey.activeWorkspaceId)
         if let name = workspaces.first(where: { $0.id == id })?.name {
             logs.log(.info, source: "workspaces", message: "switched to \(name)")
+        }
+        recomposeSettingsFromActiveWorkspace(applyToRunners: true)
+    }
+
+    /// Resolve the four per-workspace fields (`systemPrompt`,
+    /// `temperature`, `topP`, `maxTokens`) using the active workspace
+    /// → Default workspace → legacy `UserDefaults` fallback chain.
+    /// All other `InferSettings` fields stay sourced from
+    /// `UserDefaults` (Phase 1 scope; Phase 2+ extends).
+    ///
+    /// The two-layer cascade itself lives in
+    /// `InferAppCore.WorkspaceParamCascade.resolve` so it is unit-
+    /// testable without `@testable`-importing this executable target;
+    /// this method is the chat-VM wrapper that turns
+    /// `WorkspaceSummary` rows into cascade values and lays the
+    /// result over an `InferSettings` populated from `UserDefaults`.
+    func composeEffectiveSettings() -> InferSettings {
+        var s = InferSettings.load()
+        let resolved = WorkspaceParamCascade.resolve(
+            active: activeWorkspace.map(Self.cascade(from:)),
+            defaults: workspaces.min(by: { $0.id < $1.id }).map(Self.cascade(from:))
+        )
+        if let v = resolved.systemPrompt { s.systemPrompt = v }
+        if let v = resolved.temperature { s.temperature = v }
+        if let v = resolved.topP { s.topP = v }
+        if let v = resolved.maxTokens { s.maxTokens = v }
+        return s
+    }
+
+    /// Adapter from the SQL-shaped `WorkspaceSummary` to the
+    /// `InferAppCore` value type the cascade resolver consumes.
+    static func cascade(from row: WorkspaceSummary) -> WorkspaceParamCascade {
+        WorkspaceParamCascade(
+            systemPrompt: row.systemPrompt,
+            temperature: row.temperature,
+            topP: row.topP,
+            maxTokens: row.maxTokens
+        )
+    }
+
+    /// Pull the effective settings into `self.settings`. `applyToRunners`
+    /// gates whether the change propagates through the existing
+    /// `applySettings` runner-update pipeline — true for user-driven
+    /// transitions (workspace switch, edit), false for the initial
+    /// boot-time composition where no runner is loaded yet.
+    @MainActor
+    func recomposeSettingsFromActiveWorkspace(applyToRunners: Bool) {
+        let effective = composeEffectiveSettings()
+        if applyToRunners {
+            applySettings(effective)
+        } else {
+            settings = effective
         }
     }
 
@@ -171,35 +298,46 @@ extension ChatViewModel {
         return id == lowest
     }
 
-    /// Wipe a workspace's user-created content while keeping the row
-    /// itself (and any conversations assigned to it — those are
-    /// valuable history). Removes wiki pages + folders + pin index
-    /// and the RAG corpus entries; leaves `name`, `data_folder`, and
-    /// the conversation rows alone. Used by the Default workspace
-    /// (which can't be deleted) when the user wants a clean start.
+    /// Clear a workspace's per-workspace inference-parameter overrides.
+    /// Leaves wiki pages, RAG corpus, conversations, name, and
+    /// `data_folder` intact — this is a *narrow* reset, not a content
+    /// wipe.
+    ///
+    /// For the Default workspace: clears the row's four columns to
+    /// NULL, which restores the hard-coded `InferSettings.defaults`
+    /// floor (since Default IS the globals layer and there is no
+    /// further fallback). For a non-Default workspace: clears the
+    /// sparse overrides so the workspace falls back to inheriting
+    /// from Default. The four per-field `↺ Default` buttons in the
+    /// sidebar already cover the per-field version of this; this is
+    /// the bulk variant.
+    ///
+    /// Re-fetches the workspace list and recomposes effective
+    /// settings so the runner stack picks up the cleared values on
+    /// the next turn.
     func resetWorkspace(id: Int64) {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await self.vectorStore.deleteWorkspaceData(workspaceId: id)
+                try await self.vault.setWorkspaceParams(
+                    id: id,
+                    systemPrompt: .value(nil),
+                    temperature: .value(nil),
+                    topP: .value(nil),
+                    maxTokens: .value(nil)
+                )
+                await MainActor.run {
+                    self.refreshWorkspaces()
+                    self.recomposeSettingsFromActiveWorkspace(applyToRunners: true)
+                    self.toasts.show("Parameters reset to defaults.")
+                }
             } catch {
                 self.logs.logFromBackground(
-                    .warning,
-                    source: "vector",
-                    message: "reset: vector data delete failed",
+                    .error,
+                    source: "workspaces",
+                    message: "reset: failed to clear param overrides",
                     payload: String(describing: error)
                 )
-            }
-            // Wipe the wiki dir for this workspace. The on-disk
-            // delete is best-effort: if the dir is missing we just
-            // return, and a partial delete still surfaces in the
-            // refresh that follows.
-            let wikiDir = await self.wiki.wikiDirectory(for: id)
-            try? FileManager.default.removeItem(at: wikiDir)
-            await MainActor.run {
-                self.refreshWiki()
-                self.refreshCorpusStats(workspaceId: id)
-                self.toasts.show("Workspace reset.")
             }
         }
     }

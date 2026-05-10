@@ -59,12 +59,21 @@ struct SectionHeader: View {
 struct ParamRow<Control: View>: View {
     let label: String
     let value: String
+    /// Optional badge / accessory rendered between the label and the
+    /// value text — used by the per-workspace overrides feature to
+    /// surface a "↺ Default" button when the active workspace is
+    /// overriding this field. Defaults to nothing so the existing
+    /// call sites compose unchanged.
+    var accessory: AnyView? = nil
     @ViewBuilder var control: () -> Control
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
                 Text(label).font(.caption)
+                if let accessory {
+                    accessory
+                }
                 Spacer()
                 Text(value)
                     .font(.caption.monospacedDigit())
@@ -72,5 +81,46 @@ struct ParamRow<Control: View>: View {
             }
             control()
         }
+    }
+}
+
+/// "↺ Default" button rendered next to a Parameters field when the
+/// active workspace is overriding that field. Clearing the override
+/// fires `vm.clearWorkspaceParamOverride(field)` which recomposes
+/// effective settings from Default's row; the sidebar's
+/// `.onChange(of: vm.settings)` handler then snaps the local draft
+/// back into sync.
+///
+/// Renders nothing — and takes no space — when (a) no workspace is
+/// active yet (boot-time edge case before `refreshWorkspaces`
+/// finishes), (b) the active workspace IS the Default workspace
+/// (Default's row IS the global floor; there is nothing to fall back
+/// to), or (c) the active workspace's column for `field` is `NULL`
+/// (already inheriting). Keeps the chrome out of the user's way
+/// 99% of the time.
+struct WorkspaceOverrideClearButton: View {
+    let field: ChatViewModel.WorkspaceParamField
+    var vm: ChatViewModel
+
+    var body: some View {
+        if shouldRender {
+            Button {
+                vm.clearWorkspaceParamOverride(field)
+            } label: {
+                Label("Default", systemImage: "arrow.uturn.backward")
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption2)
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.mini)
+            .foregroundStyle(.secondary)
+            .help("Clear this workspace's override for this field; falls back to the Default workspace's value.")
+        }
+    }
+
+    private var shouldRender: Bool {
+        guard let activeId = vm.activeWorkspaceId else { return false }
+        if vm.isDefaultWorkspace(activeId) { return false }
+        return vm.activeWorkspaceOverrides(field)
     }
 }

@@ -140,18 +140,27 @@ extension SidebarView {
             storageKey: "sidebar.fold.model.parameters"
         ) {
         VStack(alignment: .leading, spacing: 10) {
-            ParamRow(label: "Temperature",
-                     value: String(format: "%.2f", draft.temperature)) {
+            ParamRow(
+                label: "Temperature",
+                value: String(format: "%.2f", draft.temperature),
+                accessory: AnyView(WorkspaceOverrideClearButton(field: .temperature, vm: vm))
+            ) {
                 Slider(value: $draft.temperature, in: 0...2, step: 0.05)
             }
 
-            ParamRow(label: "Top P",
-                     value: String(format: "%.2f", draft.topP)) {
+            ParamRow(
+                label: "Top P",
+                value: String(format: "%.2f", draft.topP),
+                accessory: AnyView(WorkspaceOverrideClearButton(field: .topP, vm: vm))
+            ) {
                 Slider(value: $draft.topP, in: 0...1, step: 0.01)
             }
 
-            ParamRow(label: "Max tokens",
-                     value: "\(draft.maxTokens)") {
+            ParamRow(
+                label: "Max tokens",
+                value: "\(draft.maxTokens)",
+                accessory: AnyView(WorkspaceOverrideClearButton(field: .maxTokens, vm: vm))
+            ) {
                 Slider(
                     value: Binding(
                         get: { Double(draft.maxTokens) },
@@ -189,7 +198,11 @@ extension SidebarView {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             } label: {
-                Text("System prompt").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text("System prompt").font(.caption).foregroundStyle(.secondary)
+                    WorkspaceOverrideClearButton(field: .systemPrompt, vm: vm)
+                    Spacer()
+                }
             }
 
             modelLoadParamsGroup

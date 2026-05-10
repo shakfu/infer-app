@@ -20,6 +20,17 @@ struct WorkspaceSummary: Identifiable, Sendable, Equatable {
     /// via subquery in `listWorkspaces` so the UI can show a count
     /// without a second round-trip.
     let conversationCount: Int
+    // MARK: Per-workspace inference parameters (v5)
+    //
+    // Each is `nil` when the workspace inherits from the Default
+    // workspace's row. The Default workspace's columns hold the
+    // global floor (the v5 migration seeds them from the legacy
+    // `UserDefaults` slots). See `docs/dev/per-workspace-params.md`
+    // for the override semantics.
+    let systemPrompt: String?
+    let temperature: Double?
+    let topP: Double?
+    let maxTokens: Int?
 }
 
 struct VaultConversationSummary: Identifiable, Sendable, Equatable {
@@ -230,6 +241,19 @@ actor VaultStore {
                 sql: "UPDATE conversations SET workspace_id = ? WHERE workspace_id IS NULL",
                 arguments: [defaultId]
             )
+        }
+        // v5: per-workspace inference parameters. Four nullable columns
+        // on `workspaces`. `NULL` means "inherit from the Default
+        // workspace's row." Default's row carries the global floor —
+        // populated from the legacy `UserDefaults` slots by a one-time
+        // migration in `ChatViewModel` on first v5 launch (see
+        // `docs/dev/per-workspace-params.md`). Migration is purely
+        // additive so existing data round-trips unchanged.
+        m.registerMigration("v5_workspace_params") { db in
+            try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN system_prompt TEXT")
+            try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN temperature REAL")
+            try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN top_p REAL")
+            try db.execute(sql: "ALTER TABLE workspaces ADD COLUMN max_tokens INTEGER")
         }
         return m
     }()
@@ -594,21 +618,13 @@ actor VaultStore {
         return try await db.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT w.id, w.name, w.data_folder, w.created_at, w.updated_at,
+                       w.system_prompt, w.temperature, w.top_p, w.max_tokens,
                        (SELECT COUNT(*) FROM conversations c WHERE c.workspace_id = w.id) AS cnt
                     FROM workspaces w
                     ORDER BY (w.name = 'Default') DESC,
                              LOWER(w.name) ASC
             """)
-            return rows.map { row in
-                WorkspaceSummary(
-                    id: row["id"],
-                    name: row["name"],
-                    dataFolder: row["data_folder"],
-                    createdAt: Date(timeIntervalSince1970: TimeInterval(row["created_at"] as Int64)),
-                    updatedAt: Date(timeIntervalSince1970: TimeInterval(row["updated_at"] as Int64)),
-                    conversationCount: row["cnt"]
-                )
-            }
+            return rows.map(Self.makeWorkspaceSummary)
         }
     }
 
@@ -707,22 +723,85 @@ actor VaultStore {
         return try await db.read { db in
             let rows = try Row.fetchAll(db, sql: """
                 SELECT w.id, w.name, w.data_folder, w.created_at, w.updated_at,
+                       w.system_prompt, w.temperature, w.top_p, w.max_tokens,
                        (SELECT COUNT(*) FROM conversations c WHERE c.workspace_id = w.id) AS cnt
                     FROM workspaces w
                     WHERE w.id = ?
                     LIMIT 1
             """, arguments: [id])
-            return rows.first.map { row in
-                WorkspaceSummary(
-                    id: row["id"],
-                    name: row["name"],
-                    dataFolder: row["data_folder"],
-                    createdAt: Date(timeIntervalSince1970: TimeInterval(row["created_at"] as Int64)),
-                    updatedAt: Date(timeIntervalSince1970: TimeInterval(row["updated_at"] as Int64)),
-                    conversationCount: row["cnt"]
-                )
-            }
+            return rows.first.map(Self.makeWorkspaceSummary)
         }
+    }
+
+    /// Update one or more per-workspace inference-parameter columns
+    /// (`system_prompt`, `temperature`, `top_p`, `max_tokens`). Pass
+    /// `.unchanged` for fields the caller doesn't want to touch;
+    /// `.value(nil)` clears (= falls back to Default's row);
+    /// `.value(x)` sets the override. Three-state mapping is
+    /// necessary because `nil` already has meaning here (it's the
+    /// "use default" signal stored in the database), distinct from
+    /// "the caller didn't pass this field." Updates `updated_at` if
+    /// at least one field changes.
+    func setWorkspaceParams(
+        id: Int64,
+        systemPrompt: ParamWrite<String?> = .unchanged,
+        temperature: ParamWrite<Double?> = .unchanged,
+        topP: ParamWrite<Double?> = .unchanged,
+        maxTokens: ParamWrite<Int?> = .unchanged
+    ) async throws {
+        var fragments: [String] = []
+        var args: [DatabaseValueConvertible?] = []
+        if case .value(let v) = systemPrompt {
+            fragments.append("system_prompt = ?")
+            args.append(v)
+        }
+        if case .value(let v) = temperature {
+            fragments.append("temperature = ?")
+            args.append(v)
+        }
+        if case .value(let v) = topP {
+            fragments.append("top_p = ?")
+            args.append(v)
+        }
+        if case .value(let v) = maxTokens {
+            fragments.append("max_tokens = ?")
+            args.append(v.map { Int64($0) })
+        }
+        guard !fragments.isEmpty else { return }
+        let now = Int64(Date().timeIntervalSince1970)
+        fragments.append("updated_at = ?")
+        args.append(now)
+        args.append(id)
+        let sql = "UPDATE workspaces SET \(fragments.joined(separator: ", ")) WHERE id = ?"
+        let stmtArgs = StatementArguments(args)
+        let db = try pool()
+        try await db.write { db in
+            try db.execute(sql: sql, arguments: stmtArgs)
+        }
+    }
+
+    /// Three-state write: leave a column alone, or write a (possibly
+    /// nil) value. Used by `setWorkspaceParams` so callers can update
+    /// any subset of the four columns in a single query without
+    /// confusing "skip this field" with "set this field to NULL."
+    enum ParamWrite<T>: Sendable where T: Sendable {
+        case unchanged
+        case value(T)
+    }
+
+    private static func makeWorkspaceSummary(_ row: Row) -> WorkspaceSummary {
+        WorkspaceSummary(
+            id: row["id"],
+            name: row["name"],
+            dataFolder: row["data_folder"],
+            createdAt: Date(timeIntervalSince1970: TimeInterval(row["created_at"] as Int64)),
+            updatedAt: Date(timeIntervalSince1970: TimeInterval(row["updated_at"] as Int64)),
+            conversationCount: row["cnt"],
+            systemPrompt: row["system_prompt"],
+            temperature: row["temperature"],
+            topP: row["top_p"],
+            maxTokens: (row["max_tokens"] as Int64?).map { Int($0) }
+        )
     }
 
     // MARK: - Helpers
