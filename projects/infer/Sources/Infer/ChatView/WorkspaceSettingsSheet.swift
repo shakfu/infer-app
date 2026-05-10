@@ -169,6 +169,20 @@ struct WorkspaceSettingsSheet: View {
                 onClearOverride: { vm.setWorkspaceEnabledAgents(id: workspace.id, ids: nil) }
             )
             agentsToggleList
+            if !vm.availableAgents.isEmpty {
+                bulkActionsRow(
+                    enableAll: {
+                        vm.setWorkspaceEnabledAgents(
+                            id: workspace.id,
+                            ids: vm.availableAgents.map(\.id.rawValue)
+                        )
+                    },
+                    disableAll: {
+                        vm.setWorkspaceEnabledAgents(id: workspace.id, ids: [])
+                    },
+                    disableAllHelp: "Silence every agent except DefaultAgent (the safety net keeps DefaultAgent always on)."
+                )
+            }
         }
     }
 
@@ -181,6 +195,20 @@ struct WorkspaceSettingsSheet: View {
                 onClearOverride: { vm.setWorkspaceEnabledTools(id: workspace.id, ids: nil) }
             )
             toolsToggleList
+            if !vm.availableToolNames.isEmpty {
+                bulkActionsRow(
+                    enableAll: {
+                        vm.setWorkspaceEnabledTools(
+                            id: workspace.id,
+                            ids: vm.availableToolNames
+                        )
+                    },
+                    disableAll: {
+                        vm.setWorkspaceEnabledTools(id: workspace.id, ids: [])
+                    },
+                    disableAllHelp: "No tools available to the active agent in this workspace."
+                )
+            }
         }
     }
 
@@ -193,7 +221,45 @@ struct WorkspaceSettingsSheet: View {
                 onClearOverride: { vm.setWorkspaceEnabledMCPServers(id: workspace.id, ids: nil) }
             )
             mcpServersToggleList
+            if !vm.mcpServers.isEmpty {
+                bulkActionsRow(
+                    enableAll: {
+                        vm.setWorkspaceEnabledMCPServers(
+                            id: workspace.id,
+                            ids: vm.mcpServers.map(\.id)
+                        )
+                    },
+                    disableAll: {
+                        vm.setWorkspaceEnabledMCPServers(id: workspace.id, ids: [])
+                    },
+                    disableAllHelp: "Every MCP server's tools are removed from this workspace's agent prompt. Servers themselves keep running."
+                )
+            }
         }
+    }
+
+    /// Bulk-action row rendered below each allow-list toggle grid.
+    /// `Enable all` writes the current universe of ids as an
+    /// explicit override (the user is opting into "every available
+    /// item, including any future additions" — different from
+    /// `Use Default` in the banner which clears to NULL and lets
+    /// the cascade fall through). `Disable all` writes `[]`, which
+    /// is the workspace-silenced state.
+    private func bulkActionsRow(
+        enableAll: @escaping () -> Void,
+        disableAll: @escaping () -> Void,
+        disableAllHelp: String
+    ) -> some View {
+        HStack(spacing: 8) {
+            Button("Enable all") { enableAll() }
+                .controlSize(.small)
+                .help("Pin every currently-available item as an explicit allow-list. Different from Use Default — this lists every item by id, so future additions to the global catalogue won't auto-appear.")
+            Button("Disable all") { disableAll() }
+                .controlSize(.small)
+                .help(disableAllHelp)
+            Spacer()
+        }
+        .padding(.top, 4)
     }
 
     private var ragTab: some View {
@@ -392,31 +458,81 @@ struct WorkspaceSettingsSheet: View {
                     .foregroundStyle(.tertiary)
             } else {
                 ForEach(vm.availableToolNames, id: \.self) { name in
-                    let isEnabled: Bool = {
-                        if let allow = workspace.enabledTools {
-                            return allow.contains(name)
-                        }
-                        return vm.isToolEnabledInActiveWorkspace(name)
-                    }()
-                    Toggle(isOn: Binding(
-                        get: { isEnabled },
-                        set: { _ in
-                            vm.toggleToolInAllowList(
-                                workspaceId: workspace.id,
-                                toolName: name,
-                                universe: vm.availableToolNames
-                            )
-                        }
-                    )) {
-                        Text(name)
-                            .font(.caption.monospaced())
-                    }
-                    .toggleStyle(.checkbox)
-                    .controlSize(.small)
+                    toolRow(name: name)
                 }
             }
         }
         .padding(.top, 4)
+    }
+
+    /// Single tool row with cross-axis signaling: when the tool's
+    /// owning MCP server is allow-listed out (Phase 4c), the row
+    /// renders as disabled with a tooltip pointing at the MCP tab.
+    /// Toggling this row's checkbox in that state would be no-op-
+    /// shaped (the composed `effectiveEnabledTools` subtracts the
+    /// tool regardless of the per-tool toggle), so blocking the
+    /// interaction outright is more honest than letting the user
+    /// flip a switch that has no effect.
+    @ViewBuilder
+    private func toolRow(name: String) -> some View {
+        let isEnabled = isToolEnabledRowState(name: name)
+        let mcpDisabledOwner = mcpDisabledOwnerForTool(name: name)
+        let isCrossAxisDisabled = mcpDisabledOwner != nil
+        Toggle(isOn: Binding(
+            get: { isEnabled && !isCrossAxisDisabled },
+            set: { _ in
+                guard !isCrossAxisDisabled else { return }
+                vm.toggleToolInAllowList(
+                    workspaceId: workspace.id,
+                    toolName: name,
+                    universe: vm.availableToolNames
+                )
+            }
+        )) {
+            HStack(spacing: 6) {
+                Text(name)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(isCrossAxisDisabled ? .tertiary : .primary)
+                if let owner = mcpDisabledOwner {
+                    Text("(MCP server '\(owner)' disabled)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .toggleStyle(.checkbox)
+        .controlSize(.small)
+        .disabled(isCrossAxisDisabled)
+        .help(isCrossAxisDisabled
+            ? "This tool is owned by MCP server '\(mcpDisabledOwner ?? "")', which is disabled in this workspace's MCP tab. Re-enable the server to make this tool toggleable."
+            : "")
+    }
+
+    /// Read-side view of whether the row's checkbox SHOULD be on
+    /// based on the per-tool allow-list alone. Cross-axis disable is
+    /// applied separately on the binding's getter so the visual
+    /// reflects the EFFECTIVE state (off when the server is gone)
+    /// while the underlying per-tool list is preserved (so re-
+    /// enabling the server restores the prior toggle state).
+    private func isToolEnabledRowState(name: String) -> Bool {
+        if let allow = workspace.enabledTools {
+            return allow.contains(name)
+        }
+        return vm.isToolEnabledInActiveWorkspace(name)
+    }
+
+    /// If `name` is an MCP-derived tool (`mcp.<serverID>.<rest>`)
+    /// AND the active workspace's MCP allow-list excludes that
+    /// server, return the server id; otherwise nil. Drives the
+    /// cross-axis disable state on the row. Tool-name parsing
+    /// mirrors `MCPBuiltinTool.init`'s construction.
+    private func mcpDisabledOwnerForTool(name: String) -> String? {
+        guard let allow = vm.effectiveEnabledMCPServers else { return nil }
+        guard name.hasPrefix("mcp.") else { return nil }
+        let stripped = String(name.dropFirst("mcp.".count))
+        guard let dot = stripped.firstIndex(of: ".") else { return nil }
+        let serverID = String(stripped[..<dot])
+        return allow.contains(serverID) ? nil : serverID
     }
 
     /// Per-row toggle grid for the Phase 4c MCP server allow-list.

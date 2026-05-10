@@ -284,8 +284,23 @@ extension ChatViewModel {
             // plugin can capture the invoker and call any tool that
             // ends up in the catalog — built-ins, its own, other
             // plugins', or MCP-surfaced ones.
-            let pluginInvoker: ToolInvoker = { name, args in
-                try await registry.invoke(name: name, arguments: args)
+            // Phase 5c: gate the plugin-exposed invoker against the
+            // active workspace's tool allow-list so a plugin
+            // calling another plugin's tool can't bypass the
+            // workspace's tool curation. The check happens on the
+            // main actor at call time (where `effectiveEnabledTools`
+            // is read) rather than at registration time so a
+            // workspace switch mid-session is honoured immediately.
+            // Falls through unchanged when no allow-list is active.
+            let pluginInvoker: ToolInvoker = { [weak self] name, args in
+                let allow = await MainActor.run { self?.effectiveEnabledTools }
+                if let allow, !allow.contains(name) {
+                    return ToolResult(
+                        output: "",
+                        error: "tool '\(name)' is disabled in this workspace's tool allow-list"
+                    )
+                }
+                return try await registry.invoke(name: name, arguments: args)
             }
             // Single host-services instance shared across every plugin's
             // register call. The sandbox resolver pins plugin filesystem

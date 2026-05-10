@@ -72,7 +72,57 @@ struct WorkspacePickerMenu: View {
                     .foregroundStyle(Color.accentColor.opacity(0.7))
                     .help("This workspace has a data folder for RAG ingestion.")
             }
+            // Phase 5d: subtle indicator when the active workspace
+            // overrides any cascade axis. Small accent-tinted dot
+            // reading "this workspace is customised" — tooltips
+            // detail which axes. Only renders for non-Default
+            // workspaces with at least one override; Default IS the
+            // floor so the concept of "overriding" doesn't apply.
+            if showsOverrideIndicator {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 6))
+                    .foregroundStyle(Color.accentColor)
+                    .help(overrideIndicatorTooltip)
+            }
         }
+    }
+
+    /// True only when the active workspace is non-Default AND has
+    /// at least one cascade-axis override. Read directly from the
+    /// active row's columns rather than the cascade resolver
+    /// because the resolver hides which workspace contributed the
+    /// override.
+    private var showsOverrideIndicator: Bool {
+        guard let ws = vm.activeWorkspace else { return false }
+        guard !vm.isDefaultWorkspace(ws.id) else { return false }
+        return ws.systemPrompt != nil
+            || ws.temperature != nil
+            || ws.topP != nil
+            || ws.maxTokens != nil
+            || ws.outputDirectory != nil
+            || ws.activeAgentId != nil
+            || ws.enabledAgents != nil
+            || ws.enabledTools != nil
+            || ws.enabledMCPServers != nil
+    }
+
+    /// Enumerate which axes are overridden in the tooltip so the
+    /// user can tell at a glance which parts of the workspace
+    /// diverge from Default without opening the settings panel.
+    private var overrideIndicatorTooltip: String {
+        guard let ws = vm.activeWorkspace else { return "" }
+        var axes: [String] = []
+        if ws.systemPrompt != nil { axes.append("system prompt") }
+        if ws.temperature != nil { axes.append("temperature") }
+        if ws.topP != nil { axes.append("top-p") }
+        if ws.maxTokens != nil { axes.append("max tokens") }
+        if ws.outputDirectory != nil { axes.append("output directory") }
+        if ws.activeAgentId != nil { axes.append("active agent") }
+        if ws.enabledAgents != nil { axes.append("agents allow-list") }
+        if ws.enabledTools != nil { axes.append("tools allow-list") }
+        if ws.enabledMCPServers != nil { axes.append("MCP servers allow-list") }
+        guard !axes.isEmpty else { return "" }
+        return "This workspace overrides Default on: \(axes.joined(separator: ", "))."
     }
 
     @ViewBuilder

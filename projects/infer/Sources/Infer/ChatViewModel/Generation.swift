@@ -1028,8 +1028,19 @@ extension ChatViewModel {
             return nil
         }
         let toolRegistry = self.toolRegistry
-        let invoker: ToolInvoker = { name, args in
-            try await toolRegistry.invoke(name: name, arguments: args)
+        // Phase 5c: gate the customLoop invoker against the active
+        // workspace's tool allow-list. Same shape as the plugin
+        // invoker in `bootstrapAgents` — main-actor read at call
+        // time so workspace switches mid-session are honoured.
+        let invoker: ToolInvoker = { [weak self] name, args in
+            let allow = await MainActor.run { self?.effectiveEnabledTools }
+            if let allow, !allow.contains(name) {
+                return ToolResult(
+                    output: "",
+                    error: "tool '\(name)' is disabled in this workspace's tool allow-list"
+                )
+            }
+            return try await toolRegistry.invoke(name: name, arguments: args)
         }
         // Hand the customLoop agent an LLM decode hook wired to the
         // active backend. Required by `PlannerAgent` (item 10), which
