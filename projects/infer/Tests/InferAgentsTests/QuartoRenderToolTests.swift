@@ -127,6 +127,66 @@ final class QuartoRenderToolTests: XCTestCase {
         XCTAssertTrue(sawResult)
     }
 
+    // MARK: - Front-matter normalization
+
+    func testNormalizeStripsBogusFormatMappingAndInjectsScalar() {
+        let input = """
+        ---
+        title: "Deck"
+        author: "AI"
+        format:
+          slides: pptx
+          theme: "default"
+        ---
+
+        # Slide 1
+        """
+        let out = QuartoRenderTool.normalizeFrontMatter(markdown: input, format: "pptx")
+        XCTAssertFalse(out.contains("slides: pptx"))
+        XCTAssertFalse(out.contains("theme: \"default\""))
+        XCTAssertTrue(out.contains("format: pptx"))
+        XCTAssertTrue(out.contains("title: \"Deck\""))
+        XCTAssertTrue(out.contains("# Slide 1"))
+    }
+
+    func testNormalizeStripsScalarFormatAndReplaces() {
+        let input = """
+        ---
+        title: "X"
+        format: html
+        ---
+        body
+        """
+        let out = QuartoRenderTool.normalizeFrontMatter(markdown: input, format: "pptx")
+        XCTAssertFalse(out.contains("format: html"))
+        XCTAssertTrue(out.contains("format: pptx"))
+    }
+
+    func testNormalizeInjectsFrontMatterWhenAbsent() {
+        let input = "# Hello\n\nbody"
+        let out = QuartoRenderTool.normalizeFrontMatter(markdown: input, format: "pptx")
+        XCTAssertTrue(out.hasPrefix("---\nformat: pptx\n---\n"))
+        XCTAssertTrue(out.contains("# Hello"))
+    }
+
+    func testNormalizePreservesSiblingKeysAfterFormatBlock() {
+        let input = """
+        ---
+        title: "T"
+        format:
+          pptx:
+            incremental: true
+        author: "A"
+        ---
+        body
+        """
+        let out = QuartoRenderTool.normalizeFrontMatter(markdown: input, format: "pptx")
+        XCTAssertTrue(out.contains("title: \"T\""))
+        XCTAssertTrue(out.contains("author: \"A\""))
+        XCTAssertFalse(out.contains("incremental: true"))
+        XCTAssertTrue(out.contains("format: pptx"))
+    }
+
     func testRegistryWrapsNonStreamingToolAsSingleEvent() async throws {
         let registry = ToolRegistry()
         await registry.register(WordCountTool())

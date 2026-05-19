@@ -70,6 +70,59 @@ public struct QuartoRenderTool: StreamingBuiltinTool {
         case error(ToolResult)
     }
 
+    /// Rewrites the YAML front matter so `format:` always matches the
+    /// tool's `to` argument. Models routinely hallucinate format options
+    /// (e.g. `format: { slides: pptx, theme: default }` for pptx, where
+    /// neither `slides:` nor `theme:` exist in the schema). Since `to`
+    /// is the source of truth, we strip any user-supplied `format:`
+    /// entry and inject the canonical scalar form.
+    static func normalizeFrontMatter(markdown: String, format: String) -> String {
+        let lines = markdown.components(separatedBy: "\n")
+        guard let first = lines.first,
+              first.trimmingCharacters(in: .whitespaces) == "---"
+        else {
+            return "---\nformat: \(format)\n---\n\n" + markdown
+        }
+        var closeIdx: Int?
+        for i in 1..<lines.count where lines[i].trimmingCharacters(in: .whitespaces) == "---" {
+            closeIdx = i
+            break
+        }
+        guard let close = closeIdx else {
+            return "---\nformat: \(format)\n---\n\n" + markdown
+        }
+        let fmLines = Array(lines[1..<close])
+        let bodyLines = close + 1 < lines.count ? Array(lines[(close + 1)...]) : []
+        let filtered = stripFormatKey(from: fmLines)
+        var out: [String] = ["---"]
+        out.append(contentsOf: filtered)
+        out.append("format: \(format)")
+        out.append("---")
+        out.append(contentsOf: bodyLines)
+        return out.joined(separator: "\n")
+    }
+
+    private static func stripFormatKey(from lines: [String]) -> [String] {
+        var out: [String] = []
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
+            if line.range(of: #"^format\s*:"#, options: .regularExpression) != nil {
+                i += 1
+                while i < lines.count {
+                    let next = lines[i]
+                    if next.isEmpty { break }
+                    if next.first?.isWhitespace != true { break }
+                    i += 1
+                }
+            } else {
+                out.append(line)
+                i += 1
+            }
+        }
+        return out
+    }
+
     private func parse(_ arguments: String) -> ParseOutcome {
         guard let data = arguments.data(using: .utf8) else {
             return .error(ToolResult(output: "", error: "arguments not UTF-8"))
@@ -102,9 +155,10 @@ public struct QuartoRenderTool: StreamingBuiltinTool {
                 error: "Quarto not found on PATH. Install via `brew install quarto` or set the path in Settings."
             )
         }
+        let markdown = Self.normalizeFrontMatter(markdown: parsed.markdown, format: format.rawValue)
         do {
             let result = try await runner.render(
-                markdown: parsed.markdown,
+                markdown: markdown,
                 to: format,
                 quartoPath: install.url.path,
                 extraArgs: parsed.extraArgs ?? []
@@ -143,8 +197,9 @@ public struct QuartoRenderTool: StreamingBuiltinTool {
                     continuation.finish()
                     return
                 }
+                let markdown = Self.normalizeFrontMatter(markdown: parsed.markdown, format: format.rawValue)
                 let inner = runner.renderStreaming(
-                    markdown: parsed.markdown,
+                    markdown: markdown,
                     to: format,
                     quartoPath: install.url.path,
                     extraArgs: parsed.extraArgs ?? []
