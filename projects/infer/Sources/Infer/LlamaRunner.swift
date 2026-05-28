@@ -609,6 +609,145 @@ actor LlamaRunner {
         messages: [(role: String, content: String)],
         addAssistant: Bool
     ) throws -> String {
+        if let rendered = try applyTemplate(
+            template: template, messages: messages, addAssistant: addAssistant
+        ) {
+            return rendered
+        }
+
+        // Fallback: some chat templates (notably Gemma's bundled jinja)
+        // raise an exception when a `system` message is present. Retry
+        // once with the system content folded into the first user turn
+        // — matching what `transformers` / mlx-swift-lm do silently —
+        // before giving up.
+        if let merged = mergeSystemIntoFirstUser(messages),
+           let rendered = try applyTemplate(
+               template: template, messages: merged, addAssistant: addAssistant
+           ) {
+            return rendered
+        }
+
+        // `llama_chat_apply_template` is fingerprint-based, not jinja
+        // (see llama.h:1168). Newer Gemma variants ship jinja templates
+        // that no fingerprint in llama.cpp's table matches, and the
+        // call returns -1 regardless of message shape. The formats are
+        // well-known though, so we render them by hand when the
+        // template carries an unambiguous family marker.
+        if let t = template {
+            if t.contains("<|turn>") {
+                return renderGemma4Template(messages: messages, addAssistant: addAssistant)
+            }
+            if t.contains("<start_of_turn>") {
+                return renderGemmaTemplate(messages: messages, addAssistant: addAssistant)
+            }
+        }
+
+        logTemplateFailure(template: template, messages: messages)
+        throw LlamaError.templateFailed
+    }
+
+    /// Gemma 4 (`gemma4` architecture) chat template renderer. Distinct
+    /// from Gemma 2/3 — uses `<|turn>` / `<turn|>` markers, leads with
+    /// an explicit `<bos>` token, and wraps any system content in a
+    /// dedicated `<|turn>system ... <turn|>` block at the top before
+    /// the conversation turns. Tool calls, reasoning channels, and the
+    /// multi-segment assistant continuation case from the full jinja
+    /// are out of scope here: only the chat path (system / user /
+    /// assistant content strings) is supported, which is all the
+    /// runtime currently feeds in.
+    private static func renderGemma4Template(
+        messages: [(role: String, content: String)],
+        addAssistant: Bool
+    ) -> String {
+        var out = "<bos>"
+        var rest = messages
+        if let first = rest.first, first.role == "system" {
+            let trimmed = first.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            out += "<|turn>system\n" + trimmed + "<turn|>\n"
+            rest.removeFirst()
+        }
+        var prevWasAssistant = false
+        for msg in rest {
+            let trimmed = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let role = msg.role == "assistant" ? "model" : msg.role
+            let continueSameTurn = (role == "model" && prevWasAssistant)
+            if !continueSameTurn {
+                out += "<|turn>" + role + "\n"
+            }
+            out += trimmed + "<turn|>\n"
+            prevWasAssistant = (msg.role == "assistant")
+        }
+        if addAssistant {
+            out += "<|turn>model\n"
+        }
+        return out
+    }
+
+    /// Manual Gemma chat-template renderer used as a fallback when
+    /// llama.cpp's fingerprinter can't classify the model's jinja
+    /// template. Matches llama.cpp's internal `LLM_CHAT_TEMPLATE_GEMMA`
+    /// branch: system messages get folded into the next non-system
+    /// turn, `assistant` is rewritten to `model`, no `<bos>` (the
+    /// existing code path tokenizes with `addSpecial=false` and relies
+    /// on the template for any prefix, which gemma's branch also omits).
+    private static func renderGemmaTemplate(
+        messages: [(role: String, content: String)],
+        addAssistant: Bool
+    ) -> String {
+        var out = ""
+        var pendingSystem = ""
+        for msg in messages {
+            let trimmed = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if msg.role == "system" {
+                pendingSystem = trimmed
+                continue
+            }
+            let role = msg.role == "assistant" ? "model" : msg.role
+            out += "<start_of_turn>\(role)\n"
+            if !pendingSystem.isEmpty {
+                out += pendingSystem + "\n\n"
+                pendingSystem = ""
+            }
+            out += trimmed + "<end_of_turn>\n"
+        }
+        if addAssistant {
+            out += "<start_of_turn>model\n"
+        }
+        return out
+    }
+
+    /// Logged once per process so a templateFailed in production has
+    /// enough context to diagnose without spamming.
+    private static let templateFailureLogged = NSLock()
+    nonisolated(unsafe) private static var templateFailureWasLogged = false
+    private static func logTemplateFailure(
+        template: String?,
+        messages: [(role: String, content: String)]
+    ) {
+        templateFailureLogged.lock()
+        defer { templateFailureLogged.unlock() }
+        guard !templateFailureWasLogged else { return }
+        templateFailureWasLogged = true
+        let roles = messages.map { $0.role }.joined(separator: ",")
+        print("[LlamaRunner] templateFailed roles=[\(roles)]")
+        if let t = template {
+            let dst = NSTemporaryDirectory() + "infer-failed-template.jinja"
+            try? t.write(toFile: dst, atomically: true, encoding: .utf8)
+            print("[LlamaRunner] full template written to: \(dst) (\(t.count) chars)")
+        } else {
+            print("[LlamaRunner] template was nil")
+        }
+    }
+
+    /// Single attempt at `llama_chat_apply_template`. Returns nil if the
+    /// template rejected the inputs (negative return code other than
+    /// buffer-too-small), letting the caller decide whether to retry
+    /// with a transformed message list.
+    private static func applyTemplate(
+        template: String?,
+        messages: [(role: String, content: String)],
+        addAssistant: Bool
+    ) throws -> String? {
         let msgCount = messages.count
         let totalChars = messages.reduce(0) { $0 + $1.content.count + $1.role.count }
 
@@ -657,8 +796,26 @@ actor LlamaRunner {
                 n = callTemplate(nil)
             }
         }
-        if n < 0 { throw LlamaError.templateFailed }
+        if n < 0 { return nil }
         return Self.decodeCChars(buf, length: Int(n))
+    }
+
+    /// If `messages` starts with a `system` turn and contains at least
+    /// one `user` turn, return a copy with the system content prepended
+    /// to the first user message (newline-separated) and the system
+    /// entry dropped. Returns nil when no such transformation applies.
+    private static func mergeSystemIntoFirstUser(
+        _ messages: [(role: String, content: String)]
+    ) -> [(role: String, content: String)]? {
+        guard let first = messages.first, first.role == "system" else { return nil }
+        guard let firstUserIdx = messages.firstIndex(where: { $0.role == "user" }) else {
+            return nil
+        }
+        var out = messages
+        let merged = first.content + "\n\n" + out[firstUserIdx].content
+        out[firstUserIdx] = (role: "user", content: merged)
+        out.remove(at: 0)
+        return out
     }
 
     // MARK: - One-shot generation (isolated from main conversation)
