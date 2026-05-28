@@ -59,6 +59,12 @@ actor LlamaRunner {
     /// no model is loaded.
     private var modelContextTrainLimit: Int?
     private var chatTemplate: String?
+    /// BOS / EOS token text snapshotted at `load`. Passed to the Jinja
+    /// renderer (`chatfmt_apply`) so templates that reference
+    /// `{{ bos_token }}` / `{{ eos_token }}` resolve correctly. Nil
+    /// when the vocab doesn't define one.
+    private var bosToken: String?
+    private var eosToken: String?
     private var systemPrompt: String?
     private var samplerTemperature: Float = 0.8
     private var samplerTopP: Float = 0.95
@@ -115,6 +121,8 @@ actor LlamaRunner {
         modelPath = nil
         modelContextTrainLimit = nil
         chatTemplate = nil
+        bosToken = nil
+        eosToken = nil
         isGenerating = false
     }
 
@@ -211,6 +219,8 @@ actor LlamaRunner {
         messages.removeAll()
         prevFormattedLen = 0
         chatTemplate = nil
+        bosToken = nil
+        eosToken = nil
         modelContextTrainLimit = nil
 
         var mparams = llama_model_default_params()
@@ -253,6 +263,17 @@ actor LlamaRunner {
             self.chatTemplate = String(cString: cstr)
         } else {
             self.chatTemplate = nil
+        }
+
+        // Snapshot BOS / EOS token text for the Jinja renderer. Templates
+        // commonly reference `{{ bos_token }}` / `{{ eos_token }}`; the
+        // values are stable for the lifetime of the loaded model so we
+        // read them once here rather than on every render call.
+        if let v = self.vocab {
+            let bosId = llama_vocab_bos(v)
+            let eosId = llama_vocab_eos(v)
+            if let s = llama_vocab_get_text(v, bosId) { self.bosToken = String(cString: s) }
+            if let s = llama_vocab_get_text(v, eosId) { self.eosToken = String(cString: s) }
         }
 
         // Probe for `<think>` / `</think>` as single special tokens.
@@ -594,228 +615,84 @@ actor LlamaRunner {
     private func renderTemplate(addAssistant: Bool) throws -> String {
         try Self.renderTemplate(
             template: chatTemplate,
+            bosToken: bosToken,
+            eosToken: eosToken,
             messages: messages,
             addAssistant: addAssistant
         )
     }
 
-    /// Render a list of messages through the model's chat template.
-    /// Static so it can be called from one-shot paths (which don't
-    /// have access to the actor's `messages` / `chatTemplate` state)
-    /// or from tests. A nil `template` falls back to llama.cpp's
-    /// built-in default template.
+    /// Render a chat through the model's GGUF-supplied Jinja template.
+    /// Delegates to `chatfmt_apply` in libchatfmt.dylib (built from
+    /// llama.cpp's `common/jinja` engine and shipped inside
+    /// LlamaCpp.framework). Unlike `llama_chat_apply_template`, which
+    /// fingerprints against a hardcoded list and rejects any template
+    /// it doesn't recognise (see `llama.h:1168` and the chat_facade.h
+    /// rationale), the Jinja path renders whatever the GGUF carries.
+    /// A nil or empty `template` is rejected — the caller is expected
+    /// to short-circuit (e.g. base models with no chat template
+    /// shouldn't reach this path).
     static func renderTemplate(
         template: String?,
+        bosToken: String?,
+        eosToken: String?,
         messages: [(role: String, content: String)],
         addAssistant: Bool
     ) throws -> String {
-        if let rendered = try applyTemplate(
-            template: template, messages: messages, addAssistant: addAssistant
-        ) {
+        guard let template, !template.isEmpty else {
+            throw LlamaError.templateFailed
+        }
+
+        // Serialise messages to a JSON array shaped like OpenAI chat
+        // completions: [{"role": ..., "content": ...}, ...]. Jinja
+        // templates iterate over this with `for message in messages`.
+        let payload: [[String: String]] = messages.map {
+            ["role": $0.role, "content": $0.content]
+        }
+        let jsonData: Data
+        do {
+            jsonData = try JSONSerialization.data(withJSONObject: payload, options: [])
+        } catch {
+            throw LlamaError.templateFailed
+        }
+        guard let messagesJson = String(data: jsonData, encoding: .utf8) else {
+            throw LlamaError.templateFailed
+        }
+
+        var errOut: UnsafeMutablePointer<CChar>? = nil
+        let resultPtr: UnsafeMutablePointer<CChar>? = template.withCString { tmplPtr in
+            messagesJson.withCString { msgsPtr in
+                // `bosToken` / `eosToken` need cstring lifetime that
+                // outlives the call. Nested withCString achieves that;
+                // nil maps to a NULL pointer the shim treats as empty.
+                func withMaybeCString<R>(
+                    _ s: String?, _ body: (UnsafePointer<CChar>?) -> R
+                ) -> R {
+                    if let s { return s.withCString { body($0) } }
+                    return body(nil)
+                }
+                return withMaybeCString(bosToken) { bosPtr in
+                    withMaybeCString(eosToken) { eosPtr in
+                        chatfmt_apply(
+                            tmplPtr, msgsPtr, bosPtr, eosPtr,
+                            addAssistant ? 1 : 0, &errOut
+                        )
+                    }
+                }
+            }
+        }
+
+        if let resultPtr {
+            let rendered = String(cString: resultPtr)
+            chatfmt_free(resultPtr)
+            if let errOut { chatfmt_free(errOut) }
             return rendered
         }
 
-        // Fallback: some chat templates (notably Gemma's bundled jinja)
-        // raise an exception when a `system` message is present. Retry
-        // once with the system content folded into the first user turn
-        // — matching what `transformers` / mlx-swift-lm do silently —
-        // before giving up.
-        if let merged = mergeSystemIntoFirstUser(messages),
-           let rendered = try applyTemplate(
-               template: template, messages: merged, addAssistant: addAssistant
-           ) {
-            return rendered
-        }
-
-        // `llama_chat_apply_template` is fingerprint-based, not jinja
-        // (see llama.h:1168). Newer Gemma variants ship jinja templates
-        // that no fingerprint in llama.cpp's table matches, and the
-        // call returns -1 regardless of message shape. The formats are
-        // well-known though, so we render them by hand when the
-        // template carries an unambiguous family marker.
-        if let t = template {
-            if t.contains("<|turn>") {
-                return renderGemma4Template(messages: messages, addAssistant: addAssistant)
-            }
-            if t.contains("<start_of_turn>") {
-                return renderGemmaTemplate(messages: messages, addAssistant: addAssistant)
-            }
-        }
-
-        logTemplateFailure(template: template, messages: messages)
+        let detail = errOut.map { String(cString: $0) } ?? "no diagnostic"
+        if let errOut { chatfmt_free(errOut) }
+        print("[LlamaRunner] chatfmt_apply failed: \(detail)")
         throw LlamaError.templateFailed
-    }
-
-    /// Gemma 4 (`gemma4` architecture) chat template renderer. Distinct
-    /// from Gemma 2/3 — uses `<|turn>` / `<turn|>` markers, leads with
-    /// an explicit `<bos>` token, and wraps any system content in a
-    /// dedicated `<|turn>system ... <turn|>` block at the top before
-    /// the conversation turns. Tool calls, reasoning channels, and the
-    /// multi-segment assistant continuation case from the full jinja
-    /// are out of scope here: only the chat path (system / user /
-    /// assistant content strings) is supported, which is all the
-    /// runtime currently feeds in.
-    private static func renderGemma4Template(
-        messages: [(role: String, content: String)],
-        addAssistant: Bool
-    ) -> String {
-        var out = "<bos>"
-        var rest = messages
-        if let first = rest.first, first.role == "system" {
-            let trimmed = first.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            out += "<|turn>system\n" + trimmed + "<turn|>\n"
-            rest.removeFirst()
-        }
-        var prevWasAssistant = false
-        for msg in rest {
-            let trimmed = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            let role = msg.role == "assistant" ? "model" : msg.role
-            let continueSameTurn = (role == "model" && prevWasAssistant)
-            if !continueSameTurn {
-                out += "<|turn>" + role + "\n"
-            }
-            out += trimmed + "<turn|>\n"
-            prevWasAssistant = (msg.role == "assistant")
-        }
-        if addAssistant {
-            out += "<|turn>model\n"
-        }
-        return out
-    }
-
-    /// Manual Gemma chat-template renderer used as a fallback when
-    /// llama.cpp's fingerprinter can't classify the model's jinja
-    /// template. Matches llama.cpp's internal `LLM_CHAT_TEMPLATE_GEMMA`
-    /// branch: system messages get folded into the next non-system
-    /// turn, `assistant` is rewritten to `model`, no `<bos>` (the
-    /// existing code path tokenizes with `addSpecial=false` and relies
-    /// on the template for any prefix, which gemma's branch also omits).
-    private static func renderGemmaTemplate(
-        messages: [(role: String, content: String)],
-        addAssistant: Bool
-    ) -> String {
-        var out = ""
-        var pendingSystem = ""
-        for msg in messages {
-            let trimmed = msg.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if msg.role == "system" {
-                pendingSystem = trimmed
-                continue
-            }
-            let role = msg.role == "assistant" ? "model" : msg.role
-            out += "<start_of_turn>\(role)\n"
-            if !pendingSystem.isEmpty {
-                out += pendingSystem + "\n\n"
-                pendingSystem = ""
-            }
-            out += trimmed + "<end_of_turn>\n"
-        }
-        if addAssistant {
-            out += "<start_of_turn>model\n"
-        }
-        return out
-    }
-
-    /// Logged once per process so a templateFailed in production has
-    /// enough context to diagnose without spamming.
-    private static let templateFailureLogged = NSLock()
-    nonisolated(unsafe) private static var templateFailureWasLogged = false
-    private static func logTemplateFailure(
-        template: String?,
-        messages: [(role: String, content: String)]
-    ) {
-        templateFailureLogged.lock()
-        defer { templateFailureLogged.unlock() }
-        guard !templateFailureWasLogged else { return }
-        templateFailureWasLogged = true
-        let roles = messages.map { $0.role }.joined(separator: ",")
-        print("[LlamaRunner] templateFailed roles=[\(roles)]")
-        if let t = template {
-            let dst = NSTemporaryDirectory() + "infer-failed-template.jinja"
-            try? t.write(toFile: dst, atomically: true, encoding: .utf8)
-            print("[LlamaRunner] full template written to: \(dst) (\(t.count) chars)")
-        } else {
-            print("[LlamaRunner] template was nil")
-        }
-    }
-
-    /// Single attempt at `llama_chat_apply_template`. Returns nil if the
-    /// template rejected the inputs (negative return code other than
-    /// buffer-too-small), letting the caller decide whether to retry
-    /// with a transformed message list.
-    private static func applyTemplate(
-        template: String?,
-        messages: [(role: String, content: String)],
-        addAssistant: Bool
-    ) throws -> String? {
-        let msgCount = messages.count
-        let totalChars = messages.reduce(0) { $0 + $1.content.count + $1.role.count }
-
-        // Keep the C string backing storage alive for the duration of the call.
-        let roleBufs: [ContiguousArray<CChar>] = messages.map { ContiguousArray($0.role.utf8CString) }
-        let contentBufs: [ContiguousArray<CChar>] = messages.map { ContiguousArray($0.content.utf8CString) }
-
-        var cMessages: [llama_chat_message] = []
-        cMessages.reserveCapacity(msgCount)
-        for i in 0..<msgCount {
-            let rolePtr = roleBufs[i].withUnsafeBufferPointer { $0.baseAddress }
-            let contentPtr = contentBufs[i].withUnsafeBufferPointer { $0.baseAddress }
-            cMessages.append(llama_chat_message(role: rolePtr, content: contentPtr))
-        }
-
-        let tmplCString: [CChar]? = template.map { Array($0.utf8CString) }
-        var bufSize = max(1024, totalChars * 4)
-        var buf = [CChar](repeating: 0, count: bufSize)
-
-        func callTemplate(_ tmplPtr: UnsafePointer<CChar>?) -> Int32 {
-            cMessages.withUnsafeBufferPointer { msgBuf in
-                llama_chat_apply_template(
-                    tmplPtr,
-                    msgBuf.baseAddress,
-                    msgCount,
-                    addAssistant,
-                    &buf,
-                    Int32(bufSize)
-                )
-            }
-        }
-
-        var n: Int32
-        if let t = tmplCString {
-            n = t.withUnsafeBufferPointer { callTemplate($0.baseAddress) }
-        } else {
-            n = callTemplate(nil)
-        }
-
-        if n > Int32(bufSize) {
-            bufSize = Int(n) + 1
-            buf = [CChar](repeating: 0, count: bufSize)
-            if let t = tmplCString {
-                n = t.withUnsafeBufferPointer { callTemplate($0.baseAddress) }
-            } else {
-                n = callTemplate(nil)
-            }
-        }
-        if n < 0 { return nil }
-        return Self.decodeCChars(buf, length: Int(n))
-    }
-
-    /// If `messages` starts with a `system` turn and contains at least
-    /// one `user` turn, return a copy with the system content prepended
-    /// to the first user message (newline-separated) and the system
-    /// entry dropped. Returns nil when no such transformation applies.
-    private static func mergeSystemIntoFirstUser(
-        _ messages: [(role: String, content: String)]
-    ) -> [(role: String, content: String)]? {
-        guard let first = messages.first, first.role == "system" else { return nil }
-        guard let firstUserIdx = messages.firstIndex(where: { $0.role == "user" }) else {
-            return nil
-        }
-        var out = messages
-        let merged = first.content + "\n\n" + out[firstUserIdx].content
-        out[firstUserIdx] = (role: "user", content: merged)
-        out.remove(at: 0)
-        return out
     }
 
     // MARK: - One-shot generation (isolated from main conversation)
@@ -867,6 +744,8 @@ actor LlamaRunner {
         // any context they want into `prompt`.
         let rendered = try Self.renderTemplate(
             template: chatTemplate,
+            bosToken: bosToken,
+            eosToken: eosToken,
             messages: [(role: "user", content: prompt)],
             addAssistant: true
         )
@@ -924,17 +803,6 @@ actor LlamaRunner {
     }
 
     // MARK: - Decode loop (runs off-actor)
-
-    /// Decode a known-length `[CChar]` buffer (not necessarily null-terminated
-    /// within the length) to a Swift `String`. Replaces the now-deprecated
-    /// `String(cString:)` which required the caller to zero-terminate the
-    /// buffer and walked to find the terminator. CChar → UInt8 via
-    /// `bitPattern:` since on Apple platforms they share bit layout; MaxASCII
-    /// safety is handled by `String(decoding:as:)`'s UTF-8 replacement of
-    /// invalid sequences.
-    private static func decodeCChars(_ buf: [CChar], length: Int) -> String {
-        String(decoding: buf.prefix(length).map { UInt8(bitPattern: $0) }, as: UTF8.self)
-    }
 
     private static func tokenize(vocab: OpaquePointer, text: String, addSpecial: Bool) throws -> [llama_token] {
         let cstr = Array(text.utf8CString)
