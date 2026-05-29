@@ -147,9 +147,9 @@ let package = Package(
         // edit/resend, regenerate, and stream-append operations the
         // chat-VM performs on `messages: [ChatMessage]`). No MLX /
         // llama / SwiftUI deps so the suite runs under `swift test`
-        // without the Metal toolchain. Existing concrete runners do
-        // not conform to `ChatRunner` yet — that is a follow-up
-        // refactor; this target unblocks the test pattern today.
+        // without the Metal toolchain. The concrete runners
+        // (Llama/MLX/Cloud) now conform to `ChatRunner`; the cloud
+        // conformance + headless orchestration live in `InferSession`.
         .target(
             name: "InferAppCore",
             path: "Sources/InferAppCore"
@@ -158,6 +158,39 @@ let package = Package(
             name: "InferAppCoreTests",
             dependencies: ["InferAppCore"],
             path: "Tests/InferAppCoreTests"
+        ),
+        // Headless chat orchestration for the cloud backend. The first
+        // shared consumer of the `ChatRunner` seam outside the SwiftUI
+        // executable: `ChatSession` drives `CloudRunner` (which lives in
+        // InferCore) through `respondToUser` with no SwiftUI / AppKit /
+        // MLX / llama deps, so it builds under plain `swift build` and is
+        // unit-tested against a stub `CloudClient`. The `CloudRunner:
+        // ChatRunner` conformance moved here from the `Infer` target so
+        // both the app (which depends on this) and `infer-cli` share it
+        // without duplicating the conformance. Local-backend runners
+        // (Llama/MLX) keep their conformances in the executable target
+        // because they carry the binary-framework deps.
+        .target(
+            name: "InferSession",
+            dependencies: ["InferCore", "InferAppCore"],
+            path: "Sources/InferSession"
+        ),
+        .testTarget(
+            name: "InferSessionTests",
+            dependencies: ["InferSession", "InferCore"],
+            path: "Tests/InferSessionTests"
+        ),
+        // Non-interactive CLI over InferSession's cloud backend, built for
+        // scriptability and CI. Cloud-only by design: it links no
+        // MLX/llama/Metal code, so it builds with
+        // `swift build --product infer-cli` without the Metal Toolchain or
+        // the fetched xcframeworks. Reads a prompt from arguments or stdin,
+        // streams the reply to stdout (or emits one JSON object), and uses
+        // the process exit code to signal success/failure.
+        .executableTarget(
+            name: "infer-cli",
+            dependencies: ["InferSession", "InferCore"],
+            path: "Sources/infer-cli"
         ),
         // Combined ggml-stack frameworks. One shared `Ggml` xcframework
         // ships libggml*.dylib (base + cpu + metal + blas backends);
@@ -220,6 +253,7 @@ let package = Package(
                 .product(name: "GRDB", package: "GRDB.swift"),
                 "InferRAG",
                 "InferAppCore",
+                "InferSession",
                 .product(name: "PluginAPI", package: "plugin-api"),
                 // BEGIN_GENERATED_PLUGINS_PRODUCTS
                 // Managed by `scripts/gen_plugins.py`. Do not hand-edit

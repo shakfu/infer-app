@@ -64,7 +64,6 @@ extension ChatViewModel {
             agentLabel: labelSnapshot
         ))
         let assistantIndex = messages.count - 1
-        syncTranscriptMirror()
         input = ""
         pendingImageURL = nil
         isGenerating = true
@@ -502,55 +501,41 @@ extension ChatViewModel {
                     userText, maxTokens: runnerMaxTokens
                 )
             }
+            // Strip <think>…</think> reasoning blocks from the visible
+            // body and capture them into the message's `thinkingText` for
+            // the collapsible disclosure, count tokens, and apply the
+            // net-token cap. The loop body is the shared `StreamTurnConsumer`
+            // kernel (also used by the headless `ChatEngine`); the closures
+            // below project its deltas onto this message. `firstDecodeText`
+            // accumulates the *raw* stream (incl. <think> text) because the
+            // tool loop parses tool calls out of the unfiltered output.
             var firstDecodeText = ""
-            // Strip <think>…</think> reasoning blocks from the
-            // visible body and capture them into the message's
-            // `thinkingText` for the collapsible disclosure.
-            // The filter is stateful across pieces because tags
-            // can split mid-chunk.
-            var thinkFilter = ThinkBlockStreamFilter()
-            for try await piece in stream {
-                let display = thinkFilter.feed(piece)
-                if assistantIndex < self.messages.count {
-                    if !display.isEmpty {
-                        self.messages[assistantIndex].text += display
+            _ = try await StreamTurnConsumer.consume(
+                stream,
+                netCap: netCap,
+                onDisplayDelta: { delta in
+                    if assistantIndex < self.messages.count {
+                        self.messages[assistantIndex].text += delta
                     }
-                    self.messages[assistantIndex].isThinking = thinkFilter.inThink
-                    if !thinkFilter.thinking.isEmpty {
-                        self.messages[assistantIndex].thinkingText = thinkFilter.thinking
+                },
+                onThinking: { thinking, inThink in
+                    guard assistantIndex < self.messages.count else { return }
+                    self.messages[assistantIndex].isThinking = inThink
+                    if !thinking.isEmpty {
+                        self.messages[assistantIndex].thinkingText = thinking
                     }
-                }
-                firstDecodeText += piece
-                self.generationTokenCount += 1
-                if !display.isEmpty {
-                    self.netTokenCount += 1
-                }
-                if self.generationTokenCount % 16 == 0 {
-                    self.refreshTokenUsage()
-                }
-                // Net-token cap. Once the rendered reply has reached
-                // the user's `maxTokens` AND we're not still inside a
-                // <think> block, stop the runner. The out-of-think
-                // check matters for reasoning models that emit
-                // closing `</think>` right before the answer — the
-                // filter must see it so the first net token counts.
-                if self.netTokenCount >= netCap, !thinkFilter.inThink {
-                    await self.requestStopCurrentRunner()
-                    break
-                }
-            }
-            // Flush any pending tail (e.g. unterminated <think> or
-            // partial-tag holdback that turned out literal).
-            let tail = thinkFilter.flush()
-            if assistantIndex < self.messages.count {
-                if !tail.isEmpty {
-                    self.messages[assistantIndex].text += tail
-                }
-                self.messages[assistantIndex].isThinking = false
-                if !thinkFilter.thinking.isEmpty {
-                    self.messages[assistantIndex].thinkingText = thinkFilter.thinking
-                }
-            }
+                },
+                onRawPiece: { piece in firstDecodeText += piece },
+                onToken: { net in
+                    self.generationTokenCount += 1
+                    if net { self.netTokenCount += 1 }
+                    if self.generationTokenCount % 16 == 0 {
+                        self.refreshTokenUsage()
+                    }
+                },
+                netCountSoFar: { self.netTokenCount },
+                requestStop: { await self.requestStopCurrentRunner() }
+            )
 
             if engageToolLoop {
                 try await self.maybeRunToolLoop(
@@ -1145,7 +1130,6 @@ extension ChatViewModel {
 
         let userTurn = messages[last - 1]
         messages.removeSubrange((last - 1)...last)
-        syncTranscriptMirror()
         input = userTurn.text
         pendingImageURL = userTurn.imageURL
         return true

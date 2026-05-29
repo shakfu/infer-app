@@ -3,12 +3,24 @@ import AppKit
 import WebKit
 import Markdown
 
-/// Math-delimiter heuristic shared with `PrintRenderer.containsMath`. Inline
-/// `$...$` is intentionally excluded to avoid false positives on prose like
-/// "$5 and $10".
+/// Math-delimiter heuristic shared with the print pipeline (`PrintRenderer`
+/// calls straight through to this). Display math (`$$`, `\[`) and explicit
+/// inline math (`\(`) route unconditionally. Single-`$` inline math also
+/// routes, but only when a `$...$` span on a single line contains a LaTeX
+/// indicator (`\`, `^`, `_`) — this catches model output like `$ \lambda $`
+/// or `$x^2$` while ignoring currency prose like "$5 and $10", which has no
+/// such indicator between the dollars.
 enum MessageMath {
+    /// A `$...$` span (no `$`/newline inside) containing a backslash command,
+    /// superscript, or subscript. The indicator requirement is what keeps
+    /// bare currency out of the math path.
+    private static let inlineDollarPattern = #"\$[^$\n]*[\\^_][^$\n]*\$"#
+
     static func containsMath(_ s: String) -> Bool {
-        s.contains("$$") || s.contains("\\(") || s.contains("\\[")
+        if s.contains("$$") || s.contains("\\(") || s.contains("\\[") {
+            return true
+        }
+        return s.range(of: inlineDollarPattern, options: .regularExpression) != nil
     }
 }
 
@@ -173,7 +185,8 @@ private struct MathWebView: NSViewRepresentable {
                     delimiters: [
                       {left: '$$', right: '$$', display: true},
                       {left: '\\\\[', right: '\\\\]', display: true},
-                      {left: '\\\\(', right: '\\\\)', display: false}
+                      {left: '\\\\(', right: '\\\\)', display: false},
+                      {left: '$', right: '$', display: false}
                     ],
                     throwOnError: false
                   });

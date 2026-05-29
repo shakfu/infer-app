@@ -85,7 +85,6 @@ extension ChatViewModel {
             }
             stop()
             messages = loaded
-            syncTranscriptMirror()
             // Imported `.md` is file-only: not linked to any vault row.
             // Next send() will start a fresh vault conversation.
             currentConversationId = nil
@@ -198,43 +197,4 @@ extension ChatViewModel {
         }
     }
 
-    /// Map a UI-side `ChatMessage` to the value-typed `TranscriptEntry`
-    /// that the `transcriptStore` mirror holds. Lossy on purpose —
-    /// agent attribution, step traces, retrieved-chunk provenance, and
-    /// `<think>`-block disclosure state all live on the UI type and
-    /// don't belong in the runner-history snapshot. `agentDivider`
-    /// rows are filtered upstream (they have no role in prompts) and
-    /// don't reach this helper.
-    static func makeTranscriptEntry(_ msg: ChatMessage) -> TranscriptEntry {
-        let role: ChatTurn.Role
-        switch msg.role {
-        case .user: role = .user
-        case .assistant: role = .assistant
-        case .system: role = .system
-        }
-        return TranscriptEntry(
-            id: msg.id,
-            role: role,
-            text: msg.text,
-            imageURL: msg.imageURL
-        )
-    }
-
-    /// Rebuild `transcriptStore` from the current `messages` array.
-    /// Called at well-defined sync points (`reset`, `loadTranscript`,
-    /// post-`send`, post-`unspoolLastTurn`) so the mirror reflects the
-    /// committed transcript state. Streaming-time chunk writes inside
-    /// `Generation.swift` are intentionally NOT mirrored per-chunk —
-    /// the mirror is end-of-turn-accurate, not per-token-accurate. A
-    /// follow-up can either fold the streaming writes into a
-    /// store-first model or accept the mirror as the source of truth
-    /// for runner history (today the chat-VM builds those snapshots
-    /// inline from `messages` in `restoreBackendHistory` and
-    /// `compactKVForVisibleHistory`).
-    func syncTranscriptMirror() {
-        let entries = messages
-            .filter { if case .agentDivider = $0.kind { return false } else { return true } }
-            .map(Self.makeTranscriptEntry)
-        transcriptStore = TranscriptStore(entries: entries)
-    }
 }

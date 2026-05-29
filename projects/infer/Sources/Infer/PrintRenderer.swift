@@ -141,11 +141,10 @@ enum PrintRenderer {
     // MARK: - HTML generation
 
     /// Heuristic: does the rendered body contain LaTeX math delimiters KaTeX
-    /// should render? Inline `$...$` is intentionally excluded to avoid
-    /// false positives on prose like "$5 and $10" — users can switch to
-    /// `\(...\)` for inline math.
+    /// should render? Shares `MessageMath.containsMath` with the in-app math
+    /// view so export and on-screen rendering agree on what counts as math.
     private static func containsMath(_ body: String) -> Bool {
-        body.contains("$$") || body.contains("\\(") || body.contains("\\[")
+        MessageMath.containsMath(body)
     }
 
     /// Full wrapped HTML for the transcript. Exposed so export-as-HTML and
@@ -232,7 +231,8 @@ enum PrintRenderer {
                 delimiters: [
                   {left: '$$', right: '$$', display: true},
                   {left: '\\[', right: '\\]', display: true},
-                  {left: '\\(', right: '\\)', display: false}
+                  {left: '\\(', right: '\\)', display: false},
+                  {left: '$', right: '$', display: false}
                 ],
                 throwOnError: false
               });

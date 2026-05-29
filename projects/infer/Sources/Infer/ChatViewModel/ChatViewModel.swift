@@ -3,20 +3,12 @@ import InferAgents
 import InferAppCore
 import InferCore
 import InferRAG
+import InferSession
 
 @MainActor
 @Observable
 final class ChatViewModel {
     var messages: [ChatMessage] = []
-    /// Parallel value-typed mirror of `messages` from `InferAppCore`.
-    /// Updated at well-defined sync points (today: `reset()` and
-    /// `loadTranscript()`). Once every write path that mutates
-    /// `messages` is mirrored here, this becomes the testable surface
-    /// the runner-history snapshots are built from. `@ObservationIgnored`
-    /// because the SwiftUI views observe `messages` directly; the store
-    /// is for testability and runner-history derivation, not rendering.
-    @ObservationIgnored
-    var transcriptStore = TranscriptStore()
     var input: String = ""
     var backend: Backend = .llama
     var modelLoaded: Bool = false
@@ -750,7 +742,6 @@ final class ChatViewModel {
     func reset() {
         stop()
         messages.removeAll()
-        syncTranscriptMirror()
         generationTokenCount = 0
         netTokenCount = 0
         generationStart = nil
