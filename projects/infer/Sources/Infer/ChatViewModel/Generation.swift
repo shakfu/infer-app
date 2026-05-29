@@ -698,7 +698,11 @@ extension ChatViewModel {
         segmentStart: Date,
         baselineNetTokens: Int
     ) -> StepTrace {
-        var trace = self.messages[index].steps ?? fallback
+        // Bounds-guarded like the success path (line ~558) and
+        // `stampSegmentTelemetry`: a mid-turn `messages` mutation
+        // (transcript load, conversation switch) can shrink the array
+        // while this turn is suspended, and every catch arm routes here.
+        var trace = (index < self.messages.count ? self.messages[index].steps : nil) ?? fallback
         self.stampSegmentTelemetry(
             trace: &trace,
             at: index,

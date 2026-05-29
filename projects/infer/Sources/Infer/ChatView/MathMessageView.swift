@@ -5,15 +5,29 @@ import WebKit
 /// Math-delimiter heuristic shared with the print pipeline (`PrintRenderer`
 /// calls straight through to this). Display math (`$$`, `\[`) and explicit
 /// inline math (`\(`) route unconditionally. Single-`$` inline math also
-/// routes, but only when a `$...$` span on a single line contains a LaTeX
-/// indicator (`\`, `^`, `_`) — this catches model output like `$ \lambda $`
-/// or `$x^2$` while ignoring currency prose like "$5 and $10", which has no
-/// such indicator between the dollars.
+/// routes, but only for a `$...$` span on one line that (a) does NOT open
+/// like a currency amount (`$` immediately followed by digits then a space,
+/// e.g. `$5 for`) and (b) contains a LaTeX indicator (`\`, `^`, `_`). This
+/// catches model output like `$ \lambda $`, `$x^2$`, AND digit-led math such
+/// as `$25^\circ \text{C}$` (the `^` follows the digits with no space, so the
+/// currency guard doesn't fire), while rejecting currency prose like
+/// "$5 for item_2 and $10" (both `$` open on `digits + space`, so neither is
+/// an opener even though an `_` sits between them).
+///
+/// Known, accepted residual false positives (rare): a span that opens on a
+/// non-digit and contains an indicator but is really prose, e.g.
+/// "$x_1 costs $5", or a currency amount written with an underscore
+/// thousands-separator like "$5_000". Also note this only gates *routing* —
+/// a message that legitimately routes AND contains a `$<amount>` span will
+/// still feed that span to KaTeX's `$...$` auto-render. These are inherent
+/// to supporting single-`$` inline math; the guard targets the common cases.
 enum MessageMath {
-    /// A `$...$` span (no `$`/newline inside) containing a backslash command,
-    /// superscript, or subscript. The indicator requirement is what keeps
-    /// bare currency out of the math path.
-    private static let inlineDollarPattern = #"\$[^$\n]*[\\^_][^$\n]*\$"#
+    /// A `$...$` span (no `$`/newline inside) whose opener isn't a currency
+    /// amount (`(?!\d+\s)` rejects `$5 ` but allows `$25^`, `$ \lambda`, `$x`)
+    /// and which contains a backslash command, superscript, or subscript —
+    /// the indicator class distinguishes inline math from arbitrary
+    /// `$…$`-bracketed prose.
+    private static let inlineDollarPattern = #"\$(?!\d+\s)[^$\n]*[\\^_][^$\n]*\$"#
 
     static func containsMath(_ s: String) -> Bool {
         if s.contains("$$") || s.contains("\\(") || s.contains("\\[") {
