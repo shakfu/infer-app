@@ -350,23 +350,50 @@ extension ChatViewModel {
     /// tools), explicit list pins. After the write, refresh the
     /// workspace list and force-recompose tool specs so the running
     /// prompt picks up the new server-derived filter immediately.
-    func setWorkspaceEnabledMCPServers(id: Int64, ids: [String]?) {
-        Task { [vault] in
+    /// Shared "flip one id" logic behind the three `toggle…InAllowList`
+    /// methods. When no allow-list exists yet (`current == nil`), the user
+    /// is starting from the implicit "everything allowed" and removing one
+    /// item, so materialise the explicit list as everything-except-target.
+    /// Otherwise flip `target` in/out of the existing list.
+    private func nextAllowList(current: [String]?, target: String, universe: [String]) -> [String] {
+        guard let current else { return universe.filter { $0 != target } }
+        return current.contains(target) ? current.filter { $0 != target } : current + [target]
+    }
+
+    /// Shared persistence path behind the three `setWorkspaceEnabled…`
+    /// writers. `write` performs the one differing `vault.setWorkspaceParams`
+    /// call; `postWrite` runs the axis-specific follow-up (tool-spec refresh
+    /// or active-agent recompose) after the workspace list is refreshed.
+    /// `label` names the axis in the failure log.
+    private func persistAllowList(
+        label: String,
+        write: @escaping @Sendable () async throws -> Void,
+        postWrite: @escaping @MainActor () -> Void
+    ) {
+        Task {
             do {
-                try await vault.setWorkspaceParams(id: id, enabledMCPServers: .value(ids))
+                try await write()
                 await MainActor.run {
                     self.refreshWorkspaces()
-                    self.refreshActiveAgentToolSpecs()
+                    postWrite()
                 }
             } catch {
                 self.logs.logFromBackground(
                     .error,
                     source: "workspaces",
-                    message: "failed to persist MCP servers allow-list",
+                    message: "failed to persist \(label)",
                     payload: String(describing: error)
                 )
             }
         }
+    }
+
+    func setWorkspaceEnabledMCPServers(id: Int64, ids: [String]?) {
+        persistAllowList(
+            label: "MCP servers allow-list",
+            write: { [vault] in try await vault.setWorkspaceParams(id: id, enabledMCPServers: .value(ids)) },
+            postWrite: { self.refreshActiveAgentToolSpecs() }
+        )
     }
 
     /// Flip a single MCP server's membership in the named workspace's
@@ -377,17 +404,7 @@ extension ChatViewModel {
     /// opened the sheet won't appear; refresh on sheet-open.
     func toggleMCPServerInAllowList(workspaceId: Int64, serverID: String, universe: [String]) {
         guard let row = workspaces.first(where: { $0.id == workspaceId }) else { return }
-        let current = row.enabledMCPServers
-        let next: [String]
-        if let current {
-            if current.contains(serverID) {
-                next = current.filter { $0 != serverID }
-            } else {
-                next = current + [serverID]
-            }
-        } else {
-            next = universe.filter { $0 != serverID }
-        }
+        let next = nextAllowList(current: row.enabledMCPServers, target: serverID, universe: universe)
         setWorkspaceEnabledMCPServers(id: workspaceId, ids: next)
     }
 
@@ -408,22 +425,11 @@ extension ChatViewModel {
     /// (`refreshActiveAgentToolSpecs`) so the change takes effect on
     /// the next turn without requiring an agent switch.
     func setWorkspaceEnabledTools(id: Int64, ids: [String]?) {
-        Task { [vault] in
-            do {
-                try await vault.setWorkspaceParams(id: id, enabledTools: .value(ids))
-                await MainActor.run {
-                    self.refreshWorkspaces()
-                    self.refreshActiveAgentToolSpecs()
-                }
-            } catch {
-                self.logs.logFromBackground(
-                    .error,
-                    source: "workspaces",
-                    message: "failed to persist tools allow-list",
-                    payload: String(describing: error)
-                )
-            }
-        }
+        persistAllowList(
+            label: "tools allow-list",
+            write: { [vault] in try await vault.setWorkspaceParams(id: id, enabledTools: .value(ids)) },
+            postWrite: { self.refreshActiveAgentToolSpecs() }
+        )
     }
 
     /// Refresh `availableToolNames` from the registry. Async because
@@ -473,20 +479,7 @@ extension ChatViewModel {
     /// universe is dynamic).
     func toggleToolInAllowList(workspaceId: Int64, toolName: String, universe: [String]) {
         guard let row = workspaces.first(where: { $0.id == workspaceId }) else { return }
-        let current = row.enabledTools
-        let next: [String]
-        if let current {
-            if current.contains(toolName) {
-                next = current.filter { $0 != toolName }
-            } else {
-                next = current + [toolName]
-            }
-        } else {
-            // No allow-list yet → user is removing one item from
-            // the implicit "everything." Materialise the explicit
-            // list with everything except the toggled name.
-            next = universe.filter { $0 != toolName }
-        }
+        let next = nextAllowList(current: row.enabledTools, target: toolName, universe: universe)
         setWorkspaceEnabledTools(id: workspaceId, ids: next)
     }
 
@@ -500,22 +493,8 @@ extension ChatViewModel {
     /// individual ids in/out.
     func toggleAgentInAllowList(workspaceId: Int64, agentId: AgentID) {
         guard let row = workspaces.first(where: { $0.id == workspaceId }) else { return }
-        let current = row.enabledAgents
         let universe = availableAgents.map(\.id.rawValue)
-        let target = agentId.rawValue
-        let next: [String]
-        if let current {
-            if current.contains(target) {
-                next = current.filter { $0 != target }
-            } else {
-                next = current + [target]
-            }
-        } else {
-            // No allow-list yet → user is starting from "everything
-            // allowed" and removing one item. Materialise an
-            // explicit list with everything except the toggled id.
-            next = universe.filter { $0 != target }
-        }
+        let next = nextAllowList(current: row.enabledAgents, target: agentId.rawValue, universe: universe)
         setWorkspaceEnabledAgents(id: workspaceId, ids: next)
     }
 
@@ -528,27 +507,15 @@ extension ChatViewModel {
     /// active-agent recompose so a now-disallowed active agent
     /// gracefully degrades to Default.
     func setWorkspaceEnabledAgents(id: Int64, ids: [String]?) {
-        Task { [vault] in
-            do {
-                try await vault.setWorkspaceParams(id: id, enabledAgents: .value(ids))
-                await MainActor.run {
-                    self.refreshWorkspaces()
-                    // Re-run the Phase 3 recompose so an active
-                    // agent that just got allow-listed-out
-                    // degrades to Default. `insertDivider: true`
-                    // because this is a user-driven mid-session
-                    // change — same shape as a workspace switch.
-                    self.recomposeActiveAgentFromActiveWorkspace(insertDivider: true)
-                }
-            } catch {
-                self.logs.logFromBackground(
-                    .error,
-                    source: "workspaces",
-                    message: "failed to persist agents allow-list",
-                    payload: String(describing: error)
-                )
-            }
-        }
+        persistAllowList(
+            label: "agents allow-list",
+            write: { [vault] in try await vault.setWorkspaceParams(id: id, enabledAgents: .value(ids)) },
+            // Re-run the Phase 3 recompose so an active agent that just got
+            // allow-listed-out degrades to Default. `insertDivider: true`
+            // because this is a user-driven mid-session change — same shape
+            // as a workspace switch.
+            postWrite: { self.recomposeActiveAgentFromActiveWorkspace(insertDivider: true) }
+        )
     }
 
     /// Effective output directory for the active workspace, as a

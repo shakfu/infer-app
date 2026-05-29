@@ -399,49 +399,35 @@ struct WorkspaceSettingsSheet: View {
     /// list on first toggle (so flipping a single switch produces
     /// "everything except this" rather than "only this").
     private var agentsToggleList: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(vm.availableAgents) { listing in
-                let agentId = listing.id
-                let isEnabled: Bool = {
-                    if let allow = workspace.enabledAgents {
-                        return allow.contains(agentId.rawValue)
-                    }
-                    // No override on this row → effective is the
-                    // cascade fall-through. The toggle still
-                    // shows accurately by reading the resolved
-                    // allow-list at the consumer level.
-                    return vm.isAgentEnabledInActiveWorkspace(agentId)
-                }()
-                let isDefaultAgent = (agentId == DefaultAgent.id)
-                Toggle(isOn: Binding(
-                    get: { isEnabled },
-                    set: { _ in
-                        vm.toggleAgentInAllowList(workspaceId: workspace.id, agentId: agentId)
-                    }
-                )) {
-                    HStack(spacing: 6) {
-                        Text(listing.name).font(.caption)
-                        if isDefaultAgent {
-                            Text("(always available)")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
+        AllowListToggleGrid(
+            items: vm.availableAgents,
+            id: \.id,
+            emptyMessage: "No agents loaded.",
+            isOn: { listing in
+                if let allow = workspace.enabledAgents {
+                    return allow.contains(listing.id.rawValue)
+                }
+                // No override on this row → effective is the cascade
+                // fall-through, read from the resolved allow-list at
+                // the consumer level so the toggle shows accurately.
+                return vm.isAgentEnabledInActiveWorkspace(listing.id)
+            },
+            isDisabled: { $0.id == DefaultAgent.id }, // safety net — can't be toggled off
+            help: { $0.id == DefaultAgent.id
+                ? "DefaultAgent is always available — the safety net so you can never lock yourself out of a workspace."
+                : $0.description },
+            onToggle: { vm.toggleAgentInAllowList(workspaceId: workspace.id, agentId: $0.id) },
+            label: { listing in
+                HStack(spacing: 6) {
+                    Text(listing.name).font(.caption)
+                    if listing.id == DefaultAgent.id {
+                        Text("(always available)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                     }
                 }
-                .toggleStyle(.checkbox)
-                .controlSize(.small)
-                .disabled(isDefaultAgent) // safety net — can't be toggled off
-                .help(isDefaultAgent
-                    ? "DefaultAgent is always available — the safety net so you can never lock yourself out of a workspace."
-                    : listing.description)
             }
-            if vm.availableAgents.isEmpty {
-                Text("No agents loaded.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-        }
-        .padding(.top, 4)
+        )
     }
 
     /// Per-row toggle grid for the Phase 4b tools allow-list.
@@ -450,62 +436,46 @@ struct WorkspaceSettingsSheet: View {
     /// snapshotted at `bootstrapAgents` end and re-snapshotted on
     /// sheet appear so MCP-discovered tools register-at-runtime
     /// show up).
+    /// Per-row toggle grid for the Phase 4b tools allow-list. Carries
+    /// cross-axis signaling: when a tool's owning MCP server is allow-listed
+    /// out (Phase 4c), the row is disabled with a tooltip pointing at the
+    /// MCP tab — toggling it would be no-op-shaped (the composed
+    /// `effectiveEnabledTools` subtracts the tool regardless), so blocking
+    /// the interaction is more honest than a switch with no effect.
     private var toolsToggleList: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if vm.availableToolNames.isEmpty {
-                Text("No tools registered yet.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            } else {
-                ForEach(vm.availableToolNames, id: \.self) { name in
-                    toolRow(name: name)
-                }
-            }
-        }
-        .padding(.top, 4)
-    }
-
-    /// Single tool row with cross-axis signaling: when the tool's
-    /// owning MCP server is allow-listed out (Phase 4c), the row
-    /// renders as disabled with a tooltip pointing at the MCP tab.
-    /// Toggling this row's checkbox in that state would be no-op-
-    /// shaped (the composed `effectiveEnabledTools` subtracts the
-    /// tool regardless of the per-tool toggle), so blocking the
-    /// interaction outright is more honest than letting the user
-    /// flip a switch that has no effect.
-    @ViewBuilder
-    private func toolRow(name: String) -> some View {
-        let isEnabled = isToolEnabledRowState(name: name)
-        let mcpDisabledOwner = mcpDisabledOwnerForTool(name: name)
-        let isCrossAxisDisabled = mcpDisabledOwner != nil
-        Toggle(isOn: Binding(
-            get: { isEnabled && !isCrossAxisDisabled },
-            set: { _ in
-                guard !isCrossAxisDisabled else { return }
+        AllowListToggleGrid(
+            items: vm.availableToolNames,
+            id: \.self,
+            emptyMessage: "No tools registered yet.",
+            isOn: { name in isToolEnabledRowState(name: name) && mcpDisabledOwnerForTool(name: name) == nil },
+            isDisabled: { mcpDisabledOwnerForTool(name: $0) != nil },
+            help: { name in
+                guard let owner = mcpDisabledOwnerForTool(name: name) else { return "" }
+                return "This tool is owned by MCP server '\(owner)', which is disabled in this workspace's MCP tab. Re-enable the server to make this tool toggleable."
+            },
+            onToggle: { name in
+                // Belt-and-suspenders: the grid disables the row when
+                // cross-axis-disabled, so this set rarely fires then.
+                guard mcpDisabledOwnerForTool(name: name) == nil else { return }
                 vm.toggleToolInAllowList(
                     workspaceId: workspace.id,
                     toolName: name,
                     universe: vm.availableToolNames
                 )
-            }
-        )) {
-            HStack(spacing: 6) {
-                Text(name)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(isCrossAxisDisabled ? .tertiary : .primary)
-                if let owner = mcpDisabledOwner {
-                    Text("(MCP server '\(owner)' disabled)")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
+            },
+            label: { name in
+                HStack(spacing: 6) {
+                    Text(name)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(mcpDisabledOwnerForTool(name: name) == nil ? .primary : .tertiary)
+                    if let owner = mcpDisabledOwnerForTool(name: name) {
+                        Text("(MCP server '\(owner)' disabled)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
                 }
             }
-        }
-        .toggleStyle(.checkbox)
-        .controlSize(.small)
-        .disabled(isCrossAxisDisabled)
-        .help(isCrossAxisDisabled
-            ? "This tool is owned by MCP server '\(mcpDisabledOwner ?? "")', which is disabled in this workspace's MCP tab. Re-enable the server to make this tool toggleable."
-            : "")
+        )
     }
 
     /// Read-side view of whether the row's checkbox SHOULD be on
@@ -538,43 +508,32 @@ struct WorkspaceSettingsSheet: View {
     /// Per-row toggle grid for the Phase 4c MCP server allow-list.
     /// Same flat shape as `agentsToggleList` / `toolsToggleList`.
     private var mcpServersToggleList: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if vm.mcpServers.isEmpty {
-                Text("No MCP servers configured.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            } else {
-                ForEach(vm.mcpServers) { server in
-                    let isEnabled: Bool = {
-                        if let allow = workspace.enabledMCPServers {
-                            return allow.contains(server.id)
-                        }
-                        return vm.isMCPServerEnabledInActiveWorkspace(server.id)
-                    }()
-                    let universe = vm.mcpServers.map(\.id)
-                    Toggle(isOn: Binding(
-                        get: { isEnabled },
-                        set: { _ in
-                            vm.toggleMCPServerInAllowList(
-                                workspaceId: workspace.id,
-                                serverID: server.id,
-                                universe: universe
-                            )
-                        }
-                    )) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(server.displayName).font(.caption)
-                            Text(server.id)
-                                .font(.caption2.monospaced())
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                    .toggleStyle(.checkbox)
-                    .controlSize(.small)
+        AllowListToggleGrid(
+            items: vm.mcpServers,
+            id: \.id,
+            emptyMessage: "No MCP servers configured.",
+            isOn: { server in
+                if let allow = workspace.enabledMCPServers {
+                    return allow.contains(server.id)
+                }
+                return vm.isMCPServerEnabledInActiveWorkspace(server.id)
+            },
+            onToggle: { server in
+                vm.toggleMCPServerInAllowList(
+                    workspaceId: workspace.id,
+                    serverID: server.id,
+                    universe: vm.mcpServers.map(\.id)
+                )
+            },
+            label: { server in
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(server.displayName).font(.caption)
+                    Text(server.id)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.tertiary)
                 }
             }
-        }
-        .padding(.top, 4)
+        )
     }
 
     // MARK: - Banner state strings
@@ -932,6 +891,48 @@ struct WorkspaceSettingsSheet: View {
 /// action when applicable. Tinted background sets it apart from the
 /// per-row toggle list below; the rounded panel idiom matches
 /// macOS settings-sheet conventions.
+/// Shared per-row checkbox grid behind the three allow-list tabs
+/// (agents / tools / MCP servers). Centralises the empty-state message,
+/// `ForEach`, and `Toggle` wiring (checkbox style, control size, disabled
+/// state, help, padding); each call site supplies the row content via
+/// `label` plus the small set of per-axis closures. Generic over the item
+/// type and its `id` key path so `[String]` (tools) and `Identifiable`
+/// summaries (agents / MCP servers) both work.
+private struct AllowListToggleGrid<Item, ID: Hashable, Label: View>: View {
+    let items: [Item]
+    let id: KeyPath<Item, ID>
+    let emptyMessage: String
+    let isOn: (Item) -> Bool
+    var isDisabled: (Item) -> Bool = { _ in false }
+    var help: (Item) -> String = { _ in "" }
+    let onToggle: (Item) -> Void
+    @ViewBuilder let label: (Item) -> Label
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if items.isEmpty {
+                Text(emptyMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            } else {
+                ForEach(items, id: id) { item in
+                    Toggle(isOn: Binding(
+                        get: { isOn(item) },
+                        set: { _ in onToggle(item) }
+                    )) {
+                        label(item)
+                    }
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                    .disabled(isDisabled(item))
+                    .help(help(item))
+                }
+            }
+        }
+        .padding(.top, 4)
+    }
+}
+
 private struct AllowListStatusBanner: View {
     let title: String
     let detail: String
