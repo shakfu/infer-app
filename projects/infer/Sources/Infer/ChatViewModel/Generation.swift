@@ -555,7 +555,12 @@ extension ChatViewModel {
             let finalText = assistantIndex < self.messages.count
                 ? self.messages[assistantIndex].text
                 : ""
-            var trace = self.messages[assistantIndex].steps
+            // Same bounds guard as `finalText` above: the message can vanish
+            // mid-turn (e.g. transcript cleared) while we're suspended, so
+            // don't subscript unconditionally.
+            var trace = (assistantIndex < self.messages.count
+                ? self.messages[assistantIndex].steps
+                : nil)
                 ?? StepTrace.finalAnswer(finalText)
             self.stampSegmentTelemetry(
                 trace: &trace,

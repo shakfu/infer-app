@@ -1,7 +1,6 @@
 import AppKit
 import WebKit
 import PDFKit
-import Markdown
 
 @MainActor
 enum PrintRenderer {
@@ -153,8 +152,10 @@ enum PrintRenderer {
         let markdown = messages
             .map { "## \($0.role.rawValue)\n\n\($0.text)" }
             .joined(separator: "\n\n---\n\n")
-        let document = Document(parsing: markdown.isEmpty ? "_(empty transcript)_" : markdown)
-        let bodyHTML = HTMLFormatter.format(document)
+        // Route through the shared stasher so explicit-delimiter math
+        // (`\(...\)`, `\[...\]`) and LaTeX `\\` survive swift-markdown on the
+        // print/export path, matching the on-screen `MathMessageView` render.
+        let bodyHTML = MathRendering.markdownToHTML(markdown.isEmpty ? "_(empty transcript)_" : markdown)
         return wrap(body: bodyHTML)
     }
 
@@ -228,12 +229,7 @@ enum PrintRenderer {
           if (typeof renderMathInElement !== 'undefined') {
             try {
               renderMathInElement(document.body, {
-                delimiters: [
-                  {left: '$$', right: '$$', display: true},
-                  {left: '\\[', right: '\\]', display: true},
-                  {left: '\\(', right: '\\)', display: false},
-                  {left: '$', right: '$', display: false}
-                ],
+                delimiters: \#(MathRendering.katexDelimitersJSON),
                 throwOnError: false
               });
             } catch (e) { console.warn('KaTeX failed:', e); }

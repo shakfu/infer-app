@@ -740,18 +740,28 @@ final class ChatViewModel {
     /// Clear the transcript, cancel any in-flight generation, and reset both
     /// backends' conversation state. Model stays loaded; settings untouched.
     func reset() {
+        // Capture the in-flight turn before `stop()` nils it out. That turn is
+        // suspended at an `await` inside the stream loop while holding indices
+        // (`assistantIndex`) into `messages`; clearing the array now would make
+        // those indices dangle and crash when the turn resumes its post-stream
+        // finalization. So cancel first, then clear transcript + counters only
+        // once the turn has fully unwound (it sets `isGenerating = false` at
+        // the tail of its task). When idle, `inflight` is nil and this runs on
+        // the next hop.
+        let inflight = generationTask
         stop()
-        messages.removeAll()
-        generationTokenCount = 0
-        netTokenCount = 0
-        generationStart = nil
-        generationEnd = nil
-        currentConversationId = nil
-        pendingImageURL = nil
         let runner = self.activeChatRunner
-        Task {
+        Task { @MainActor in
+            await inflight?.value
+            self.messages.removeAll()
+            self.generationTokenCount = 0
+            self.netTokenCount = 0
+            self.generationStart = nil
+            self.generationEnd = nil
+            self.currentConversationId = nil
+            self.pendingImageURL = nil
             await runner.resetConversation()
-            await MainActor.run { self.refreshTokenUsage() }
+            self.refreshTokenUsage()
         }
     }
 

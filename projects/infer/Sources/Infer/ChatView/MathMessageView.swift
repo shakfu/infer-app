@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import WebKit
-import Markdown
 
 /// Math-delimiter heuristic shared with the print pipeline (`PrintRenderer`
 /// calls straight through to this). Display math (`$$`, `\[`) and explicit
@@ -166,7 +165,7 @@ private struct MathWebView: NSViewRepresentable {
 
         private func send(text: String) {
             guard let webView else { return }
-            let html = Self.markdownToHTML(text)
+            let html = MathRendering.markdownToHTML(text)
             guard let payload = try? JSONSerialization.data(
                 withJSONObject: [html],
                 options: [.fragmentsAllowed]
@@ -182,12 +181,7 @@ private struct MathWebView: NSViewRepresentable {
               if (typeof renderMathInElement !== 'undefined') {
                 try {
                   renderMathInElement(c, {
-                    delimiters: [
-                      {left: '$$', right: '$$', display: true},
-                      {left: '\\\\[', right: '\\\\]', display: true},
-                      {left: '\\\\(', right: '\\\\)', display: false},
-                      {left: '$', right: '$', display: false}
-                    ],
+                    delimiters: \(MathRendering.katexDelimitersJSON),
                     throwOnError: false
                   });
                 } catch (e) {}
@@ -213,27 +207,6 @@ private struct MathWebView: NSViewRepresentable {
                     activeIndex: self?.lastActiveIndex
                 )
             }
-        }
-
-        private static func markdownToHTML(_ text: String) -> String {
-            // swift-markdown will eat `\(`, `\[` and `\\` in raw text — KaTeX
-            // needs those delimiters intact. Stash them in placeholder tokens
-            // before parsing, then restore in the rendered HTML.
-            let stashed = text
-                .replacingOccurrences(of: "\\\\", with: "\u{0001}MATHBSL\u{0001}")
-                .replacingOccurrences(of: "\\(", with: "\u{0001}MATHIL\u{0001}")
-                .replacingOccurrences(of: "\\)", with: "\u{0001}MATHIR\u{0001}")
-                .replacingOccurrences(of: "\\[", with: "\u{0001}MATHDL\u{0001}")
-                .replacingOccurrences(of: "\\]", with: "\u{0001}MATHDR\u{0001}")
-            let doc = Document(parsing: stashed)
-            var html = HTMLFormatter.format(doc)
-            html = html
-                .replacingOccurrences(of: "\u{0001}MATHIL\u{0001}", with: "\\(")
-                .replacingOccurrences(of: "\u{0001}MATHIR\u{0001}", with: "\\)")
-                .replacingOccurrences(of: "\u{0001}MATHDL\u{0001}", with: "\\[")
-                .replacingOccurrences(of: "\u{0001}MATHDR\u{0001}", with: "\\]")
-                .replacingOccurrences(of: "\u{0001}MATHBSL\u{0001}", with: "\\\\")
-            return html
         }
 
         // MARK: WKNavigationDelegate
