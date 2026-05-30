@@ -1,0 +1,90 @@
+# Manual CI for the Infer Swift package.
+#
+# Trigger is workflow_dispatch ONLY (run it from the Actions tab / `gh
+# workflow run ci.yml`). It is not wired to push/PR on purpose: the job
+# builds the ggml stack (llama.cpp / whisper.cpp / stable-diffusion.cpp)
+# from source and downloads the ~700 MB Metal Toolchain, so it is too
+# heavy to run on every commit. The built xcframeworks are cached, so
+# repeat runs that hit the cache are fast — once that proves stable,
+# adding `push` / `pull_request` triggers is a small follow-up.
+name: CI
+
+on:
+  workflow_dispatch:
+
+# A new manual run supersedes an in-flight one on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: swift test (macos-14)
+    runs-on: macos-14
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # MLX + mlx-swift-lm require Xcode 16.3+ / Swift 6.1+. Pin a recent
+      # stable Xcode; swap for `sudo xcode-select -s /Applications/Xcode_16.x.app`
+      # if you prefer to avoid the third-party action.
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      # `make build-stack` drives scripts/manage.py, which uses CMake to
+      # build the ggml-stack dylibs before staging them into xcframeworks.
+      - name: Install build tools
+        run: brew install cmake ninja
+
+      # MLX compiles Metal compute kernels at build time, and the stack
+      # build compiles ggml/llama Metal kernels too — both need the
+      # separate Metal Toolchain component (not preinstalled on runners).
+      - name: Download Metal Toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      # Cache the four built xcframeworks + the stack-version marker.
+      # Key on the Makefile (carries STACK_VERSION) and the build scripts,
+      # so a stack-version or build-logic change invalidates the cache.
+      - name: Cache ggml-stack xcframeworks
+        id: stack-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            thirdparty/Ggml.xcframework
+            thirdparty/LlamaCpp.xcframework
+            thirdparty/Whisper.xcframework
+            thirdparty/StableDiffusion.xcframework
+            thirdparty/.stack-*
+          key: ggml-stack-${{ runner.os }}-${{ hashFiles('Makefile', 'scripts/build_xcframeworks.py', 'scripts/manage.py') }}
+
+      # Build the stack from source on a cache miss. NOTE: the 0.3.0
+      # release zip predates libchatfmt.dylib (the GGUF-Jinja bridge that
+      # `LlamaRunner.renderTemplate` links against), so `make fetch-stack`
+      # would download frameworks the `Infer` target can't link. Once a
+      # >=0.3.1 release ships the dylib, this can become `make fetch-stack`.
+      - name: Build ggml stack (llama/whisper/SD + libchatfmt.dylib)
+        if: steps.stack-cache.outputs.cache-hit != 'true'
+        run: make build-stack
+
+      # Vendored SwiftPM source deps (patched SQLiteVec + tree-sitter
+      # grammars). Cheap clones; run every time so a cache-hit on the
+      # heavy stack above doesn't skip them.
+      - name: Fetch vendored source dependencies
+        run: make fetch-sqlitevec fetch-tree-sitter-qmd fetch-tree-sitter-python
+
+      # Fast path: every non-External suite. Builds the whole package
+      # graph (including the MLX-linked Infer target) and runs the unit /
+      # cross-module tests.
+      - name: Run fast tests
+        run: make test
+
+      # Integration path: the *ExternalTests suites, including the new
+      # LlamaTemplateExternalTests that exercise the real chatfmt bridge.
+      # Network/binary-dependent suites (web search, Quarto) auto-skip
+      # when their dependency is absent, so this stays green on a runner
+      # that only has the frameworks built above.
+      - name: Run integration tests
+        run: make test-integration

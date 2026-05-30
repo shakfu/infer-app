@@ -98,11 +98,11 @@ Tool ideas evaluated and parked. Each has a real use case but the trade-offs lan
 
 ## P2 — hygiene & infra
 
-- [ ] **Drop `.swiftLanguageMode(.v5)` on the Infer target.** The only blocker is `LlamaRunner.backendInitialized: static var` tripping Swift 6 strict-concurrency. Replace with an `actor` or an `@MainActor`-isolated initializer, then remove the opt-out.
+- [x] **Drop `.swiftLanguageMode(.v5)` on the Infer target.** Done (resolved in an earlier refactor; confirmed 2026-05-31). The package builds entirely in Swift 6 mode (`Package.swift` — `swiftLanguageModes: [.v6]`), no per-target opt-out. The blocker `LlamaRunner.backendInitialized: static var` is gone — `llama_backend_init` is now guarded by a concurrency-safe `static let backendOnce` (`LlamaRunner.swift:98`). Stale `CLAUDE.md` notes corrected.
 
-- [ ] **Tests for the runners.** Neither backend is tested. Start with: `LlamaRunner.renderTemplate` round-trip on a known chat template; `MLXRunner.load(hfId:)` happy path against a tiny fixture model if feasible, otherwise mock the `ModelContainer`.
+- [~] **Tests for the runners.** `LlamaRunner.renderTemplate` is now covered — `LlamaTemplateExternalTests` (new `InferRunnerExternalTests` target, `@testable import Infer`) round-trips known Jinja templates through the real `chatfmt_apply` bridge: role/content interpolation, `add_generation_prompt` wiring from `addAssistant`, bos/eos binding, empty/nil rejection. On the `make test-integration` path (the `*ExternalTests` suffix keeps it off the fast path), since `renderTemplate` calls into `LlamaCpp.framework` and isn't pure. **Remaining:** `MLXRunner.load(hfId:)` happy path (needs a tiny fixture model or a mocked `ModelContainer`).
 
-- [ ] **CI.** GitHub Actions on macos-14 running `swift test` against `projects/infer`, plus a lint step. Leave `build-infer` out of CI initially — it needs the ~700 MB Metal Toolchain asset and HF downloads.
+- [~] **CI.** Manual (`workflow_dispatch`-only) GitHub Actions workflow added at `.github/workflows/ci.yml`: macos-14, selects Xcode 16.3+, downloads the Metal Toolchain, builds the ggml stack from source (`make build-stack` — the 0.3.0 release zip predates `libchatfmt.dylib`, so `fetch-stack` can't link the Infer target until a >=0.3.1 zip ships), caches the built xcframeworks, then runs `make test` + `make test-integration`. Manual-only by request: the stack build is heavy and the Metal Toolchain is ~700 MB. The lint step was dropped on purpose (would fight the hand-curated formatting across 152 files). **Follow-ups:** flip to `fetch-stack` once 0.3.1 ships the dylib; add push/PR triggers if the cached run proves fast/stable.
 
 - [ ] **`make clean-infer` and `make clean-mlx-cache`.** First nukes `build/infer-xcode`; second rm -rf's `~/.cache/huggingface/hub` after confirmation. The HF cache can easily grow past 20 GB.
 

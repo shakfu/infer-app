@@ -287,6 +287,20 @@ let package = Package(
                 ]),
             ]
         ),
+        // External tests that exercise the real LlamaCpp chat-format
+        // bridge (`chatfmt_apply`) through `LlamaRunner.renderTemplate`.
+        // Depends on the `Infer` target (reached via `@testable import`)
+        // because `renderTemplate` lives there; it therefore links the
+        // full MLX/llama stack. The `*ExternalTests` suite-name suffix
+        // keeps it off the fast `make test` path (`--skip ExternalTests`)
+        // and on `make test-integration` (`--filter ExternalTests`) —
+        // appropriate because it hits a real binary framework, not pure
+        // Swift.
+        .testTarget(
+            name: "InferRunnerExternalTests",
+            dependencies: ["Infer"],
+            path: "Tests/InferRunnerExternalTests"
+        ),
     ],
     swiftLanguageModes: [.v6]
 )
