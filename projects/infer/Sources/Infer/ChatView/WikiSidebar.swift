@@ -55,6 +55,16 @@ struct WikiSidebar: View {
     @Bindable var vm: ChatViewModel
     @State private var promptingNewFolder = false
     @State private var newFolderName = ""
+    /// Shared font for the tree-toolbar glyphs. Light weight + a
+    /// slightly larger point size mimics the thin 1.5px stroke of
+    /// Obsidian's lucide icons, which read airier than SF Symbols at
+    /// the default (regular) weight.
+    private static let toolbarIconFont: Font = .system(size: 15, weight: .light)
+    /// Inline tree-search query. Transient and per-workspace: cleared
+    /// on workspace switch (below) so one workspace's search never
+    /// bleeds into another. Non-empty flips the tree to a flat ranked
+    /// result list.
+    @State private var searchQuery = ""
     /// Drives the workspace-settings sheet presentation. Opened by
     /// the cog button in the footer; auto-closes if the active
     /// workspace changes mid-edit so the sheet always reflects the
@@ -90,6 +100,10 @@ struct WikiSidebar: View {
             // user never sees the sheet pinned to a workspace
             // they're no longer in.
             showingWorkspaceSettings = false
+            // Per-workspace search: drop the query so the new
+            // workspace starts with its full tree, not a filter
+            // carried over from the workspace just left.
+            searchQuery = ""
         }
         .sheet(isPresented: $showingWorkspaceSettings) {
             if let active = vm.workspaces.first(where: { $0.id == vm.activeWorkspaceId }) {
@@ -118,12 +132,16 @@ struct WikiSidebar: View {
     private var pageList: some View {
         VStack(spacing: 0) {
             treeToolbar
-            // Show the tree whenever there's anything to render —
-            // pages OR empty folders. The empty-state placeholder
-            // only fires when the workspace's wiki is genuinely
-            // bare on disk; an empty folder created via the toolbar
-            // is reason enough to render the tree.
-            if vm.wikiPages.isEmpty && vm.wikiFolders.isEmpty {
+            searchField
+            let trimmedQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedQuery.isEmpty {
+                searchResults(query: trimmedQuery)
+            } else if vm.wikiPages.isEmpty && vm.wikiFolders.isEmpty {
+                // Show the tree whenever there's anything to render —
+                // pages OR empty folders. The empty-state placeholder
+                // only fires when the workspace's wiki is genuinely
+                // bare on disk; an empty folder created via the toolbar
+                // is reason enough to render the tree.
                 emptyPagesState
             } else {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -146,6 +164,30 @@ struct WikiSidebar: View {
         }
     }
 
+    /// Collapse every folder in the tree by writing `false` to each
+    /// folder's fold-state key. Walks the full built tree so even
+    /// folders currently unmounted (because an ancestor is collapsed)
+    /// are collapsed too — the next time they mount they read the
+    /// stored `false`. Mounted `WikiFolderRow`s observe their
+    /// `@AppStorage` key and re-render closed immediately.
+    private func collapseAllFolders() {
+        for id in folderIds(in: vm.buildWikiTree()) {
+            UserDefaults.standard.set(false, forKey: WikiFolderRow.foldStateKey(id))
+        }
+    }
+
+    /// Every folder id in a tree, depth-first.
+    private func folderIds(in nodes: [WikiTreeNode]) -> [String] {
+        var ids: [String] = []
+        for node in nodes {
+            if case .folder(let id, _, let children) = node {
+                ids.append(id)
+                ids.append(contentsOf: folderIds(in: children))
+            }
+        }
+        return ids
+    }
+
     /// Move every dropped page to the wiki root by stripping its
     /// folder prefix. No-op if the page is already at root.
     private func moveDroppedPagesToRoot(_ drops: [WikiPageDragPayload]) {
@@ -161,22 +203,58 @@ struct WikiSidebar: View {
     /// equal spacing, slightly larger glyphs than the inline tree
     /// chevrons so the toolbar reads as the primary affordance area.
     private var treeToolbar: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: 14) {
             Button { vm.openNewWikiPage() } label: {
                 Image(systemName: "square.and.pencil")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                    .font(Self.toolbarIconFont)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(WikiToolbarButtonStyle())
             .help("New page")
 
             Button { promptingNewFolder = true } label: {
                 Image(systemName: "folder.badge.plus")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                    .font(Self.toolbarIconFont)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(WikiToolbarButtonStyle())
             .help("New folder")
+
+            Menu {
+                Picker("Sort pages by", selection: Binding(
+                    get: { vm.wikiSortMode },
+                    set: { vm.wikiSortMode = $0 }
+                )) {
+                    ForEach(WikiSortMode.allCases, id: \.self) { mode in
+                        Label(mode.label, systemImage: mode.systemImage).tag(mode)
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                // Obsidian's "change sort order" is an up-arrow beside
+                // stacked lines (lucide `arrow-up-narrow-wide`); the
+                // macOS-native equivalent is this arrows-with-lines
+                // sort glyph rather than the two opposing arrows of
+                // `arrow.up.arrow.down`.
+                Image(systemName: "arrow.up.and.down.text.horizontal")
+                    .font(Self.toolbarIconFont)
+            }
+            // Render the menu *as a button* so it routes through the
+            // same `WikiToolbarButtonStyle` as the plain buttons —
+            // otherwise a menu carries its own tint / press treatment
+            // and reads brighter than its dim siblings. `.fixedSize`
+            // keeps it from stretching; the indicator chevron is hidden
+            // so it's icon-only like the rest.
+            .menuStyle(.button)
+            .buttonStyle(WikiToolbarButtonStyle())
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Sort pages (this workspace)")
+
+            Button { collapseAllFolders() } label: {
+                Image(systemName: "rectangle.compress.vertical")
+                    .font(Self.toolbarIconFont)
+            }
+            .buttonStyle(WikiToolbarButtonStyle())
+            .help("Collapse all folders")
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
@@ -190,6 +268,67 @@ struct WikiSidebar: View {
                 newFolderName = ""
             }
             Button("Cancel", role: .cancel) { newFolderName = "" }
+        }
+    }
+
+    /// Inline fuzzy-search field above the tree. Filters the active
+    /// workspace's pages by basename + folder name; a non-empty query
+    /// flips `pageList` to a flat ranked result list. The trailing
+    /// clear button restores the full tree.
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+            TextField("Search pages…", text: $searchQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+            if !searchQuery.isEmpty {
+                Button {
+                    searchQuery = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.borderless)
+                .help("Clear search")
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, 8)
+        .padding(.bottom, 6)
+    }
+
+    /// Flat, ranked result list shown while a search query is active.
+    /// Rows reuse `WikiPageRow` at depth 0 (no tree indent) and carry
+    /// the same open / pin / rename / delete actions as tree rows, so
+    /// search is a fully-functional view of the wiki, not just a jump
+    /// list. Ranking is shared with the Cmd+O switcher via
+    /// `vm.rankedWikiPages`.
+    @ViewBuilder
+    private func searchResults(query: String) -> some View {
+        let results = vm.rankedWikiPages(matching: query)
+        if results.isEmpty {
+            VStack(spacing: 6) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                Text("No pages match “\(query)”")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity)
+        } else {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(results) { page in
+                    WikiSearchResultRow(page: page, vm: vm)
+                }
+            }
         }
     }
 
@@ -267,6 +406,52 @@ struct WikiSidebar: View {
     }
 }
 
+/// Unified style for the wiki tree-toolbar glyph buttons (new page,
+/// new folder, sort, collapse-all). All four — including the sort
+/// `Menu` rendered via `.menuStyle(.button)` — share this so they read
+/// identically: a dim (`.secondary`) glyph with a rounded background
+/// tint on hover and a slightly stronger one while pressed. Replaces
+/// the prior mix of `.borderless` (which brightened the *foreground*
+/// on press) and `.borderlessButton` menu styling, whose differing
+/// treatments made the row look inconsistent.
+private struct WikiToolbarButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        IconLabel(configuration: configuration)
+    }
+
+    private struct IconLabel: View {
+        let configuration: ButtonStyle.Configuration
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .foregroundStyle(glyph)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
+                .background(
+                    RoundedRectangle(cornerRadius: 5)
+                        .fill(background)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 5))
+                .onHover { hovering = $0 }
+                .animation(.easeOut(duration: 0.1), value: hovering)
+        }
+
+        /// Glyph color: dim at rest, fully opaque (primary) while
+        /// pressed so the press reads on the icon itself rather than
+        /// leaning on the background tint.
+        private var glyph: Color {
+            configuration.isPressed ? .primary : .secondary
+        }
+
+        private var background: Color {
+            if configuration.isPressed { return Color.secondary.opacity(0.18) }
+            if hovering { return Color.secondary.opacity(0.08) }
+            return .clear
+        }
+    }
+}
+
 /// Per-depth indent step in points. 17pt mirrors Obsidian's tree
 /// indent — wide enough that the vertical guide line for nested
 /// content sits clearly under the parent's chevron, narrow enough
@@ -341,6 +526,33 @@ struct WikiTreeRow: View {
     }
 }
 
+/// A page row in the flat search-results list. Wraps `WikiPageRow`
+/// with the same open / pin / rename / delete wiring as the tree's
+/// `.page` case (see `WikiTreeRow`), at depth 0 so there's no tree
+/// indent. Kept as its own view so the search list and the tree share
+/// one row implementation rather than duplicating the action closures.
+struct WikiSearchResultRow: View {
+    let page: WikiPage
+    let vm: ChatViewModel
+
+    var body: some View {
+        WikiPageRow(
+            page: page,
+            pinned: vm.wikiPins.contains(page.id),
+            isActive: vm.activeTab == .page(id: page.id),
+            depth: 0,
+            onOpen: { vm.openWikiPage(page.id) },
+            onTogglePin: { vm.toggleWikiPin(page.id) },
+            onRename: { newBasename in
+                let parent = (page.id as NSString).deletingLastPathComponent
+                let newId = parent.isEmpty ? newBasename : parent + "/" + newBasename
+                vm.moveWikiPage(from: page.id, to: newId)
+            },
+            onDelete: { vm.deleteWikiPage(page.id) }
+        )
+    }
+}
+
 /// Folder row — leading chevron (rotates on expand), folder icon,
 /// folder name. Click anywhere on the row toggles open/closed. Right-
 /// click context menu exposes "New page in folder" + "Delete folder".
@@ -362,18 +574,21 @@ struct WikiFolderRow: View {
     @State private var renameInput = ""
     @State private var confirmingDelete = false
 
+    /// `UserDefaults` key for a folder's open/closed state, keyed by
+    /// full folder path so nested folders with identical basenames
+    /// don't share fold state. Shared with the toolbar's collapse-all
+    /// action so the two can't drift.
+    static func foldStateKey(_ folderId: String) -> String {
+        "infer.wiki.foldOpen.\(folderId)"
+    }
+
     init(folderId: String, name: String, children: [WikiTreeNode], depth: Int, vm: ChatViewModel) {
         self.folderId = folderId
         self.name = name
         self.children = children
         self.depth = depth
         self.vm = vm
-        // Per-folder fold state — keyed by full folder path so nested
-        // folders with identical basenames don't share open/closed.
-        self._open = AppStorage(
-            wrappedValue: true,
-            "infer.wiki.foldOpen.\(folderId)"
-        )
+        self._open = AppStorage(wrappedValue: true, Self.foldStateKey(folderId))
     }
 
     var body: some View {

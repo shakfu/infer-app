@@ -485,6 +485,33 @@ final class ChatViewModel {
     /// can look up backlinks in O(1) instead of walking every page
     /// in the workspace on every open + every debounced edit.
     var wikiBacklinksIndex: [String: [String]] = [:]
+    /// Per-workspace sidebar page-sort preference, keyed by workspace
+    /// id (as a string so it round-trips cleanly through the
+    /// `UserDefaults` dictionary). The observable map drives tree
+    /// re-renders; the `wikiSortMode` computed accessor reads/writes
+    /// the entry for the active workspace and persists on change.
+    /// Seeded from `UserDefaults` in the initializer.
+    var wikiSortModeByWorkspace: [String: String] =
+        (UserDefaults.standard.dictionary(forKey: "infer.wiki.sortModeByWorkspace")
+            as? [String: String]) ?? [:]
+    /// Active workspace's sort mode (defaults to `.alphabetical`).
+    /// Setting it persists the whole map back to `UserDefaults`.
+    var wikiSortMode: WikiSortMode {
+        get {
+            guard let id = activeWorkspaceId,
+                  let raw = wikiSortModeByWorkspace[String(id)],
+                  let mode = WikiSortMode(rawValue: raw) else { return .alphabetical }
+            return mode
+        }
+        set {
+            guard let id = activeWorkspaceId else { return }
+            wikiSortModeByWorkspace[String(id)] = newValue.rawValue
+            UserDefaults.standard.set(
+                wikiSortModeByWorkspace,
+                forKey: "infer.wiki.sortModeByWorkspace"
+            )
+        }
+    }
     /// Pending refresh task. Cancelled before starting a new refresh
     /// so rapid back-to-back calls (which happen on every save / pin
     /// / move / folder op) can't race and stomp fresh state with

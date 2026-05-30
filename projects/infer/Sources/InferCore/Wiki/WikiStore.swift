@@ -8,11 +8,27 @@ public struct WikiPage: Equatable, Sendable, Identifiable {
     public let id: String
     public let url: URL
     public let content: String
+    /// On-disk content modification time, when known. Populated by
+    /// `listPages` (for the sidebar's "sort by modified" mode) and left
+    /// nil by lighter-weight constructors / single-page loads where the
+    /// timestamp isn't needed. Deliberately excluded from `==` (see the
+    /// custom `Equatable` below) so a refresh that only changed mtimes
+    /// doesn't churn SwiftUI diffs.
+    public let modifiedAt: Date?
 
-    public init(id: String, url: URL, content: String) {
+    public init(id: String, url: URL, content: String, modifiedAt: Date? = nil) {
         self.id = id
         self.url = url
         self.content = content
+        self.modifiedAt = modifiedAt
+    }
+
+    /// Identity for the UI is (id, url, content) — `modifiedAt` is
+    /// metadata for sorting, not a content change, so two pages that
+    /// differ only in mtime are equal here. Keeps `wikiPages` diffs
+    /// (and thus tree re-renders) tied to actual content edits.
+    public static func == (lhs: WikiPage, rhs: WikiPage) -> Bool {
+        lhs.id == rhs.id && lhs.url == rhs.url && lhs.content == rhs.content
     }
 }
 
@@ -117,7 +133,10 @@ public actor WikiStore {
             guard !stem.isEmpty else { continue }
             let url = dir.appendingPathComponent(subpath)
             let content = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-            pages.append(WikiPage(id: stem, url: url, content: content))
+            let modified = (try? url.resourceValues(
+                forKeys: [.contentModificationDateKey]
+            ))?.contentModificationDate
+            pages.append(WikiPage(id: stem, url: url, content: content, modifiedAt: modified))
         }
         pages.sort { $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending }
         return pages
@@ -320,32 +339,29 @@ public actor WikiStore {
         )
         try fm.moveItem(at: src, to: dst)
 
-        // Build (oldId, newId) pairs and apply pin + wikilink updates.
-        // Per-page rewriteWikilinks is O(N pages) per page-moved, so a
-        // 100-page folder rename touches O(N²) page reads. That's
-        // acceptable at the personal-notes scale; if it ever bites we
-        // can batch all rewrites into a single pass over each page
-        // body (apply N replaces in one read/write).
+        // Build the full (oldId → newId) rename map once, carry pins,
+        // then rewrite every inbound wikilink across the workspace in a
+        // single pass. Batching keeps a P-page folder move O(N) over an
+        // N-page wiki instead of the O(N·P) a per-page rewrite would
+        // cost (each per-page call re-lists + re-scans the whole wiki).
         var pins = (try? loadPins(workspaceId: workspaceId)) ?? []
         let pinsBefore = pins
         var pinsChanged = false
+        var renames: [String: String] = [:]
         for page in pagesUnderSrc {
             let suffix = String(page.id.dropFirst(srcPrefix.count))
             let newId = trimmedNew + "/" + suffix
+            renames[page.id] = newId
             if pinsBefore.contains(page.id) {
                 pins.remove(page.id)
                 pins.insert(newId)
                 pinsChanged = true
             }
-            _ = try rewriteWikilinks(
-                workspaceId: workspaceId,
-                from: page.id,
-                to: newId
-            )
         }
         if pinsChanged {
             try savePins(workspaceId: workspaceId, pins: pins)
         }
+        _ = try rewriteWikilinksBatch(workspaceId: workspaceId, renames: renames)
         return pagesUnderSrc.count
     }
 
@@ -477,7 +493,23 @@ public actor WikiStore {
     /// for the typical case (renames of named pages don't show up
     /// inside code samples).
     public static func rewriteBody(_ body: String, from oldId: String, to newId: String) -> String {
-        let oldKey = oldId.lowercased()
+        rewriteBodyMulti(body, renames: [oldId.lowercased(): newId])
+    }
+
+    /// Apply several `oldId → newId` renames to a body in a single
+    /// scan. `renames` is keyed by the *lowercased* old id (matching
+    /// `rewriteBody`'s case-insensitive target rule); values are the
+    /// replacement ids with their original casing preserved. A link
+    /// whose target isn't in the map is left byte-for-byte unchanged.
+    /// Alias (`[[Old|x]]`) and section fragment (`[[Old#h]]`) are
+    /// preserved exactly as in the single-rename path.
+    ///
+    /// This is the batched primitive behind `moveFolder`: relocating a
+    /// P-page folder produces P renames that must all land on every
+    /// other page, and doing them in one pass keeps that O(N) over the
+    /// wiki instead of O(N·P).
+    public static func rewriteBodyMulti(_ body: String, renames: [String: String]) -> String {
+        guard !renames.isEmpty else { return body }
         var result = ""
         result.reserveCapacity(body.count)
         var i = body.startIndex
@@ -500,7 +532,7 @@ public actor WikiStore {
                         target = String(target[target.startIndex..<hash])
                     }
                     let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if trimmed.lowercased() == oldKey {
+                    if let newId = renames[trimmed.lowercased()] {
                         result += "[[" + newId + fragment + trailing + "]]"
                     } else {
                         result += "[[" + inner + "]]"
@@ -513,6 +545,40 @@ public actor WikiStore {
             i = body.index(after: i)
         }
         return result
+    }
+
+    /// Apply a batch of `oldId → newId` renames to every page in the
+    /// workspace in a single pass — one read + at most one write per
+    /// page, regardless of how many renames are in the batch. Pages
+    /// whose own id is being renamed are skipped (their body moves with
+    /// the file on disk; the move itself already relocated it). Returns
+    /// the count of pages whose body changed.
+    ///
+    /// `renames` keys are old ids (any casing); values are new ids. The
+    /// match is case-insensitive on the target, mirroring
+    /// `rewriteWikilinks`.
+    @discardableResult
+    public func rewriteWikilinksBatch(
+        workspaceId: Int64,
+        renames: [String: String]
+    ) throws -> Int {
+        guard !renames.isEmpty else { return 0 }
+        // Lowercase the keys once so the per-body scan is a plain dict
+        // lookup, and build a set of the renamed-page keys to skip.
+        var lowered: [String: String] = [:]
+        lowered.reserveCapacity(renames.count)
+        for (old, new) in renames { lowered[old.lowercased()] = new }
+        let skipKeys = Set(lowered.keys)
+        var changed = 0
+        for page in try listPages(workspaceId: workspaceId) {
+            if skipKeys.contains(page.id.lowercased()) { continue }
+            let rewritten = Self.rewriteBodyMulti(page.content, renames: lowered)
+            if rewritten != page.content {
+                _ = try savePage(workspaceId: workspaceId, id: page.id, content: rewritten)
+                changed += 1
+            }
+        }
+        return changed
     }
 
     // MARK: - Pins

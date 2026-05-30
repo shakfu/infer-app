@@ -141,23 +141,9 @@ struct WikiQuickSwitcher: View {
     // MARK: - Match logic
 
     private var matches: [WikiPage] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !q.isEmpty else {
-            return Array(vm.wikiPages.prefix(50))
-        }
-        let prefix = vm.wikiPages.filter {
-            basename(of: $0.id).lowercased().hasPrefix(q)
-        }
-        let contains = vm.wikiPages.filter {
-            let base = basename(of: $0.id).lowercased()
-            return !base.hasPrefix(q) && base.contains(q)
-        }
-        let inPath = vm.wikiPages.filter {
-            let id = $0.id.lowercased()
-            let base = basename(of: $0.id).lowercased()
-            return !base.contains(q) && id.contains(q)
-        }
-        return Array((prefix + contains + inPath).prefix(50))
+        // Shared ranking with the inline sidebar search field — see
+        // `ChatViewModel.rankedWikiPages`.
+        vm.rankedWikiPages(matching: query)
     }
 
     private func basename(of id: String) -> String {

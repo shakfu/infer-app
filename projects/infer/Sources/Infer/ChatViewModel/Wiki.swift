@@ -1,6 +1,34 @@
 import Foundation
 import InferCore
 
+/// Sort order applied to *pages* within each folder in the sidebar
+/// tree. Folders themselves always sort alphabetically (Obsidian
+/// behaviour); only the leaf-page ordering changes. Persisted
+/// per-workspace so each workspace remembers its own preference.
+enum WikiSortMode: String, CaseIterable, Sendable {
+    case alphabetical
+    case modified
+    case pinFirst
+
+    /// Menu label.
+    var label: String {
+        switch self {
+        case .alphabetical: return "Name"
+        case .modified: return "Date modified"
+        case .pinFirst: return "Pinned first"
+        }
+    }
+
+    /// SF Symbol shown beside the label in the sort menu.
+    var systemImage: String {
+        switch self {
+        case .alphabetical: return "textformat"
+        case .modified: return "clock"
+        case .pinFirst: return "pin"
+        }
+    }
+}
+
 /// One node in the sidebar's tree view: either a folder (whose
 /// `children` are nested nodes) or a leaf page. Built by
 /// `ChatViewModel.buildWikiTree` from the flat `wikiPages` list.
@@ -458,6 +486,41 @@ extension ChatViewModel {
         return nodes(at: "", folderPaths: allFolders)
     }
 
+    /// Order a folder's child pages per the active workspace's
+    /// `wikiSortMode`. Alphabetical is the case-insensitive id compare
+    /// used everywhere else; `modified` is newest-first (pages with no
+    /// known mtime fall to the end, then break ties alphabetically);
+    /// `pinFirst` floats pinned pages above unpinned, alphabetical
+    /// within each band. All comparators are total + stable so the
+    /// tree order is deterministic across refreshes.
+    private func sortWikiPages(_ pages: [WikiPage]) -> [WikiPage] {
+        func alpha(_ a: WikiPage, _ b: WikiPage) -> Bool {
+            a.id.localizedCaseInsensitiveCompare(b.id) == .orderedAscending
+        }
+        switch wikiSortMode {
+        case .alphabetical:
+            return pages.sorted(by: alpha)
+        case .modified:
+            return pages.sorted { a, b in
+                switch (a.modifiedAt, b.modifiedAt) {
+                case let (da?, db?):
+                    if da != db { return da > db }
+                    return alpha(a, b)
+                case (_?, nil): return true   // known date sorts before unknown
+                case (nil, _?): return false
+                case (nil, nil): return alpha(a, b)
+                }
+            }
+        case .pinFirst:
+            return pages.sorted { a, b in
+                let pa = wikiPins.contains(a.id)
+                let pb = wikiPins.contains(b.id)
+                if pa != pb { return pa }     // pinned first
+                return alpha(a, b)
+            }
+        }
+    }
+
     private func addAncestors(of path: String, into table: inout [String: String]) {
         guard !path.isEmpty else { return }
         var current = path
@@ -514,9 +577,7 @@ extension ChatViewModel {
             if suffix.isEmpty || suffix.contains("/") { continue }
             childPages.append(page)
         }
-        childPages.sort {
-            $0.id.localizedCaseInsensitiveCompare($1.id) == .orderedAscending
-        }
+        childPages = sortWikiPages(childPages)
 
         var out: [WikiTreeNode] = []
         for folder in childFolders {
@@ -682,6 +743,32 @@ extension ChatViewModel {
     func loadBacklinks(for target: String) async -> [String] {
         guard !target.isEmpty else { return [] }
         return wikiBacklinksIndex[target.lowercased()] ?? []
+    }
+
+    /// Rank pages against a fuzzy query, shared by the inline sidebar
+    /// search field and the Cmd+O quick switcher so both order results
+    /// identically. Empty query returns the first `limit` pages in
+    /// natural (already-sorted) order. Otherwise the bands are, in
+    /// priority: basename prefix match, basename substring match, then
+    /// full-path (folder name) substring match — so "filter by
+    /// basename + folder name" both contribute, basename winning ties.
+    /// Capped at `limit`; larger wikis lean on RAG for retrieval.
+    func rankedWikiPages(matching query: String, limit: Int = 50) -> [WikiPage] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return Array(wikiPages.prefix(limit)) }
+        func base(_ id: String) -> String {
+            (id as NSString).lastPathComponent.lowercased()
+        }
+        let prefix = wikiPages.filter { base($0.id).hasPrefix(q) }
+        let contains = wikiPages.filter {
+            let b = base($0.id)
+            return !b.hasPrefix(q) && b.contains(q)
+        }
+        let inPath = wikiPages.filter {
+            let b = base($0.id)
+            return !b.contains(q) && $0.id.lowercased().contains(q)
+        }
+        return Array((prefix + contains + inPath).prefix(limit))
     }
 
     /// Read one page synchronously for the editor sheet. Falls back

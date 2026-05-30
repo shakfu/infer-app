@@ -479,6 +479,60 @@ final class WikiStoreTests: XCTestCase {
         XCTAssertEqual(c?.content, "no links here")
     }
 
+    func testRewriteBodyMultiAppliesSeveralRenamesInOneScan() {
+        let body = "[[Old/A]] then [[old/b|alias]] then [[Old/C#sec]] then [[Keep]]"
+        let out = WikiStore.rewriteBodyMulti(body, renames: [
+            "old/a": "New/A",
+            "old/b": "New/B",
+            "old/c": "New/C",
+        ])
+        XCTAssertEqual(
+            out,
+            "[[New/A]] then [[New/B|alias]] then [[New/C#sec]] then [[Keep]]"
+        )
+    }
+
+    func testRewriteBodyMultiEmptyRenamesIsIdentity() {
+        let body = "[[A]] and [[B]]"
+        XCTAssertEqual(WikiStore.rewriteBodyMulti(body, renames: [:]), body)
+    }
+
+    func testRewriteWikilinksBatchRewritesAllAndSkipsRenamedPages() async throws {
+        // Three pages move under a rename; a fourth references two of
+        // them and must get both links rewritten in one pass.
+        _ = try await store.savePage(workspaceId: 60, id: "Old/A", content: "see [[Old/B]]")
+        _ = try await store.savePage(workspaceId: 60, id: "Old/B", content: "b")
+        _ = try await store.savePage(
+            workspaceId: 60, id: "Ref",
+            content: "[[Old/A]] and [[Old/B]] and [[Untouched]]"
+        )
+        let changed = try await store.rewriteWikilinksBatch(
+            workspaceId: 60,
+            renames: ["Old/A": "New/A", "Old/B": "New/B"]
+        )
+        // Only "Ref" changes — the renamed pages themselves are skipped
+        // (their bodies travel with the file move in the real flow).
+        XCTAssertEqual(changed, 1)
+        let ref = try await store.loadPage(workspaceId: 60, id: "Ref")
+        XCTAssertEqual(ref?.content, "[[New/A]] and [[New/B]] and [[Untouched]]")
+    }
+
+    func testMoveFolderRewritesLinksToMultipleMovedPages() async throws {
+        // A folder move that relocates two pages, with an external
+        // reference linking to both — exercises the batched rewrite
+        // end-to-end through moveFolder.
+        _ = try await store.savePage(workspaceId: 61, id: "Old/A", content: "a")
+        _ = try await store.savePage(workspaceId: 61, id: "Old/B", content: "b")
+        _ = try await store.savePage(
+            workspaceId: 61, id: "Index",
+            content: "links [[Old/A]] and [[Old/B|bee]]"
+        )
+        let count = try await store.moveFolder(workspaceId: 61, from: "Old", to: "New")
+        XCTAssertEqual(count, 2)
+        let index = try await store.loadPage(workspaceId: 61, id: "Index")
+        XCTAssertEqual(index?.content, "links [[New/A]] and [[New/B|bee]]")
+    }
+
     func testWikilinksAreCaseInsensitive() {
         // Phase 5 dropped transitive expansion from buildContext, but
         // the resolver still does case-insensitive matching for
