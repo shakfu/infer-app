@@ -37,10 +37,12 @@ enum MessageMath {
     }
 }
 
-/// Renders a single assistant message through WKWebView with KaTeX + hljs,
-/// reusing the bundled `WebAssets/` directory the print pipeline already
-/// ships. Used only when the message text contains math delimiters; non-math
-/// assistant messages stay on the SwiftUI/MarkdownUI path.
+/// Renders a single assistant message through WKWebView with full markdown
+/// (swift-markdown → HTML), KaTeX, and hljs syntax highlighting, reusing the
+/// bundled `WebAssets/` directory the print pipeline already ships. As of the
+/// WKWebView-chat-rendering experiment this is the path for *all* assistant
+/// messages (math, tables, multi-language code, inline HTML), not just
+/// math-bearing ones — unifying live rendering with the PDF/print pipeline.
 struct MathMessageView: View {
     let text: String
     /// Cmd+F transcript find state. When non-nil, the WebView's
@@ -51,6 +53,12 @@ struct MathMessageView: View {
     /// and code styling don't break.
     var findQuery: String? = nil
     var activeMatchIndex: Int? = nil
+    /// Click handler for in-document links. Invoked on the main actor for
+    /// every `linkActivated` navigation; the navigation itself is always
+    /// cancelled (the handler does the opening — `wiki://` resolves to a
+    /// tab, external URLs go to `NSWorkspace`). When nil, links open
+    /// externally via `NSWorkspace` (the pre-experiment behaviour).
+    var onLinkClick: (@MainActor (URL) -> Void)? = nil
     @State private var height: CGFloat = 20
 
     var body: some View {
@@ -58,6 +66,7 @@ struct MathMessageView: View {
             text: text,
             findQuery: findQuery,
             activeMatchIndex: activeMatchIndex,
+            onLinkClick: onLinkClick,
             height: $height
         )
         .frame(height: height)
@@ -65,10 +74,37 @@ struct MathMessageView: View {
     }
 }
 
+/// `WKWebView` subclass that forwards vertical scrolling to the enclosing
+/// scroll view. A web view embeds its own scroll view that swallows
+/// `scrollWheel` events over its content — even when (as for every message
+/// here) the view is sized exactly to its content and has nothing to scroll
+/// itself. Without this, two-finger scrolling over message *text* does
+/// nothing while scrolling over the surrounding margins works, because only
+/// the margins let the event reach the transcript's `ScrollView`.
+///
+/// Vertical-dominant scroll is forwarded to the parent (always safe — the
+/// message view has no vertical overflow); horizontal-dominant scroll stays
+/// with the web view so wide tables and display math (`overflow-x: auto`)
+/// keep their internal horizontal scrolling.
+private final class PassthroughScrollWebView: WKWebView {
+    override func scrollWheel(with event: NSEvent) {
+        if abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX) {
+            if let scrollView = enclosingScrollView {
+                scrollView.scrollWheel(with: event)
+            } else {
+                nextResponder?.scrollWheel(with: event)
+            }
+        } else {
+            super.scrollWheel(with: event)
+        }
+    }
+}
+
 private struct MathWebView: NSViewRepresentable {
     let text: String
     var findQuery: String?
     var activeMatchIndex: Int?
+    var onLinkClick: (@MainActor (URL) -> Void)?
     @Binding var height: CGFloat
 
     func makeCoordinator() -> Coordinator {
@@ -81,16 +117,18 @@ private struct MathWebView: NSViewRepresentable {
         ucc.add(context.coordinator, name: "heightChanged")
         config.userContentController = ucc
 
-        let webView = WKWebView(frame: .zero, configuration: config)
+        let webView = PassthroughScrollWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
         webView.navigationDelegate = context.coordinator
         context.coordinator.webView = webView
         context.coordinator.pendingText = text
+        context.coordinator.onLinkClick = onLinkClick
         webView.loadHTMLString(Self.shellHTML, baseURL: Bundle.main.resourceURL)
         return webView
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {
+        context.coordinator.onLinkClick = onLinkClick
         context.coordinator.update(text: text)
         context.coordinator.updateFindState(
             query: findQuery,
@@ -104,6 +142,7 @@ private struct MathWebView: NSViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         weak var webView: WKWebView?
+        var onLinkClick: (@MainActor (URL) -> Void)?
         private var hasLoaded = false
         var pendingText: String?
         private var lastSentText: String?
@@ -179,7 +218,14 @@ private struct MathWebView: NSViewRepresentable {
 
         private func send(text: String) {
             guard let webView else { return }
-            let html = MathRendering.markdownToHTML(text)
+            // Pre-process `[[Page]]` tokens into `[label](wiki://target)`
+            // markdown links before HTML conversion, mirroring the old
+            // MarkdownUI path's `markdownifyWikilinks` step — so wiki
+            // links render and route through `onLinkClick` (the
+            // `decidePolicyFor` handler) instead of breaking.
+            let html = MathRendering.markdownToHTML(
+                MessageWikilinkRenderer.markdownifyWikilinks(text)
+            )
             guard let payload = try? JSONSerialization.data(
                 withJSONObject: [html],
                 options: [.fragmentsAllowed]
@@ -249,7 +295,15 @@ private struct MathWebView: NSViewRepresentable {
         ) {
             if navigationAction.navigationType == .linkActivated,
                let url = navigationAction.request.url {
-                NSWorkspace.shared.open(url)
+                // Route through the supplied handler (wiki:// → tab,
+                // external → NSWorkspace); fall back to opening
+                // externally when no handler is wired. The navigation
+                // is always cancelled — the handler does the opening.
+                if let onLinkClick {
+                    MainActor.assumeIsolated { onLinkClick(url) }
+                } else {
+                    NSWorkspace.shared.open(url)
+                }
                 decisionHandler(.cancel)
                 return
             }
@@ -314,7 +368,13 @@ private struct MathWebView: NSViewRepresentable {
         font: 13px -apple-system, system-ui, sans-serif;
         color: var(--fg);
         line-height: 1.5;
+        /* WebView messages lose SwiftUI's native .textSelection; opt the
+           transcript text back into selection (the per-message Copy
+           button remains the primary copy affordance). */
+        -webkit-user-select: text;
+        user-select: text;
       }
+      a { cursor: pointer; }
       #content > *:first-child { margin-top: 0; }
       #content > *:last-child { margin-bottom: 0; }
       h1 { font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 4px; margin: 18px 0 10px; }

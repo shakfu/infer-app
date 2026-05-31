@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import MarkdownUI
 import InferAgents
 import InferCore
 
@@ -277,14 +276,6 @@ struct MessageRow: View {
     @State private var isHovered = false
     @State private var justCopied = false
 
-    /// True when the Cmd+F find bar is open with a non-empty query.
-    /// Drives the assistant-message rendering path: AttributedString
-    /// (highlights visible) vs Markdown (full formatting).
-    private var findActive: Bool {
-        guard let q = vm.transcriptFindQuery else { return false }
-        return !q.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .trailing, spacing: 2) {
@@ -386,43 +377,22 @@ struct MessageRow: View {
             } else if !message.text.isEmpty {
                 switch message.role {
                 case .assistant:
-                    if MessageMath.containsMath(message.text) {
-                        // Math messages keep rich KaTeX rendering
-                        // even during find. Highlights are injected
-                        // into the WKWebView via `applyFindHighlights`
-                        // JS — KaTeX / hljs nodes are skipped so the
-                        // math rendering isn't disrupted.
-                        MathMessageView(
-                            text: message.text,
-                            findQuery: vm.transcriptFindQuery,
-                            activeMatchIndex: activeMatchIndex
-                        )
-                    } else if findActive {
-                        // Non-math prose path during find: fall back
-                        // to plain AttributedString so highlights
-                        // show. Markdown formatting suppressed
-                        // temporarily; closing the bar restores the
-                        // full Markdown render.
-                        Text(MessageWikilinkRenderer.attributedUserMessage(
-                            message.text,
-                            findQuery: vm.transcriptFindQuery,
-                            activeMatchIndex: activeMatchIndex
-                        ))
-                            .environment(\.openURL, OpenURLAction { url in
-                                MessageWikilinkRenderer.handle(url: url, vm: vm)
-                            })
-                    } else {
-                        // Pre-process `[[Page]]` tokens into
-                        // `[label](wiki://Page)` markdown links so
-                        // the renderer styles them natively; clicks
-                        // route through MessageWikilinkRenderer.handle.
-                        Markdown(MessageWikilinkRenderer.markdownifyWikilinks(message.text))
-                            .markdownTheme(.gitHub)
-                            .markdownCodeSyntaxHighlighter(.chat())
-                            .environment(\.openURL, OpenURLAction { url in
-                                MessageWikilinkRenderer.handle(url: url, vm: vm)
-                            })
-                    }
+                    // WKWebView-chat-rendering experiment: every
+                    // assistant message renders through the WebView
+                    // (full markdown + KaTeX + hljs + tables + inline
+                    // HTML), unifying live chat with the print pipeline.
+                    // Find highlights are injected via `applyFindHighlights`
+                    // JS (KaTeX / hljs nodes skipped); `[[wikilinks]]` are
+                    // markdownified inside the view and clicks route
+                    // through `MessageWikilinkRenderer.handle`.
+                    MathMessageView(
+                        text: message.text,
+                        findQuery: vm.transcriptFindQuery,
+                        activeMatchIndex: activeMatchIndex,
+                        onLinkClick: { url in
+                            _ = MessageWikilinkRenderer.handle(url: url, vm: vm)
+                        }
+                    )
                 case .user, .system:
                     Text(MessageWikilinkRenderer.attributedUserMessage(
                         message.text,
