@@ -17,6 +17,14 @@ public enum PersistKey {
     /// llama.cpp prefill batch size. Persisted as Int. Default 2048.
     /// Reload-required.
     public static let nBatch = "infer.nBatch"
+    /// Chat-transcript rendering: when true, the WKWebView message
+    /// renderer coalesces streaming re-renders to a fixed ~80 ms cadence
+    /// instead of re-rendering (and re-running KaTeX / hljs over the
+    /// whole message) on every streamed token. Off by default —
+    /// per-token rendering is smooth at local token rates; the throttle
+    /// earns its keep on fast cloud streaming or very long, code-heavy
+    /// replies where the per-token re-highlight cost compounds. Bool.
+    public static let chatThrottleStreaming = "infer.chat.throttleStreaming"
     /// Global default cap (in bytes) on tool output that is fed back to
     /// the model. Per-tool overrides live under
     /// `toolOutputOverrides`. Default 16384 — generous for prose,

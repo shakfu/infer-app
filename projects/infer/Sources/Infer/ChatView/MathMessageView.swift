@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import WebKit
+import InferCore
 
 /// Math-delimiter heuristic shared with the print pipeline (`PrintRenderer`
 /// calls straight through to this). Display math (`$$`, `\[`) and explicit
@@ -161,14 +162,55 @@ private struct MathWebView: NSViewRepresentable {
             self.heightBinding = heightBinding
         }
 
+        /// Throttle state. When the `chatThrottleStreaming` setting is
+        /// on, rapid streaming updates are coalesced to a fixed cadence
+        /// so KaTeX / hljs don't re-run over the whole message on every
+        /// token. Leading-edge + trailing-edge: the first update renders
+        /// immediately (so a static message scrolled into view isn't
+        /// delayed), within-window updates collapse to one trailing
+        /// flush, and the final text always lands.
+        private var throttlePending: String?
+        private var throttleScheduled = false
+        private var lastThrottledSend: Date = .distantPast
+        private let throttleInterval: TimeInterval = 0.08
+
         func update(text: String) {
             if !hasLoaded {
                 pendingText = text
                 return
             }
             if lastSentText == text { return }
-            lastSentText = text
-            send(text: text)
+            if UserDefaults.standard.bool(forKey: PersistKey.chatThrottleStreaming) {
+                scheduleThrottledSend(text: text)
+            } else {
+                lastSentText = text
+                send(text: text)
+            }
+        }
+
+        private func scheduleThrottledSend(text: String) {
+            let now = Date()
+            let elapsed = now.timeIntervalSince(lastThrottledSend)
+            if elapsed >= throttleInterval && !throttleScheduled {
+                lastThrottledSend = now
+                lastSentText = text
+                send(text: text)
+                return
+            }
+            throttlePending = text
+            if throttleScheduled { return }
+            throttleScheduled = true
+            let delay = max(0, throttleInterval - elapsed)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                self.throttleScheduled = false
+                guard let t = self.throttlePending else { return }
+                self.throttlePending = nil
+                if self.lastSentText == t { return }
+                self.lastThrottledSend = Date()
+                self.lastSentText = t
+                self.send(text: t)
+            }
         }
 
         /// Push `findQuery` + active-match-index into the WebView

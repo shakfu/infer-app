@@ -1,13 +1,14 @@
 import SwiftUI
+import InferCore
 
-/// Light / dark / system color-scheme picker. Persisted under
-/// `infer.appearance` (matches the existing `@AppStorage` key the app
-/// has used since the sidebar tab era — picks up the user's previous
-/// choice transparently). The picker rebinds the same `@AppStorage`
-/// the App scene reads for `preferredColorScheme`, so changes apply
-/// instantly without an explicit Apply button.
+/// Display preferences: color scheme + chat-transcript rendering.
+/// Persisted under `@AppStorage` keys read live elsewhere (the App
+/// scene reads `infer.appearance` for `preferredColorScheme`; the
+/// WKWebView message renderer reads `PersistKey.chatThrottleStreaming`
+/// per token), so changes apply instantly without an Apply button.
 struct AppearanceSettingsView: View {
     @AppStorage("infer.appearance") private var appearanceRaw: String = AppearanceMode.light.rawValue
+    @AppStorage(PersistKey.chatThrottleStreaming) private var throttleStreaming: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -28,6 +29,16 @@ struct AppearanceSettingsView: View {
                 }
             }
             .pickerStyle(.segmented)
+
+            Divider()
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Throttle streaming re-render", isOn: $throttleStreaming)
+                Text("Coalesces chat re-rendering to ~12×/sec while a reply streams, instead of re-rendering on every token. Leave off for local models (already smooth); turn on if a fast cloud model or a very long, code-heavy reply stutters as it streams.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             Spacer(minLength: 0)
         }
         .padding(16)
