@@ -528,6 +528,12 @@ final class ChatViewModel {
     /// user clicks a tab strip entry or opens a wiki page from the
     /// sidebar.
     var activeTab: WikiTab = .chat
+    /// Backing session for the terminal tab (SPIKE). Lazily created by
+    /// `openTerminal()`, retained here so the shell + scrollback survive
+    /// tab switches (the content-area `switch` would otherwise deallocate
+    /// the view). Nilled when the terminal tab closes.
+    @ObservationIgnored
+    var terminalSession: TerminalSession? = nil
     /// Fuzzy quick-switcher visibility. Bound to Cmd+O on the chat
     /// surface; the modal sheet renders `WikiQuickSwitcher`.
     var showQuickSwitcher: Bool = false

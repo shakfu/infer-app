@@ -56,6 +56,14 @@ let package = Package(
         // ChimeHQ/SwiftTreeSitter without product-name collision.
         .package(path: "../../thirdparty/tree-sitter-python"),
         .package(url: "https://github.com/ChimeHQ/SwiftTreeSitter", from: "0.9.0"),
+        // SwiftTerm (Miguel de Icaza, MIT) — pure-Swift terminal
+        // emulator + PTY. SPIKE: embedded terminal pane for agent
+        // command transparency. Declares `swiftLanguageVersions: [.v5]`;
+        // SPM compiles it in its own (Swift 5) mode inside this `.v6`
+        // package, so concurrency friction only appears at the API
+        // boundary in our code — kept main-actor-confined (the views
+        // are AppKit `NSView`s) to avoid Sendable churn.
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.13.0"),
         // libxlsxwriter and CoreXLSX moved into
         // projects/plugins/plugin_spreadsheet_tools — that plugin owns
         // csv.write / tsv.write / xlsx.write / xlsx.read and the heavy
@@ -246,6 +254,7 @@ let package = Package(
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
                 .product(name: "Highlightr", package: "Highlightr"),
                 .product(name: "SwiftTreeSitter", package: "SwiftTreeSitter"),
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
                 .product(name: "TreeSitterMarkdown", package: "tree-sitter-qmd"),
                 .product(name: "TreeSitterPython", package: "tree-sitter-python"),
                 .product(name: "Markdown", package: "swift-markdown"),

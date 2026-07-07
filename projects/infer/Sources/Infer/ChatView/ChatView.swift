@@ -30,13 +30,34 @@ struct ChatView: View {
             VStack(spacing: 0) {
                 MainContentTabBar(vm: vm)
                 Divider()
-                Group {
-                    switch vm.activeTab {
-                    case .chat:
-                        chatTabContent
-                    case .page(let id):
-                        WikiPageView(vm: vm, pageId: id)
-                            .id(id)
+                ZStack {
+                    Group {
+                        switch vm.activeTab {
+                        case .chat:
+                            chatTabContent
+                        case .page(let id):
+                            WikiPageView(vm: vm, pageId: id)
+                                .id(id)
+                        case .terminal:
+                            // The terminal itself is rendered by the
+                            // always-mounted overlay below; this branch is
+                            // just a placeholder so the switch stays
+                            // exhaustive and the layout region is claimed.
+                            Color.clear
+                        }
+                    }
+
+                    // Persistent terminal layer. Kept continuously mounted
+                    // once the session exists (it's only removed when the
+                    // tab is closed, which nils `terminalSession`) so SwiftUI
+                    // never unmounts + re-adds the AppKit view. Re-adding
+                    // forces a fresh layout pass that makes SwiftTerm reflow
+                    // and jump to the bottom, losing scroll position — hence
+                    // mount-once + toggle visibility rather than switch-in.
+                    if let session = vm.terminalSession {
+                        TerminalTabView(session: session)
+                            .opacity(vm.activeTab == .terminal ? 1 : 0)
+                            .allowsHitTesting(vm.activeTab == .terminal)
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

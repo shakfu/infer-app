@@ -110,6 +110,8 @@ struct InferApp: App {
             }
             CommandGroup(after: .windowList) {
                 GalleryMenuItem()
+                Button("Open Terminal") { chatVM.openTerminal() }
+                    .keyboardShortcut("t", modifiers: [.command, .shift])
             }
         }
         Window("Gallery", id: galleryWindowID) {
@@ -210,6 +212,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // can't release.
             ("mcpHost.shutdown",       { await vm.mcpHost.shutdown() }),
             ("audioRecorder.cancel",   { await MainActor.run { vm.audioRecorder.cancel() } }),
+            // Kill the embedded terminal's child shell (SPIKE) — a PTY
+            // child is exactly the "wedged subprocess" this sequence
+            // guards against.
+            ("terminal.terminate",     { await MainActor.run { vm.terminalSession?.terminate() } }),
             ("whisper.shutdown",       { await WhisperRunner.shared.shutdown() }),
             ("vault.shutdown",         { await VaultStore.shared.shutdown() }),
             // Flush the persistent log file last so any messages

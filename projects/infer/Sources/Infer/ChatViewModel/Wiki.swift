@@ -51,6 +51,11 @@ enum WikiTreeNode: Identifiable, Equatable {
 enum WikiTab: Hashable, Sendable, Codable {
     case chat
     case page(id: String)
+    // Embedded terminal (SPIKE). No associated value, so at most one
+    // terminal tab exists at a time (`openTabs.contains(.terminal)`
+    // dedupes). Session-only — like all tabs, never persisted; the
+    // shell is killed when the tab closes.
+    case terminal
 
     var pageId: String? {
         if case .page(let id) = self { return id }
@@ -314,11 +319,31 @@ extension ChatViewModel {
         activeTab = target
     }
 
+    /// Open (or focus) the terminal tab (SPIKE). Lazily spins up the
+    /// backing `TerminalSession` — retained on the VM so the shell
+    /// survives tab switches — then appends and activates the single
+    /// `.terminal` tab.
+    func openTerminal() {
+        if terminalSession == nil {
+            terminalSession = TerminalSession()
+        }
+        if !openTabs.contains(.terminal) {
+            openTabs.append(.terminal)
+        }
+        activeTab = .terminal
+    }
+
     /// Close a tab. Chat is uncloseable. If the active tab was the
     /// one closed, fall back to chat (the always-present tab) so the
     /// main area never goes blank.
     func closeTab(_ tab: WikiTab) {
         guard tab != .chat else { return }
+        // Closing the terminal tab kills its shell and drops the
+        // session so a reopen starts fresh (nothing persists).
+        if tab == .terminal {
+            terminalSession?.terminate()
+            terminalSession = nil
+        }
         openTabs.removeAll { $0 == tab }
         if activeTab == tab {
             activeTab = .chat

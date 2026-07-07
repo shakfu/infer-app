@@ -69,6 +69,7 @@ struct MainContentTabBar: View {
         switch tab {
         case .chat: return "Chat"
         case .page(let id): return id.isEmpty ? "Untitled" : id
+        case .terminal: return "Terminal"
         }
     }
 }
@@ -170,6 +171,7 @@ private struct TabChip: View {
         switch tab {
         case .chat: return "bubble.left.and.bubble.right"
         case .page: return "doc.text"
+        case .terminal: return "terminal"
         }
     }
 }
