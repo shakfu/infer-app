@@ -121,25 +121,44 @@ struct VaultSearchHit: Identifiable, Sendable, Equatable {
 actor VaultStore {
     static let shared = VaultStore()
 
-    private var cachedPool: DatabasePool?
-
-    private func pool() throws -> DatabasePool {
-        if let p = cachedPool { return p }
+    /// Absolute on-disk path to the vault database.
+    ///
+    /// Injectable rather than hardcoded so tests can point at a temp
+    /// file instead of the user's real conversation history — the same
+    /// shape as `VectorStore(url:)`, and for the same reason: a store
+    /// that can only ever open one fixed path cannot be exercised
+    /// without destroying real data.
+    nonisolated static func defaultURL() -> URL {
         let fm = FileManager.default
-        let appSupport = try fm.url(
+        let base = (try? fm.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
-        )
-        let dir = appSupport.appendingPathComponent("Infer", isDirectory: true)
+        )) ?? URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support", isDirectory: true)
+        return base
+            .appendingPathComponent("Infer", isDirectory: true)
+            .appendingPathComponent("vault.sqlite")
+    }
+
+    private let databaseURL: URL
+    private var cachedPool: DatabasePool?
+
+    init(url: URL = VaultStore.defaultURL()) {
+        self.databaseURL = url
+    }
+
+    private func pool() throws -> DatabasePool {
+        if let p = cachedPool { return p }
+        let fm = FileManager.default
+        let dir = databaseURL.deletingLastPathComponent()
         if !fm.fileExists(atPath: dir.path) {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
-        let url = dir.appendingPathComponent("vault.sqlite")
         var config = Configuration()
         config.foreignKeysEnabled = true
-        let p = try DatabasePool(path: url.path, configuration: config)
+        let p = try DatabasePool(path: databaseURL.path, configuration: config)
         try Self.migrator.migrate(p)
         cachedPool = p
         return p

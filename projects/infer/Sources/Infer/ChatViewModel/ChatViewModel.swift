@@ -315,7 +315,7 @@ final class ChatViewModel {
     /// RAG vector store (sqlite-vec via SQLiteVec's bundled SQLite).
     /// One shared instance for the whole app; separate DB file from
     /// the main vault. Schema is bootstrapped lazily on first use.
-    let vectorStore = VectorStore()
+    let vectorStore: VectorStore
     /// Non-modal notification surface for background confirmations
     /// (duplicate success, non-fatal warnings). Overlaid on `ChatView`;
     /// any `@MainActor` code can call `toasts.show(_:)` to surface a
@@ -325,7 +325,7 @@ final class ChatViewModel {
     /// stderr now also call `logs.log(...)`; stderr remains the
     /// fallback so developers running from a shell still see output.
     /// Surfaced in the Console sidebar tab.
-    let logs = LogCenter()
+    let logs: LogCenter
     /// True while a background download of the embedding model is
     /// in flight. Observed by the workspace sheet to show progress
     /// and disable scan affordances.
@@ -449,12 +449,12 @@ final class ChatViewModel {
     /// send, on reset, or when the user clicks the × on the preview chip.
     var pendingImageURL: URL? = nil
 
-    let vault = VaultStore.shared
+    let vault: VaultStore
     /// Per-workspace markdown wiki — curated, always-injected context
     /// composed alongside RAG. See `WikiStore` for the storage model
     /// and `buildWikiContextIfAvailable()` below for the per-turn
     /// injection helper.
-    let wiki = WikiStore()
+    let wiki: WikiStore
     /// Token budget for the always-inject wiki context. Defaults to
     /// 8k — generous enough that authored notes for typical projects
     /// fit, conservative enough to leave room for RAG chunks +
@@ -627,7 +627,35 @@ final class ChatViewModel {
     var generationTask: Task<Void, Never>? = nil
     var loadTask: Task<Void, Never>? = nil
 
-    init() {
+    /// Storage-owning dependencies are injectable so the view model can
+    /// be constructed against temp directories under test. Every default
+    /// reproduces production behaviour exactly, and the single
+    /// production call site (`InferApp.swift:11`) needs no change.
+    ///
+    /// Without this, merely constructing a `ChatViewModel` in a test
+    /// would read and write the user's real conversation vault, vector
+    /// store, wiki directory, and on-disk log — `init` calls
+    /// `bootstrapAgents()`, `refreshWorkspaces()` and
+    /// `logRAGIndexHealth()`, so the damage would happen before the
+    /// first assertion ran. Same reasoning that made `VaultStore` take
+    /// an explicit URL: a component is testable exactly when its
+    /// storage locations are parameters.
+    ///
+    /// Not yet injectable: the runner (`activeChatRunner` is computed
+    /// from the active backend) and the agents root (a static). Testing
+    /// the generation path needs the former.
+    init(
+        vectorStore: VectorStore = VectorStore(),
+        vault: VaultStore = .shared,
+        wiki: WikiStore = WikiStore(),
+        logs: LogCenter = LogCenter(),
+        runner: (any ChatRunner)? = nil
+    ) {
+        self.vectorStore = vectorStore
+        self.vault = vault
+        self.wiki = wiki
+        self.logs = logs
+        self.runnerOverride = runner
         // Build the agent controller with a warning sink that routes
         // hook failures into the Console. Keeps a strong ref to the
         // log center via `[weak logs]` — `logs` outlives the
@@ -810,11 +838,33 @@ final class ChatViewModel {
     /// `mlx` / `cloud` properties stay live for the parts of the chat-VM
     /// that need backend-specific entry points (load, configure,
     /// updateSettings, sampling, multimodal `sendUserMessage`).
-    var activeChatRunner: any ChatRunner {
+    /// Test-only substitute for the backend-selected runner. Nil in
+    /// production, where `activeChatRunner` resolves from `backend` as
+    /// it always has.
+    ///
+    /// This exists because the generation path — `send()`, the stream
+    /// loop, segment dispatch, KV compaction — is the most concurrency-
+    /// dense code in the app and was untestable for want of a seam, not
+    /// for any structural reason. `MockChatRunner` already models this
+    /// protocol for `InferAppCore` and `InferSession`; it simply had no
+    /// way in here.
+    let runnerOverride: (any ChatRunner)?
+
+    /// Runner for an explicitly-named backend. `send()` captures
+    /// `backend` once at the top of a turn and must keep using that
+    /// snapshot even if the user flips the picker mid-generation, so it
+    /// calls this rather than `activeChatRunner` (which reads live
+    /// state).
+    func chatRunner(for backend: Backend) -> any ChatRunner {
+        if let runnerOverride { return runnerOverride }
         switch backend {
         case .llama: return llama
         case .mlx: return mlx
         case .cloud: return cloud
         }
+    }
+
+    var activeChatRunner: any ChatRunner {
+        chatRunner(for: backend)
     }
 }

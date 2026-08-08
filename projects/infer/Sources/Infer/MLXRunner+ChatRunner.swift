@@ -19,11 +19,21 @@ extension MLXRunner: ChatRunner {
 
     /// MLX captures sampling at `ChatSession` build-time inside
     /// `sendUserMessage`; the chat-VM applies sampling out-of-band via
-    /// `updateSettings`, so the protocol surface stays narrow. Image
-    /// URLs default to `[]` here — VLM-aware paths go through the
-    /// runner directly today; that surface can be lifted onto the
-    /// protocol once a second runner needs it.
+    /// `updateSettings`, so the protocol surface stays narrow.
     public func respondToUser(_ text: String, maxTokens: Int) async -> AsyncThrowingStream<String, Error> {
         sendUserMessage(text, imageURLs: [], maxTokens: maxTokens)
+    }
+
+    /// The one runner with a real multimodal path, so the only one that
+    /// overrides the protocol's default (which drops images). This is
+    /// what the generation path now calls; before `imageURLs` was lifted
+    /// onto `ChatRunner`, `send()` had to reach for `MLXRunner`
+    /// concretely to pass an attachment through.
+    public func respondToUser(
+        _ text: String,
+        imageURLs: [URL],
+        maxTokens: Int
+    ) async -> AsyncThrowingStream<String, Error> {
+        sendUserMessage(text, imageURLs: imageURLs, maxTokens: maxTokens)
     }
 }

@@ -30,7 +30,7 @@ Matrix:
 - Drop in as a third/fourth runner `actor` next to `LlamaRunner` / `MLXRunner`.
 - Same `load / sendUserMessage / requestStop` surface; native
   `AsyncThrowingStream<String, Error>` maps 1:1.
-- No `Python.framework` dependency, no PythonKit bridge, smaller bundle.
+- No `Python.framework` dependency, no embedded interpreter, smaller bundle.
 
 **Python SDKs (openai-python, anthropic):**
 - Require the embedded interpreter; would re-add to `PY_PKGS`.

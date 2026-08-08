@@ -173,6 +173,51 @@ public actor VectorStore {
         self.databaseURL = url
     }
 
+    // MARK: - Write serialization
+
+    /// Actor isolation is NOT sufficient to serialize the write paths
+    /// here, and the failure is silent until it isn't.
+    ///
+    /// `Database.transaction(block:)` issues `BEGIN`, then `await`s an
+    /// async block. Every `await db.execute(...)` inside that block is
+    /// a suspension point, and both `Database` and `VectorStore` are
+    /// reentrant actors — so a second writer can enter while the first
+    /// still has a transaction open, reach its own `BEGIN`, and get
+    /// "cannot start a transaction within a transaction" from SQLite.
+    ///
+    /// Two subtler races share the same fix: a bare `execute` issued
+    /// while another task's transaction is open silently joins that
+    /// transaction (and is lost if it rolls back), and the
+    /// check-then-act pairs below (`ingest`'s dedup probe,
+    /// `ensureInitialized`'s meta probe) can both observe "absent" and
+    /// both insert.
+    ///
+    /// So every writer takes this lock across its full read-then-write
+    /// span. Readers are deliberately not gated: they run as single
+    /// statements on one connection and gating them would serialize
+    /// search behind ingest for no correctness gain.
+    private var writeInProgress = false
+    private var writeWaiters: [CheckedContinuation<Void, Never>] = []
+
+    private func beginExclusiveWrite() async {
+        // `while`, not `if`: a waiter resumed by `endExclusiveWrite`
+        // can still lose the lock to a caller that arrived in between,
+        // and must then wait again rather than proceed.
+        while writeInProgress {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                writeWaiters.append(continuation)
+            }
+        }
+        writeInProgress = true
+    }
+
+    private func endExclusiveWrite() {
+        writeInProgress = false
+        if !writeWaiters.isEmpty {
+            writeWaiters.removeFirst().resume()
+        }
+    }
+
     /// Idempotent open-or-create. The first call creates the parent
     /// directory, opens the DB, and bootstraps the schema. Subsequent
     /// calls reuse the cached handle. Safe to call many times.
@@ -344,6 +389,10 @@ public actor VectorStore {
         chunkOverlap: Int
     ) async throws -> VectorWorkspaceMeta {
         let db = try await db()
+        // Held across the probe and the insert so two callers can't
+        // both see "no meta row" and both write one.
+        await beginExclusiveWrite()
+        defer { endExclusiveWrite() }
         if let existing = try await workspaceMeta(workspaceId: workspaceId) {
             if existing.dimension != dimension {
                 throw VectorStoreError.metadataMismatch(
@@ -413,6 +462,11 @@ public actor VectorStore {
             }
         }
         let db = try await db()
+        // Held across the dedup probe and the transaction: concurrent
+        // ingests of the same hash would otherwise both miss and both
+        // insert, tripping `idx_sources_dedup`.
+        await beginExclusiveWrite()
+        defer { endExclusiveWrite() }
 
         // Dedup: return existing id if this file is already ingested.
         let existing = try await db.query(
@@ -477,6 +531,8 @@ public actor VectorStore {
     @discardableResult
     public func deleteSourcesByURI(workspaceId: Int64, uri: String) async throws -> Int {
         let db = try await db()
+        await beginExclusiveWrite()
+        defer { endExclusiveWrite() }
         var count = 0
         try await db.transaction {
             let rows = try await db.query(
@@ -516,6 +572,8 @@ public actor VectorStore {
     /// since sqlite-vec virtual tables don't participate in FK chains.
     public func deleteSource(id sourceId: Int64) async throws {
         let db = try await db()
+        await beginExclusiveWrite()
+        defer { endExclusiveWrite() }
         try await db.transaction {
             // Gather chunk ids so we can delete the corresponding
             // vec_items rows in one statement.
@@ -547,6 +605,8 @@ public actor VectorStore {
     /// deleted so its RAG corpus doesn't linger in `vectors.sqlite`.
     public func deleteWorkspaceData(workspaceId: Int64) async throws {
         let db = try await db()
+        await beginExclusiveWrite()
+        defer { endExclusiveWrite() }
         try await db.transaction {
             // Find all chunk ids belonging to this workspace.
             let chunkRows = try await db.query(

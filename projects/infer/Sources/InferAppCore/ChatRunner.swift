@@ -48,6 +48,23 @@ public struct ChatTurn: Sendable, Equatable {
 public protocol ChatRunner: Actor {
     func setHistory(_ turns: [ChatTurn]) async throws
     func respondToUser(_ text: String, maxTokens: Int) async -> AsyncThrowingStream<String, Error>
+    /// Multimodal variant. Runners that cannot accept images inherit the
+    /// default implementation below, which drops them and forwards to
+    /// the text-only call — matching what the chat-VM's per-backend
+    /// switch did before this was lifted onto the protocol (llama's
+    /// send button is disabled with an attachment; cloud dropped them
+    /// silently). Only `MLXRunner` overrides it today.
+    ///
+    /// This exists so the generation path can go through
+    /// `ChatRunner` at all: while the protocol had no image parameter,
+    /// `send()` had to switch on the backend and call the concrete
+    /// runners directly, which put the entire decode loop out of reach
+    /// of any test that substitutes a runner.
+    func respondToUser(
+        _ text: String,
+        imageURLs: [URL],
+        maxTokens: Int
+    ) async -> AsyncThrowingStream<String, Error>
     func requestStop() async
     func resetConversation() async
     /// Pop the most recent assistant + user pair from the runner's
@@ -56,4 +73,17 @@ public protocol ChatRunner: Actor {
     /// the same context the prior one did. No-op when the trailing
     /// pair is not `[…, .user, .assistant]`.
     func rewindLastTurn() async
+}
+
+public extension ChatRunner {
+    /// Default: ignore images and forward to the text-only call. Keeps
+    /// every existing conformance (llama, cloud, the test mocks) source-
+    /// compatible; runners with a real multimodal path override it.
+    func respondToUser(
+        _ text: String,
+        imageURLs _: [URL],
+        maxTokens: Int
+    ) async -> AsyncThrowingStream<String, Error> {
+        await respondToUser(text, maxTokens: maxTokens)
+    }
 }

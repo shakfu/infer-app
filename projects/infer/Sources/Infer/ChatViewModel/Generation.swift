@@ -480,27 +480,28 @@ extension ChatViewModel {
         let baselineNetTokens = self.netTokenCount
 
         do {
-            let stream: AsyncThrowingStream<String, Error>
-            switch backend {
-            case .llama:
-                // llama backend has no multimodal path here; the send
-                // button is disabled when an image is attached, so this
-                // branch will not carry one in practice.
-                stream = await self.llama.sendUserMessage(userText, maxTokens: runnerMaxTokens)
-            case .mlx:
-                let imgs: [URL] = attachedImage.map { [$0] } ?? []
-                stream = await self.mlx.sendUserMessage(
-                    userText, imageURLs: imgs, maxTokens: runnerMaxTokens
-                )
-            case .cloud:
-                // Cloud is text-only in this PR; image attachments are
-                // dropped silently. Same `runnerMaxTokens` semantics as
-                // the local backends — the cloud runner forwards it as
-                // `max_tokens` on the wire.
-                stream = await self.cloud.sendUserMessage(
-                    userText, maxTokens: runnerMaxTokens
-                )
-            }
+            // One call through `ChatRunner`, replacing the per-backend
+            // switch that used to live here. Behaviour is unchanged:
+            // MLX overrides the image-taking variant, while llama and
+            // cloud inherit the protocol default that drops images —
+            // which is what their branches did anyway (llama's send
+            // button is disabled with an attachment; cloud dropped them
+            // silently). `runnerMaxTokens` semantics are identical
+            // across backends; the cloud runner forwards it as
+            // `max_tokens` on the wire.
+            //
+            // Going through the protocol is also what makes the decode
+            // loop testable: `chatRunner(for:)` honours an injected
+            // runner, so `MockChatRunner` can drive this path. The
+            // captured `backend` snapshot is passed explicitly rather
+            // than reading `activeChatRunner`, so flipping the backend
+            // picker mid-turn cannot redirect a stream in flight.
+            let imgs: [URL] = attachedImage.map { [$0] } ?? []
+            let stream = await self.chatRunner(for: backend).respondToUser(
+                userText,
+                imageURLs: imgs,
+                maxTokens: runnerMaxTokens
+            )
             // Strip <think>…</think> reasoning blocks from the visible
             // body and capture them into the message's `thinkingText` for
             // the collapsible disclosure, count tokens, and apply the

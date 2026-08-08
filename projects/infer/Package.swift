@@ -310,6 +310,23 @@ let package = Package(
             dependencies: ["Infer"],
             path: "Tests/InferRunnerExternalTests"
         ),
+        // Tests for app-target code that is pure-Swift-plus-local-disk:
+        // `VaultStore`'s GRDB schema, migrations, FTS5 search and
+        // cascades. Depends on `Infer` — which is importable via
+        // `@testable` despite being an executable target, exactly as
+        // `InferRunnerExternalTests` above has always relied on.
+        //
+        // These suites are deliberately NOT `*ExternalTests`: the split
+        // is "external system reachable from this test" vs. not, and a
+        // temp-file SQLite database is neither a network endpoint nor a
+        // separate binary. Building the target links the full MLX /
+        // llama stack, but `swift test` already builds and links `Infer`
+        // regardless, so this adds no new prerequisite to `make test`.
+        .testTarget(
+            name: "InferAppTests",
+            dependencies: ["Infer", "InferAppCore"],
+            path: "Tests/InferAppTests"
+        ),
     ],
     swiftLanguageModes: [.v6]
 )

@@ -12,7 +12,7 @@ A macOS SwiftUI chat application that puts local and cloud LLM backends behind o
 
 - **[Per-workspace wiki](#per-workspace-wiki)** — Obsidian-styled markdown notes living alongside chat: nested folders, drag-to-organize, `[[wikilinks]]` with autocomplete + Cmd-click navigation, Cmd+O quick switcher, pin pages to always-inject into chat, type `[[Page]]` in a chat message to inject for that turn only.
 
-- **[Tool runtime](#built-in-agent-tools)** — sandboxed built-ins (filesystem read/write/list, PDF text extraction, XLSX read + write, CSV/TSV writing, clipboard, math, vault + Wikipedia + web search, HTTP fetch with allowlist), plus arbitrary MCP-server tools.
+- **[Tool runtime](#built-in-agent-tools)** — path-scoped built-ins (filesystem read/write/list, PDF text extraction, XLSX read + write, CSV/TSV writing, clipboard, math, vault + Wikipedia + web search, HTTP fetch with allowlist), plus arbitrary MCP-server tools. See [Security model](#security-model) for what "scoped" does and does not mean.
 
 - **[Plugins](#plugins)** — compile-time plugin system; today Python execution via an embedded interpreter, more to come.
 
@@ -261,6 +261,35 @@ Currently shipped:
 | `plugin_python_tools` | `python.run` (script execution) and `python.eval` (single expression) over an embedded `Python.framework` with `openai` + `anthropic` baked in | `make fetch-python` (one-time, ~5 min — builds `thirdparty/Python.framework` via `scripts/buildpy.py`). Override the package set with `PY_PKGS="openai anthropic pandas matplotlib"`. Without this step the framework is absent and `python.*` tools simply don't register — the rest of the app launches normally. |
 
 Authoring a plugin: create `projects/plugins/plugin_<name>/` with its own `Package.swift` depending on `../../plugin-api`, conform a `public enum <Name>Plugin: Plugin` and return a `PluginContributions(tools: [...])` from `register(config:)`. Add the entry to `projects/plugins/plugins.json`, run `make plugins-gen`, rebuild. Full architecture + the reasoning behind decisions (leaf-API package, return-based contributions, why no cross-plugin deps in `plugins.json`, what shapes don't fit the plugin model) lives in `docs/dev/plugins.md`.
+
+## Security model
+
+Infer runs local models, spawns subprocesses, and executes tools an LLM chooses. That is worth being explicit about, because several things in this README are called "sandboxed" and the word does not mean what it usually means on macOS.
+
+**Infer does not use the macOS App Sandbox.** There is no entitlements file and the app claims no sandbox. It runs with your full user account: everything you can read or write, it can read or write. This is deliberate — App Sandbox is incompatible with most of what the app does (opening arbitrary model files, spawning MCP servers and Python, writing rendered artifacts wherever you point it) — but it means every boundary below is an in-process convention enforced by Infer's own code, not by the operating system. A bug in that code is not contained by anything.
+
+**The app is also unsigned and not notarized.** `make release` produces a Release-configuration `.app`, nothing more. Gatekeeper will object on any machine that did not build it. Treat builds as developer artifacts.
+
+What is actually enforced, and by what:
+
+| Boundary | Mechanism | Strength |
+| --- | --- | --- |
+| `fs.read` / `fs.write` / `fs.list` | Paths must resolve under an allowed root — `~/Documents` and `~/Library/Application Support/Infer/`. Symlinks are resolved *before* the check, so a link pointing outside is rejected rather than followed. | Real, and the ordering is the part that matters |
+| `http.fetch` | HTTPS only, host must be on an explicit allowlist (`en.wikipedia.org`, `raw.githubusercontent.com` by default), redirects leaving the allowlist are refused, response body is size-capped | Real |
+| MCP servers | Per-server consent gate, default deny; nothing runs until you approve it | Real, and correctly defaulted |
+| `python.run` / `python.eval` | Subprocess isolation only — a crash kills the child, not Infer. Per-call temp working directory, timeout clamped server-side (10 s default, 120 s hard cap) | Isolation, not confinement |
+| Plugins | None | See below |
+
+Two consequences worth stating plainly:
+
+- **Adding an MCP server is equivalent to running that binary yourself, with your privileges.** The consent gate controls *whether* a server is used, not what it can do once running. It can read your files, reach the network, and spawn processes. Vet MCP servers the way you would vet any executable you download.
+- **`python.run` is not a sandbox.** It runs Python as you, with your filesystem and network. The timeout and the temp working directory prevent runaway processes and stray files; they prevent nothing else. Packages are baked in at framework-build time and there is no runtime `pip install`, so at least the dependency set is fixed at build.
+
+**Plugins are trusted absolutely.** They are compiled into the binary (there is no dynamic loading, so there is no untrusted-binary risk today), but there is no capability gating of any kind: a registered plugin can call any tool in the registry, touch the filesystem, spawn processes, and reach the network. This is acceptable while every plugin is first-party and its inclusion is a compile-time decision in `projects/plugins/plugins.json`. It is not acceptable as-is for third-party plugins — a permission manifest (declaring `network`, `fs`, `subprocess`, `tools.invoke`) needs to exist *before* any such path opens, not after.
+
+**API keys** live in the data-protection keychain (`kSecUseDataProtectionKeychain`, accessible after first unlock). The environment-variable fallback is a developer convenience and is logged when used — environment variables are visible to other processes running as you, so it is not a security boundary and is not treated as one. Note that keychain access control binds to code signing identity, so an unsigned build weakens this in practice.
+
+**Rendering** runs untrusted model output through `WKWebView` with JavaScript enabled (KaTeX, highlight.js), loading only bundled local assets. Tree-sitter parsing is local. No injection vector has been identified here, but it is the place to look first if one exists.
 
 ## Reproducibility (seed)
 

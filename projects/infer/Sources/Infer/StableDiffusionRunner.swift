@@ -171,7 +171,14 @@ public actor StableDiffusionRunner {
         params.enable_mmap = true
         params.flash_attn = true
         params.diffusion_flash_attn = true
-        params.offload_params_to_cpu = offloadParamsToCPU
+
+        // Param offload. sd-cpp 0.4.0 dropped the `offload_params_to_cpu`
+        // bool in favour of two string knobs: `params_backend` (where the
+        // weights live) and `max_vram` (a GiB budget driving graph-cut
+        // segmented offload). The UI toggle promises "params on CPU", so
+        // it maps to `params_backend = "cpu"`; leaving the field NULL
+        // keeps sd-cpp's default of params on the compute backend.
+        let paramsBackend: String? = offloadParamsToCPU ? "cpu" : nil
 
         // C strings have to outlive the new_sd_ctx call. Nest
         // withCString blocks for each non-nil path; nil paths leave the
@@ -189,7 +196,10 @@ public actor StableDiffusionRunner {
                             params.t5xxl_path = p5
                             return withOptionalCString(clipLPath) { p6 in
                                 params.clip_l_path = p6
-                                return new_sd_ctx(&params)
+                                return withOptionalCString(paramsBackend) { p7 in
+                                    params.params_backend = p7
+                                    return new_sd_ctx(&params)
+                                }
                             }
                         }
                     }
@@ -281,11 +291,15 @@ public actor StableDiffusionRunner {
                 gen.seed = seed
                 gen.batch_count = 1
 
-                let resultPtr: UnsafeMutablePointer<sd_image_t>? = promptCopy.withCString { p in
+                // sd-cpp 0.4.0 returns images through out-params rather
+                // than as the return value; the bool reports success.
+                var imagesOut: UnsafeMutablePointer<sd_image_t>?
+                var imageCount: Int32 = 0
+                let ok = promptCopy.withCString { p in
                     negCopy.withCString { np in
                         gen.prompt = p
                         gen.negative_prompt = np
-                        return generate_image(ctx, &gen)
+                        return generate_image(ctx, &gen, &imagesOut, &imageCount)
                     }
                 }
 
@@ -293,18 +307,25 @@ public actor StableDiffusionRunner {
                 sd_set_progress_callback(nil, nil)
                 Unmanaged<SDCallbackBridge>.fromOpaque(bridgePtr).release()
 
-                guard let resultPtr else {
+                guard ok, let imagesOut, imageCount > 0 else {
+                    // A false return leaves nothing to free; a true return
+                    // with a null/empty array shouldn't happen, but free
+                    // the array anyway rather than assume.
+                    if let imagesOut { free(imagesOut) }
                     continuation.finish(throwing: StableDiffusionError.generateFailed)
                     await self?.finishGeneration()
                     return
                 }
-                let img = resultPtr.pointee
-                // sd_image_t.data is heap-owned by sd-cpp; free it after
-                // we've snapshotted the pixels into our own Data.
+                // `batch_count = 1` so only the first image is meaningful,
+                // but every element's `data` is separately heap-owned by
+                // sd-cpp — free them all or a multi-image return leaks.
+                let img = imagesOut[0]
                 let pixelCount = Int(img.width) * Int(img.height) * Int(img.channel)
                 let pixelData = Data(bytes: img.data, count: pixelCount)
-                free(img.data)
-                free(resultPtr)
+                for i in 0..<Int(imageCount) {
+                    free(imagesOut[i].data)
+                }
+                free(imagesOut)
 
                 // Encode + persist. PNG with sidecar JSON metadata so
                 // gallery rebuilds + reproducing seeds is straightforward.
