@@ -44,7 +44,8 @@ INFER_XCODE_FLAGS := -workspace $(INFER_DIR) -scheme Infer \
 	-destination 'platform=macOS,arch=arm64' \
 	-configuration $(INFER_CONFIG) \
 	-derivedDataPath $(CURDIR)/$(INFER_BUILD_DIR) \
-	-skipMacroValidation
+	-skipMacroValidation \
+	-skipPackagePluginValidation
 INFER_PRODUCT_DIR := $(INFER_BUILD_DIR)/Build/Products/$(INFER_CONFIG)
 INFER_BIN := $(INFER_PRODUCT_DIR)/Infer
 

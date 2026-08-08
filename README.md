@@ -22,7 +22,7 @@ Built with Swift Package Manager and `xcodebuild`.
 
 - macOS 14.0+
 
-- Xcode 16.3+ with Swift 6.1+ (required by `mlx-swift-lm`)
+- Xcode 26+ with a Swift 6.3+ toolchain (required by `mlx-swift` 0.31.5+, whose manifest declares `swift-tools-version: 6.3`)
 
 - Metal Toolchain: `xcodebuild -downloadComponent MetalToolchain` (~700 MB, one-time)
 

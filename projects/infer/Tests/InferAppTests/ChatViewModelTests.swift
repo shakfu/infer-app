@@ -16,20 +16,21 @@ import XCTest
 /// damage happened before the first assertion could.
 ///
 /// Scope note: these cover construction, dependency wiring, and
-/// transcript-level state. They do NOT cover the generation path —
-/// `activeChatRunner` is computed from the active backend, so no mock
-/// runner can be injected yet. That is the next seam to open.
+/// transcript-level state. The generation path is covered separately by
+/// `GenerationTests`, which became possible once `imageURLs` was lifted
+/// onto `ChatRunner.respondToUser` and `send()` stopped switching on the
+/// backend to reach the concrete runners.
 @MainActor
 final class ChatViewModelTests: XCTestCase {
     private var directory: URL!
 
-    override func setUpWithError() throws {
+    override func setUp() async throws {
         directory = FileManager.default.temporaryDirectory
             .appending(path: "ChatViewModelTests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
 
-    override func tearDownWithError() throws {
+    override func tearDown() async throws {
         try? FileManager.default.removeItem(at: directory)
         directory = nil
     }
