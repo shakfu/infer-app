@@ -47,6 +47,13 @@ thirdparty/*
 projects/infer/.build/
 # projects/infer/Package.resolved
 
+# LLVM coverage artifacts. `default.profraw` is written to the CWD by any
+# instrumented binary run without LLVM_PROFILE_FILE set, so it lands at the
+# repo root; `.profdata` is the merged form llvm-profdata produces from it.
+# Both are machine-specific and regenerated on every run.
+*.profraw
+*.profdata
+
 # CocoaPods
 #
 # We recommend against adding the Pods directory to your .gitignore. However
