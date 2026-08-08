@@ -243,6 +243,12 @@ public struct QuartoRenderTool: StreamingBuiltinTool {
             return tail.isEmpty ? "Quarto render failed" : "Quarto render failed:\n\(tail)"
         case .outputMissing(let expected, _):
             return "render reported success but the output file is missing: \(expected)"
+        case .disallowedArgument(let arg):
+            // Phrased for the model that produced the call: say which
+            // argument, and that removing it is the fix.
+            return "extraArgs contains a flag this tool does not allow: \(arg). "
+                + "Flags that control code execution or redirect output are refused; "
+                + "remove it and retry."
         }
     }
 }

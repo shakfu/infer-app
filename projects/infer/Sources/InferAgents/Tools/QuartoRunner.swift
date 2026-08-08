@@ -39,6 +39,66 @@ public actor QuartoRunner {
         case spawnFailed(String)
         case nonZeroExit(code: Int32, log: String)
         case outputMissing(expected: String, log: String)
+        /// An `extraArgs` entry hit the deny-list below.
+        case disallowedArgument(String)
+    }
+
+    // MARK: - extraArgs screening
+
+    /// Quarto flags refused in `extraArgs`.
+    ///
+    /// `extraArgs` arrives from agent config and, ultimately, from
+    /// whatever an LLM wrote into a tool call, so it is model-influenced
+    /// input even though every consumer is first-party today. There is
+    /// no shell involved — `Process.arguments` is an array, so this was
+    /// never an injection risk. What it screens is the narrower set of
+    /// flags that let a render escape the temp working directory or
+    /// change what code runs:
+    ///
+    ///   - the `--execute*` family: execution control, and
+    ///     `--execute-params` / `--execute-dir` additionally read
+    ///     caller-chosen paths. `--no-execute` is deliberately absent
+    ///     from the list — it only ever reduces what runs.
+    ///   - `--metadata-file`, `--profile`: read arbitrary files into the
+    ///     render.
+    ///   - `-P` / `--execute-param`: inject parameters into execution.
+    ///   - `-o` / `--output` / `--output-dir`: redirect the write out of
+    ///     the temp directory, and break this runner's assumption that
+    ///     output lands next to its input.
+    ///
+    /// **This is defence in depth, not a security boundary.** A
+    /// deny-list is incomplete by construction — Quarto and Pandoc
+    /// expose other file-reading flags (`--include-in-header`,
+    /// `--template`, `--reference-doc`, `--bibliography`, …) that are
+    /// legitimate often enough that banning them would break ordinary
+    /// renders. The actual boundary is that agents and plugins are
+    /// first-party and compiled in; see the README's Security model.
+    /// This list exists so the highest-leverage flags cannot be reached
+    /// by accident or by a careless config.
+    static let deniedExtraArgs: Set<String> = [
+        "--execute",
+        "--execute-daemon",
+        "--execute-daemon-restart",
+        "--execute-debug",
+        "--execute-dir",
+        "--execute-params",
+        "--execute-param",
+        "-P",
+        "--metadata-file",
+        "--profile",
+        "-o",
+        "--output",
+        "--output-dir",
+    ]
+
+    /// First entry of `extraArgs` that is not permitted, or nil when all
+    /// are. Handles both `--flag value` and `--flag=value` spellings;
+    /// the latter would otherwise slip past an exact-match check.
+    static func disallowedArgument(in extraArgs: [String]) -> String? {
+        extraArgs.first { arg in
+            let flag = arg.split(separator: "=", maxSplits: 1).first.map(String.init) ?? arg
+            return deniedExtraArgs.contains(flag)
+        }
     }
 
     public init() {}
@@ -115,6 +175,14 @@ public actor QuartoRunner {
     ) async {
         guard FileManager.default.isExecutableFile(atPath: quartoPath) else {
             continuation.finish(throwing: RenderError.quartoNotExecutable(path: quartoPath))
+            return
+        }
+
+        // Screened here rather than at each call site: `render` funnels
+        // through `renderStreaming` into this function, so one check
+        // covers every entry point, present and future.
+        if let bad = disallowedArgument(in: extraArgs) {
+            continuation.finish(throwing: RenderError.disallowedArgument(bad))
             return
         }
 

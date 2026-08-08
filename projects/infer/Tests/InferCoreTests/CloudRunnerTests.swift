@@ -97,7 +97,7 @@ final class CloudRunnerTests: XCTestCase {
         do {
             for try await _ in stream {}
             XCTFail("expected throw")
-        } catch let CloudError.notConfigured {
+        } catch CloudError.notConfigured {
             // ok
         } catch {
             XCTFail("unexpected error: \(error)")
@@ -117,7 +117,7 @@ final class CloudRunnerTests: XCTestCase {
                 params: CloudGenerationParams(temperature: 0.5, topP: 0.9, maxTokens: 512)
             )
             XCTFail("expected missingKey")
-        } catch let CloudError.missingKey {
+        } catch CloudError.missingKey {
             // ok
         } catch {
             XCTFail("unexpected error: \(error)")
@@ -140,7 +140,7 @@ final class CloudRunnerTests: XCTestCase {
                 params: CloudGenerationParams(temperature: 0.5, topP: 0.9, maxTokens: 512)
             )
             XCTFail("expected invalidEndpoint")
-        } catch let CloudError.invalidEndpoint {
+        } catch CloudError.invalidEndpoint {
             // ok
         } catch {
             XCTFail("unexpected error: \(error)")
