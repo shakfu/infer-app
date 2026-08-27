@@ -11,6 +11,7 @@ That conflation is fine for the implementer but confusing for the user. The user
 ## Definitions
 
 **Persona.** A named role + context configuration. Strictly:
+
 - Has a `systemPrompt` (role / instructions).
 - May attach an extended context document (markdown sidecar — see "Markdown sidecar" below).
 - May override decoding params.
@@ -18,6 +19,7 @@ That conflation is fine for the implementer but confusing for the user. The user
 - Cannot be chained, sequenced, or orchestrated.
 
 **Agent.** A superset of persona. Adds:
+
 - Tool use (`requirements.toolsAllow`, optional `toolsDeny`, `autoApprove`).
 - Composability: an agent can be invoked by another agent (orchestration), placed in a sequence, or chained with conditional handoff.
 - Loop hooks (already in `Agent.swift`: `toolsAvailable`, `transformToolResult`, `shouldContinue`, optional `run` override).
@@ -88,7 +90,7 @@ Today: `Resources/agents/*.json` (mixed personas + the one agent).
 
 Proposed:
 
-```
+```text
 Resources/
   personas/
     explainer.json
@@ -102,7 +104,7 @@ Resources/
 
 The `AgentController` bootstrap (`AgentController.swift`) loads from both directories. User-authored content under `~/Library/Application Support/Infer/` mirrors the same split:
 
-```
+```text
 Application Support/Infer/
   personas/
   agents/
@@ -114,7 +116,7 @@ Files in the wrong directory load with a warning ("file declares kind: agent but
 
 `AgentsLibrarySection` (`Sidebar/AgentsLibrarySection.swift`) groups by `kind`:
 
-```
+```text
 Personas
   Explainer
   Code reviewer

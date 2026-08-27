@@ -13,7 +13,7 @@ Locked in, not up for debate during implementation:
 - **Scoping unit is the workspace.** A workspace owns a corpus; all conversations in that workspace query it.
 - **The workspace's corpus is a filesystem folder.** Users put files in the folder; the app ingests them. No separate "attach file to conversation" flow in MVP.
 - **No global corpus.** No per-conversation corpus. One axis only.
-- **Vector backend: `SQLiteVec`** (https://github.com/jkrukowski/SQLiteVec, MIT). Bundles sqlite-vec statically into its own SQLite. `vec0` virtual tables with cosine distance. Required swift-tools-version 6.1 (already bumped).
+- **Vector backend: `SQLiteVec`** (<https://github.com/jkrukowski/SQLiteVec>, MIT). Bundles sqlite-vec statically into its own SQLite. `vec0` virtual tables with cosine distance. Required swift-tools-version 6.1 (already bumped).
 - **Two-DB architecture.** Main vault (`vault.sqlite`, GRDB + Apple system SQLite) holds conversations, messages, workspaces, agents, tags. Vector store (`vectors.sqlite`, SQLiteVec's bundled SQLite) holds sources, chunks, embeddings. Joined at the app layer by `workspace_id` and `chunk.id` ↔ `vec_items.rowid`.
 - **Embedding model: `bge-small-en-v1.5.gguf`** (130 MB, 384 dimensions, cosine). Runs via llama.cpp embedding mode in a dedicated `EmbeddingRunner` actor separate from the chat `LlamaRunner`. Swappable later.
 - **Source formats in MVP: `.txt`, `.md`, `.json`.** PDF deferred (Apple PDFKit text extraction is serviceable but quality varies; ship behind a flag in v2).
@@ -79,9 +79,11 @@ Drastically simpler than the original plan because SQLiteVec is a pure Swift Pac
 ### 1.1 Package dependency (done in the spike)
 
 Already in `Package.swift`:
+
 ```swift
 .package(url: "https://github.com/jkrukowski/SQLiteVec", from: "0.0.9"),
 ```
+
 The `Infer` executable target gains `.product(name: "SQLiteVec", package: "SQLiteVec")`.
 
 ### 1.2 Early init
@@ -223,6 +225,7 @@ Port `cyllama/splitter.py`'s recursive character splitter. Hierarchical separato
 ### 4.3 `WorkspaceIngestor`
 
 Orchestrates:
+
 1. Scan `workspace.data_folder` recursively for files matching supported extensions.
 2. For each file, compute MD5 of raw bytes.
 3. Skip if `(workspaceId, content_hash)` already in `sources`.
@@ -249,13 +252,14 @@ Sequential ingestion for MVP (one file at a time). Parallelization deferred.
 ### 5.1 `RAGPipeline`
 
 On every user turn in a workspace with a non-empty corpus:
+
 1. Embed the user's message via `EmbeddingRunner`.
 2. `VectorStore.search(workspaceId:, query:, k: 5)` — top 5 hits.
 3. Score threshold (default 0.3 cosine) — drop weak matches so an irrelevant corpus doesn't inject noise.
 4. If nothing survives: fall through to the normal chat path; no injection.
 5. Format retrieved chunks into a prompt prefix (cyllama's template, lightly adapted):
 
-   ```
+   ```text
    Use the following context to answer the question. If the context doesn't contain relevant information, say so.
 
    Context:
@@ -313,6 +317,7 @@ Listed so they don't accidentally creep in:
 ### Logging
 
 Every phase logs to `LogCenter` under source `rag`:
+
 - Model loads + dimension.
 - Ingest progress (file started / chunks produced / embedded / stored / failed).
 - Query hits count + best score.

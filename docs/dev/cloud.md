@@ -27,12 +27,14 @@ Matrix:
 ## Swift vs. Python — the core tradeoff
 
 **Native Swift SDKs (SwiftAnthropic, MacPaw/OpenAI):**
+
 - Drop in as a third/fourth runner `actor` next to `LlamaRunner` / `MLXRunner`.
 - Same `load / sendUserMessage / requestStop` surface; native
   `AsyncThrowingStream<String, Error>` maps 1:1.
 - No `Python.framework` dependency, no embedded interpreter, smaller bundle.
 
 **Python SDKs (openai-python, anthropic):**
+
 - Require the embedded interpreter; would re-add to `PY_PKGS`.
 - Plain base SDKs offer no advantage over the Swift counterparts for raw
   API calls — they're dead weight on their own.

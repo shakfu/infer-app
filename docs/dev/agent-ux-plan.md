@@ -7,6 +7,7 @@ Below is a complete, phased plan covering P0 → P2. Each work item lists: **sco
 ## Phase 0 — Foundations (prereq for everything)
 
 ### 0.1 Display-label on `AgentListing`
+
 Replace ad-hoc `labelize` in `ChatTranscript.swift:260-265` with a stable, Unicode-safe label computed once.
 
 - **Files**: `InferAgents/AgentTypes.swift` (add `displayLabel: String` to `AgentListing`, computed from `name` using `CharacterSet.alphanumerics` + lowercased, joined with `-`; fallback to `id`); `AgentRegistry` populates it; `ChatTranscript.swift` reads `message.agentLabel` (snapshot on send, same as `agentName`).
@@ -14,9 +15,11 @@ Replace ad-hoc `labelize` in `ChatTranscript.swift:260-265` with a stable, Unico
 - **Risk**: low. Persisted transcripts already snapshot `agentName`; add `agentLabel` as optional with a migration-free default.
 
 ### 0.2 `AgentEvent` stream from `AgentController`
+
 Introduce an `AsyncStream<AgentEvent>` so the UI can observe tool-loop progress incrementally instead of reading a post-hoc `StepTrace`.
 
 - **New type** (`InferAgents/AgentEvent.swift`):
+
   ```swift
   public enum AgentEvent: Sendable {
       case assistantChunk(String)
@@ -27,12 +30,14 @@ Introduce an `AsyncStream<AgentEvent>` so the UI can observe tool-loop progress 
       case terminated(StepTrace.Step)   // finalAnswer | cancelled | error | budgetExceeded
   }
   ```
+
 - **Files**: `AgentController.swift` exposes `events: AsyncStream<AgentEvent>` (or returns one per `runTurn`); `ChatViewModel/Generation.swift` consumes events and mutates `messages[i].steps` incrementally.
 - **Migration**: `maybeRunToolLoop` refactored to emit events rather than stamping the trace at line 242 atomically.
 - **Tests**: `InferAgentsTests` — sequence of events for (a) no-tool turn, (b) tool success, (c) tool error, (d) cancelled mid-tool.
 - **Risk**: medium. Touches the hot path. Keep the final `StepTrace` identical so transcript persistence is unchanged.
 
 ### 0.3 Bootstrap diagnostics
+
 Collect parse errors during `AgentController.bootstrap` so they can be surfaced in-UI.
 
 - **New type**: `AgentLibraryDiagnostic { url: URL; reason: String; severity: .skipped | .warning }`.
@@ -44,6 +49,7 @@ Collect parse errors during `AgentController.bootstrap` so they can be surfaced 
 ## Phase 1 — P0: Header picker + streaming traces
 
 ### 1.1 Header agent picker
+
 First-class picker adjacent to the model picker in `ChatHeader.swift`.
 
 - **Files**:
@@ -59,6 +65,7 @@ First-class picker adjacent to the model picker in `ChatHeader.swift`.
 - **Risk**: low. Additive; doesn't remove sidebar tab.
 
 ### 1.2 Streaming tool-loop visualisation
+
 Consume 0.2's `AgentEvent` stream and render progress live in the transcript.
 
 - **Files**:
@@ -73,6 +80,7 @@ Consume 0.2's `AgentEvent` stream and render progress live in the transcript.
 - **Risk**: medium. Re-renders are frequent; batch SwiftUI updates via `withAnimation(nil)` or by mutating in-place rather than replacing the whole `ChatMessage`.
 
 ### 1.3 Header status chip for active agent
+
 Minimal even without the picker: in the header, always show the current agent name + `tools: N` chip. Tapping it opens the picker.
 
 - Folded into 1.1's picker button label; no separate file needed.
@@ -84,6 +92,7 @@ Minimal even without the picker: in the header, always show the current agent na
 ## Phase 2 — P1: Inspector, direct activation, error surfacing
 
 ### 2.1 Agent inspector panel
+
 Click a row (not just the menu) to reveal a read-only detail panel.
 
 - **Files**:
@@ -100,6 +109,7 @@ Click a row (not just the menu) to reveal a read-only detail panel.
 - **Risk**: low-medium. macOS sheets work but the app currently has none — verify with a small spike.
 
 ### 2.2 Preview-before-switch
+
 Diff view showing what changes on agent activation.
 
 - **Files**: `AgentInspectorView.swift` — "Preview change" button computes:
@@ -111,6 +121,7 @@ Diff view showing what changes on agent activation.
 - **Risk**: low.
 
 ### 2.3 Direct activation (row click)
+
 Replace the ellipsis menu's primary action.
 
 - **Files**: `AgentsLibrarySection.swift` — row background becomes a button; primary click activates (or opens inspector if incompatible — to explain). Ellipsis menu keeps `Duplicate`, `Reveal JSON`, `Edit JSON`, `Delete` (new, user agents only).
@@ -119,6 +130,7 @@ Replace the ellipsis menu's primary action.
 - **Risk**: low. The user will confuse the row click with row-selects-for-focus; mitigate with a subtle hover state.
 
 ### 2.4 Library diagnostics surface
+
 Consume 0.3's diagnostics in the Agents tab.
 
 - **Files**: `AgentsLibrarySection.swift` — a dismissible yellow `DisclosureGroup` at the top when `!diagnostics.isEmpty`:
@@ -128,6 +140,7 @@ Consume 0.3's diagnostics in the Agents tab.
 - **Risk**: none.
 
 ### 2.5 Duplicate-success toast
+
 Non-modal feedback after `duplicatePersona`.
 
 - **Files**:
@@ -137,6 +150,7 @@ Non-modal feedback after `duplicatePersona`.
 - **Risk**: low. Reused for future non-modal feedback (vault errors, model load errors).
 
 ### 2.6 Incompatibility tooltips in menu
+
 Bring `vm.incompatibilityReason(listing)` into the menu item via `.help(...)` on disabled items (not just the row caption).
 
 - Trivial diff in `AgentsLibrarySection.swift:128-130`.
@@ -148,6 +162,7 @@ Bring `vm.incompatibilityReason(listing)` into the menu item via `.help(...)` on
 ## Phase 3 — P2: Composer polish, transcript affordances, ergonomics
 
 ### 3.1 Composer agent chip
+
 Small chip in the `ChatComposer` footer (adjacent to token counter) showing active agent; click opens the header picker's menu.
 
 - **Files**: `ChatView/ChatComposer.swift` — add `agentChip` view. Reuse `AgentPickerMenu` from 1.1.
@@ -155,29 +170,34 @@ Small chip in the `ChatComposer` footer (adjacent to token counter) showing acti
 - **Risk**: layout — composer is already dense. Prototype first.
 
 ### 3.2 Transcript hover-detail on `AgentDividerRow`
+
 Hovering an agent-switch divider shows the prompt/tools delta (same diff helpers as 2.2).
 
 - **Files**: `ChatTranscript.swift:373-396` — add `.help(...)` with a textual summary, or `.popover` on click.
 - **Risk**: popovers during scroll can misbehave; prefer `.help`.
 
 ### 3.3 Quicksearch over the Agents library
+
 `TextField` at the top of `agentsLibrarySection` filters across name + description + source.
 
 - **Files**: `AgentsLibrarySection.swift` — add `@State var search: String`; short-circuits groups with no matches.
 - **Risk**: none.
 
 ### 3.4 Keyboard shortcuts
+
 - `Cmd+Shift+A` — open agent picker (wired in 1.1).
 - `Cmd+Shift+I` — open inspector for current agent.
 - `Cmd+Option+1..9` — activate Nth agent from the compatible list.
 - **Files**: `Infer/Commands.swift` (or wherever app commands live — verify).
 
 ### 3.5 Agent-aware composer hints
+
 When the active agent declares requirements (e.g., vision), show a passive hint in the composer ("Vision-capable · drop an image to include"). Reuses existing `AgentRequirements`.
 
 - **Files**: `ChatComposer.swift`; `InferAgents/AgentTypes.swift` may need a `composerHint: String?` on `AgentRequirements`.
 
 ### 3.6 "One-click fix" for incompatibility
+
 When an incompatible agent's only mismatch is backend, offer `Switch to <backend> and activate` in the inspector.
 
 - **Files**: `AgentInspectorView.swift`; reuses `vm.setBackend(_:)` + `switchAgent`.
@@ -190,10 +210,12 @@ When an incompatible agent's only mismatch is backend, offer `Switch to <backend
 ## Cross-cutting
 
 ### Testing strategy
+
 - Unit-testable layers get unit tests (`InferAgentsTests`, `InferCoreTests`): event-stream shape, diff helpers, display-label, diagnostics, toast manager.
 - SwiftUI views: no harness today. Extract testable logic into view-models where cost-effective; otherwise rely on `make test` for regression and manual QA checklist (below).
 
 ### Manual QA checklist (end of each phase)
+
 - Launch cold → default agent selected → chip shows in header.
 - Switch agent via picker → divider appears, prompt changes, no flash of wrong state.
 - Send a tool-triggering prompt → spinner renders → trace populates incrementally → final answer streams.
@@ -203,14 +225,17 @@ When an incompatible agent's only mismatch is backend, offer `Switch to <backend
 - Regenerate + edit-last-user flows still work mid-tool-call.
 
 ### Persistence compatibility
+
 - `ChatMessage.steps` persisted shape unchanged (0.2 guarantees bytewise equality of final trace).
 - `AgentListing.displayLabel` is computed; not persisted — safe.
 - New `Settings.*` keys use the existing `PersistKey` namespace.
 
 ### Swift-6 concurrency
+
 New `AsyncStream<AgentEvent>` in `AgentController` must respect the `.v5` opt-out in `Package.swift:36`. Keep event types `Sendable`. `AgentController` is already an `actor` — stream creation/termination stays inside it.
 
 ### Estimated effort
+
 - Phase 0: ~1 day.
 - Phase 1: ~2-3 days (streaming refactor is the bulk).
 - Phase 2: ~2-3 days.

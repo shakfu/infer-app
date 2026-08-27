@@ -47,6 +47,7 @@ The relationship is **agent ⊇ persona**: every agent has the persona surface a
 > Declarative composition primitives — sequence, conditional branch, critic-refine, fallback, and router — are in scope. They are bounded, acyclic, runner-compatible, and operate within a single user turn under a shared step budget. They are not a new graph DSL: each primitive is a fixed JSON shape, not a free-form node-and-edge language. Turing-complete or open-ended graph DSLs (LangGraph, prompt-graphs, free-form node editors) remain out.
 
 **Why the revision:**
+
 - The original reasoning ("compose at the tool layer") works for one level but breaks down for the common patterns users already ask for (producer-critic loops, fallback, dispatcher routing). A user with no Swift access cannot "compose at the tool layer" — they can only edit JSON.
 - The anti-goal was protecting against unbounded complexity. The composition primitives in `agent_composition.md` preserve that protection by being a **closed set** (five primitives, mutually exclusive per file, validated for cycles and runner compatibility) rather than a generative DSL.
 - The "agent is one JSON file; a turn is one loop" framing survives intact: each composition is still one file, and the controller still drives the turn.
@@ -66,6 +67,7 @@ The other composition primitives (sequence, branch, refine, fallback) do not int
 `agents.md` lists `ToolAgent<Tools>` as "expected to be the typical way first-party agents are built." `agent_kinds.md` raised the question of whether `ToolAgent` still earns its keep once `PromptAgent` covers tool-using cases via `kind: "agent"`.
 
 **Decision:** remove `ToolAgent` when schema v2 lands (PR 1.5). Reasoning:
+
 - Every `ToolAgent` use-case is expressible as a `PromptAgent` with `kind: "agent"` and a `toolsAllow` list referencing globally registered tools.
 - Tools are registered once in `BuiltinTools.swift` (or via plugins / MCP) and referenced by name from JSON. Inline tool declaration in Swift, the only thing `ToolAgent` uniquely enables, has no shipping consumer.
 - If a future agent genuinely needs *dynamically computed* tools (depends on workspace state or runtime introspection), the answer is a custom `Agent` conformance — not `ToolAgent`. That conformance is on the order of 50 lines and only worth writing when the use case appears.
@@ -99,7 +101,7 @@ The UX plan was written before the persona/agent split. Three concrete amendment
 
 `agent-ux-plan.md` Phase 1.1 (header agent picker) groups compatible / incompatible. With kinds, the menu structure becomes:
 
-```
+```text
 Personas
   Default
   Explainer

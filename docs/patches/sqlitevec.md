@@ -16,7 +16,7 @@ If upstream fixes any of these, remove the corresponding patch (and its `.patch`
 
 **Why.** Upstream exposes both `sqlite3.h` and `sqlite3ext.h` via the `include/` directory. SwiftPM's auto-generated module map for the `CSQLiteVec` C target makes every `.h` in `include/` publicly visible. That's fine under `swift build`, which compiles each target in isolation, but **xcodebuild** pulls sibling-target public headers into dependent targets' Clang search paths. When the `Infer` target also links `GRDB` (which has its own `GRDBSQLite` shim expecting Apple's system SQLite headers), the Clang module processor finds `sqlite3ext.h` and activates its `sqlite3_db_config → sqlite3_api->db_config` macro redirection inside GRDB's compile unit. `sqlite3_api` isn't in scope there — the compile fails:
 
-```
+```text
 GRDBSQLite/shim.h:15:5: error: use of undeclared identifier 'sqlite3_api'
   sqlite3_db_config(db, SQLITE_DBCONFIG_DQS_DDL, 0, (void *)0);
 ```
@@ -38,7 +38,7 @@ mv thirdparty/SQLiteVec/Sources/CSQLiteVec/include/sqlite3ext.h \
 
 **Why.** Upstream declares `.macOS(.v10_15)`. `Database.modifiedRowsCount` calls `sqlite3_changes64`, which Swift's availability model marks as macOS 12.3+ only. Under Swift's strict availability checking, compiling SQLiteVec against the declared 10.15 floor fails:
 
-```
+```text
 error: 'sqlite3_changes64' is only available in macOS 12.3 or newer
 ```
 

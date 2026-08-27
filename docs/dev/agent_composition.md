@@ -7,6 +7,7 @@ Status: implemented as of 2026-05-09. All six v1 primitives (sequence, condition
 Composition only applies to **agents** (in the sense defined by `agent_kinds.md` — i.e. things that already declare tools or composition). Personas cannot be composed; they are leaves by construction. The unit of composition is a single user turn: the user sends one message, the composed agents collectively produce one assistant response (which may comprise multiple attributed segments — see "Transcript attribution" below).
 
 Out-of-scope by product decision:
+
 - Cross-turn agent state / memory beyond the transcript.
 - Sub-agents that outlive the turn that spawned them.
 - Cloud-mediated coordination of any kind.
@@ -181,6 +182,7 @@ public enum AgentOutcome: Sendable {
 ```
 
 Composition primitives pattern-match on it. Specifically:
+
 - Sequence: any non-`completed` outcome aborts the chain and surfaces the failure to the user.
 - Conditional handoff: predicate evaluation happens only on `completed`; non-completed outcomes propagate.
 - Refine: critic returning `failed` aborts; producer returning `failed` aborts.

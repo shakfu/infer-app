@@ -14,7 +14,7 @@ The plugin boundary exists for **modularity** (heavy deps stay opt-in — `plugi
 
 ## Layout convention
 
-```
+```text
 projects/
     plugin-api/                   # leaf SPM package; zero deps
         Package.swift
@@ -299,6 +299,7 @@ Substrate built and exercised end-to-end via a placeholder `plugin_wiki`:
 - **PR-H:** Editable per-plugin config in the Settings detail view. Depends on PR-C (otherwise edits would force a rebuild every time).
 
 PR-B (real wiki plugin) and PR-F (MCP subprocess plugin) were both **dropped**:
+
 - The wiki belongs in the host (vault co-residency, FTS atomicity with conversations, workspace cascade) — see `docs/dev/wiki.md` for the unchanged design, owned by the host now.
 - MCP integration already lives in `MCPHost`; building a parallel plugin-API path for it would duplicate the same job for marginal benefit. See "What a plugin can contribute" above.
 

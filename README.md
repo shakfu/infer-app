@@ -121,11 +121,11 @@ Three independent context channels feed every chat turn. Use whichever fits the 
 
 1. **Type `[[` in the chat composer.** A small popover appears with up to 5 fuzzy-matched pages — basename as primary, folder path muted underneath.
 
-2. **Pick a page** with ↑↓ + Enter, or click. The composer text becomes `[[Page]] ` (basename when unique workspace-wide; `[[Folder/Page]]` only when there's a basename collision — the resolver still handles both shapes either way).
+2. **Pick a page** with ↑↓ + Enter, or click. The composer text becomes `[[Page]]` (basename when unique workspace-wide; `[[Folder/Page]]` only when there's a basename collision — the resolver still handles both shapes either way).
 
 3. **Type your message and send.** Before the turn fires, the page's content prepends to your message wrapped in a `<wiki_mentions>` block; the model sees the page body as adjacent context to the literal `[[Page]]` syntax in your sentence:
 
-   ```
+   ```text
    <wiki_mentions>
    ## Skills/Researcher
    <page body>
@@ -154,18 +154,20 @@ The bundled **Quarto renderer** agent generates Quarto (`.qmd`) source from a de
 **Setup (one-time)**
 
 1. Install Quarto: `brew install quarto` (or download from [quarto.org](https://quarto.org/docs/get-started/)).
+
 2. Open the **Tools** tab in the sidebar (wrench icon). The Quarto card shows a live status badge — `Quarto 1.9.37` in green when found, `not found` in orange otherwise. If the app's GUI environment doesn't see your shell's `PATH` (common on macOS), use **Browse…** to point at `/usr/local/bin/quarto` or `/opt/homebrew/bin/quarto` and click **Apply**.
 
 **Use**
 
 1. Sidebar → **Agents** tab → activate **Quarto renderer**. Requires a llama.cpp model with a tool-calling template (Llama 3.x, Qwen 2.5+/3, Hermes-3); MLX is not supported by the agent today.
+
 2. In chat, ask for the format you want:
 
-   ```
+   ```text
    Create a powerpoint presentation on how to write a short story.
    ```
 
-   ```
+   ```text
    Convert the following to PDF:
 
    ---
@@ -178,6 +180,7 @@ The bundled **Quarto renderer** agent generates Quarto (`.qmd`) source from a de
    ```
 
 3. Watch the disclosure: a streaming-progress sub-line under "running builtin.quarto.render…" surfaces Quarto's stderr (typst startup, pandoc invocation) so a 5–30 s render isn't silent.
+
 4. Click the rendered filename in the disclosure to open the result via Launch Services (PDF → Preview, HTML → default browser, PPTX → Keynote / PowerPoint).
 
 **Render cache**
@@ -187,7 +190,9 @@ Renders stage under `~/Library/Caches/quarto-renders/`. macOS does not auto-clea
 **Format conventions the agent knows**
 
 - `pptx` / `revealjs` / `beamer`: `#` for section/title slide, `##` for content slide with bullets, 3–6 bullets per slide.
+
 - `pdf` / `html` / `docx` / `epub`: ordinary `#` for chapter, `##` for section, prose body.
+
 - `typst` / `latex`: Quarto-flavored markdown (the agent does *not* emit raw Typst/LaTeX); Quarto compiles to those targets from markdown.
 
 The agent's system prompt teaches these conventions and includes a worked pptx example. Smaller models (1B-3B params) can drift back to prose; if that happens, either prompt explicitly ("as slides with one bullet per point") or load a larger model.
@@ -222,11 +227,17 @@ Agents can opt into a per-agent allowlist of these tools through their JSON conf
 Bundled agents that demonstrate these:
 
 - **Data analyst** — `pdf.extract`, `xlsx.read`, `xlsx.write`, `csv.write`, `tsv.write`, `fs.read`, `fs.write`, `fs.list`, `math.compute`. The heavyweight tabular-data persona. Reads tables out of PDFs and spreadsheets, computes summaries via `math.compute` (no in-head arithmetic — models silently miscompute), writes results back as CSV / TSV / real `.xlsx` with formulas. Sandboxed to `~/Documents`. Use for "pull the revenue tables out of `q1-report.pdf` and produce an xlsx that aggregates by quarter."
+
 - **Quarto renderer** — `builtin.quarto.render`. Generates `.qmd` source from a description and renders to a chosen format. See the [Quarto rendering](#quarto-rendering) section above.
+
 - **Research assistant** — `vault.search`, `wikipedia.search`, `wikipedia.article`, `web.search`. Decision policy in the persona's system prompt: vault-first for personal-corpus questions, Wikipedia-first for encyclopedic / definitional / biographical / historical, web-search for current events / public docs. Caps at 3 tool calls per turn, cites sources inline.
+
 - **Scratch** — `clipboard.get`, `clipboard.set`, `math.compute`, `wikipedia.search`, `wikipedia.article`, `builtin.clock.now`. Lightweight everyday assistant for short, well-scoped tasks. Caps at 1-2 tool calls per turn — the persona's value is speed. Use for "what's 0.0825 × 12 × 30?", "summarise what I just copied", "copy a polite decline email to my clipboard", "who designed the Eiffel Tower?".
+
 - **Python coder** — `python.run`, `python.eval`, `math.compute`, `fs.read`, `builtin.clock.now`. Runs Python 3 in an embedded subprocess for calculations, parsing, and quick experiments mid-conversation. Backed by `plugin_python_tools` (requires `make fetch-python`); falls back gracefully if the framework's absent — the agent loads but `python.*` calls return errors. Default 10 s timeout per call, max 120 s. Packages baked in: `openai`, `anthropic` (override with `PY_PKGS=...`).
+
 - **HN watcher** — `hn.search`, `hn.item`, `hn.user`. Searches Hacker News (Algolia HN API) and summarises stories, threads, or users. No setup; backed by `plugin_hacker_news`. Caps at 3 tool calls per turn; cites by `news.ycombinator.com` permalink rather than the external URL.
+
 - **Clock assistant** — `builtin.clock.now`, `builtin.text.wordcount`. Demo for verifying tool-call plumbing on a freshly loaded model.
 
 Authoring custom agents: drop a `*.json` file into `~/Library/Application Support/Infer/agents/`. Format mirrors the bundled agents at `projects/infer/Sources/Infer/Resources/agents/*.json` — keys: `id`, `metadata`, `requirements.toolsAllow`, `decodingParams`, `systemPrompt`. Authored agents may also declare a composition primitive (`chain`, `fallback`, `branch`, `refine`, `orchestrator`, `delegate`) — see `docs/dev/agent_composition.md`.
@@ -234,7 +245,9 @@ Authoring custom agents: drop a `*.json` file into `~/Library/Application Suppor
 Two synthetic picker entries on top of any installed agents:
 
 - **Default** — Infer's plain assistant with your configured system prompt and sampling. No tools, no composition.
+
 - **Auto** — picks the best-matching installed agent for each user turn and can chain multiple within one turn. Backed by a multi-hop delegation loop (`AutoAgent` + `CompositionPlan.delegate`): a router agent reads a `# Available agents` section it gets in user text, emits an `agents.invoke` tool call to dispatch a candidate, observes the candidate's reply via a synthetic scratchpad, and decides whether to invoke another or write a final answer. Bounded by `maxHops = 4` and the standard step budget. See `docs/dev/agent_delegate.md`.
+
 - **ReAct** — a single-agent Reason-Act-Observe tool-use loop with `Thought:` / `Observation:` / `Final Answer:` sentinels around the model's native tool-call template. Different granularity from Auto: ReAct calls fine-grained tools in one model voice; Auto routes whole turns across specialised agents.
 
 ## Settings
@@ -242,7 +255,9 @@ Two synthetic picker entries on top of any installed agents:
 Open via **App menu → Settings…**, **Cmd-,**, or the **gear icon** in the chat header (next to Reset). Three tabs — set-once-and-forget configuration:
 
 - **Tools** — Quarto executable path with live status badge, web-search backend selector (DuckDuckGo / SearXNG endpoint).
+
 - **Plugins** — per-plugin status table; click a row to expand into per-tool descriptions and the pretty-printed `config` blob from `plugins.json`. See the [Plugins](#plugins) section below.
+
 - **Appearance** — light / dark / system color scheme.
 
 Mid-session knobs stay in the sidebar where they're one click away — **Model** parameters (temperature / top-p / max tokens / thinking budget / seed / system prompt with Apply) and the **Voice** tab (TTS, voice loop, dictation, whisper file transcription).
@@ -283,6 +298,7 @@ What is actually enforced, and by what:
 Two consequences worth stating plainly:
 
 - **Adding an MCP server is equivalent to running that binary yourself, with your privileges.** The consent gate controls *whether* a server is used, not what it can do once running. It can read your files, reach the network, and spawn processes. Vet MCP servers the way you would vet any executable you download.
+
 - **`python.run` is not a sandbox.** It runs Python as you, with your filesystem and network. The timeout and the temp working directory prevent runaway processes and stray files; they prevent nothing else. Packages are baked in at framework-build time and there is no runtime `pip install`, so at least the dependency set is fixed at build.
 
 **Plugins are trusted absolutely.** They are compiled into the binary (there is no dynamic loading, so there is no untrusted-binary risk today), but there is no capability gating of any kind: a registered plugin can call any tool in the registry, touch the filesystem, spawn processes, and reach the network. This is acceptable while every plugin is first-party and its inclusion is a compile-time decision in `projects/plugins/plugins.json`. It is not acceptable as-is for third-party plugins — a permission manifest (declaring `network`, `fs`, `subprocess`, `tools.invoke`) needs to exist *before* any such path opens, not after.

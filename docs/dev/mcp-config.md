@@ -12,7 +12,7 @@ sidebar.
 
 ## Where configs live
 
-```
+```text
 ~/Library/Application Support/Infer/mcp/
 ├── filesystem.json
 ├── github.json
@@ -94,7 +94,7 @@ Two layers, in order:
 
 A future `gate` composition primitive will add a third layer: per-call
 approval for sensitive tools regardless of source. Until then, the per-server
-gate is the load-bearing security boundary.
+gate is the structural security boundary.
 
 ## Roots
 
@@ -105,7 +105,7 @@ and answered on inbound `roots/list` requests.
 **Important caveat**: roots are a protocol-level signal, not OS-level
 enforcement. A well-behaved server respects the list; a non-conformant
 server can ignore it and access anything the parent process can. That's
-why the consent gate runs first — approval is the load-bearing decision;
+why the consent gate runs first — approval is the structural decision;
 roots narrow what an approved server *should* do.
 
 ## Real-world commands

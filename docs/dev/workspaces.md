@@ -11,6 +11,7 @@ How many organizing axes does the app need?
 Consider a business environment: a manager tracks multiple companies (A, B, C, …), has per-entity analytical concerns (financials, trend-tracking, anomaly detection, deck generation), produces and consumes artifacts at each concern (inputs, outputs, intermediate runs, scheduled re-runs), and works in different contexts ("quarterly review of company A" vs. "monthly anomaly sweep across all companies").
 
 Four structures are in play:
+
 - **Entities being tracked** (companies).
 - **Analytical concerns** per entity.
 - **Artifacts** at each concern.

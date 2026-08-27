@@ -87,7 +87,7 @@ public protocol Agent: Sendable {
 
 Supporting types (sketched):
 
-- `AgentContext` — read-only handle passed to every hook. Contains: a minimal `RunnerHandle` (backend id, template family, `maxContext`, current token count) rather than the runner actor itself; a `ToolCatalog` view of the tool registry already filtered by the plugin-level consent layer; a read-only snapshot of the transcript so far; the step counter; and agent-local `AgentStateStore`. Explicitly **not** in `AgentContext`: the `Runner` actor reference (would leak decode-loop internals), `InferSettings` (agents override via `decodingParams`, not by reading user prefs), `PluginHost` (tools go through `ToolCatalog`), the `ChatViewModel`, or any mutable UI state. The absence list is load-bearing: once an implementation takes a dependency on something here, the shape is frozen, so the surface stays deliberately thin.
+- `AgentContext` — read-only handle passed to every hook. Contains: a minimal `RunnerHandle` (backend id, template family, `maxContext`, current token count) rather than the runner actor itself; a `ToolCatalog` view of the tool registry already filtered by the plugin-level consent layer; a read-only snapshot of the transcript so far; the step counter; and agent-local `AgentStateStore`. Explicitly **not** in `AgentContext`: the `Runner` actor reference (would leak decode-loop internals), `InferSettings` (agents override via `decodingParams`, not by reading user prefs), `PluginHost` (tools go through `ToolCatalog`), the `ChatViewModel`, or any mutable UI state. The absence list is structural: once an implementation takes a dependency on something here, the shape is frozen, so the surface stays deliberately thin.
 
 - `AgentRequirements` — `backend: BackendPreference`, `templateFamily: TemplateFamily?`, `minContext: Int?`, `toolsAllow: [ToolName]`, `toolsDeny: [ToolName]`, `autoApprove: [ToolName]`.
 
@@ -146,7 +146,7 @@ The current Infer UI corresponds to `DefaultAgent`, constructed at launch from `
 
 ## Architecture
 
-```
+```text
 ChatViewModel
     |
     v
@@ -180,7 +180,7 @@ New types (all in a new `InferAgents` SwiftPM library target — pure Swift, no 
 
 ### The loop (per user turn)
 
-```
+```text
 1. ChatViewModel.send(userText) -> AgentSession.run(userText)
 
 2. AgentSession:

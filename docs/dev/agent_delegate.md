@@ -19,8 +19,9 @@ Two approaches, both reusing existing machinery.
 Add a synthetic `Auto` entry to `AgentPickerMenu`. Selecting it constructs an on-the-fly `PromptAgent` whose `CompositionPlan` is `orchestrator(router: <built-in router>, candidates: <vm.availableAgents filtered by isCompatible>)`. The router's authored system prompt enumerates each candidate by id + description; the runtime exposes the synthetic `agents.invoke` tool (`BuiltinTools.swift:35`); the router emits one tool call naming a candidate; `CompositionController.runOrchestrator` (`CompositionController.swift:488`) dispatches it. No changes to `AgentController`, `OrchestratorDispatch`, or the runtime — only a builder that synthesises the composition from the current agent listing.
 
 Trade-offs:
-- + Zero new code paths. Every dispatch primitive already works.
-- + Composability emerges for free: candidates can themselves be `chain` / `refine` / `branch`, so "Auto" can route to a composed sub-agent (see Question 2 below).
+
+- Zero new code paths. Every dispatch primitive already works.
+- Composability emerges for free: candidates can themselves be `chain` / `refine` / `branch`, so "Auto" can route to a composed sub-agent (see Question 2 below).
 - − One router LLM call per user turn; latency and tokens add up on a local model.
 - − No persistent active agent — the `AgentPickerMenu` label keeps saying "Auto" while the actual responder changes turn-to-turn. Need transcript attribution to be obvious (`agent_composition.md` already specifies per-segment attribution).
 - − Router prompt grows with the agent library; quality degrades past ~10 candidates without categorisation.
@@ -33,8 +34,9 @@ Before sending the first user message of a thread (or on detected topic shift), 
 2. **Small-model classifier.** A tiny LM (e.g. the smallest available local model) emits a single agent id from a constrained list. More flexible than similarity, but adds an inference call.
 
 Trade-offs:
-- + Cheaper at steady state once the first turn routes — subsequent turns reuse the active agent.
-- + Stable active-agent identity. UI affordances (tools chip, persona name) remain coherent.
+
+- Cheaper at steady state once the first turn routes — subsequent turns reuse the active agent.
+- Stable active-agent identity. UI affordances (tools chip, persona name) remain coherent.
 - − Re-classification policy is a real design decision: first turn only? every turn? on detected topic shift (and how is shift detected)? Get this wrong and the UX is either sticky (won't re-route when it should) or jittery (re-routes mid-conversation surprisingly).
 - − Have to surface the auto-pick in the UI (e.g. an unobtrusive "Auto → infer.coder" chip on the first assistant message) so the user can override.
 - − No multi-agent dispatch within a single turn — the classifier picks one agent and that agent runs (though *that* agent can itself be a composition).
@@ -63,7 +65,7 @@ Extend `CompositionPlan.orchestrator` (or add a sibling `delegate` primitive —
 
 #### Loop shape
 
-```
+```text
 loop:
   router_outcome = runSingle(router, userText if first iter else <continuation prompt>)
   dispatch = OrchestratorDispatch.parse(router_outcome, candidates)
@@ -121,6 +123,7 @@ Each iteration consumes from the same step budget that already gates composition
 - **Approach B (classify-then-switch)** is orthogonal — it just picks the active top-level agent. Whether multi-agent flow happens within the turn depends on what that agent's composition is.
 
 The cleanest staged rollout:
+
 1. Build the synthetic Auto orchestrator over the existing one-shot `orchestrator` plan. (Approach A, today's machinery.)
 2. Add the `delegate` primitive with a `maxHops` param; switch Auto to use it once stable. **(Done.)**
 3. (Optional) Layer Approach B as a cache in front of Auto if router latency hurts.
