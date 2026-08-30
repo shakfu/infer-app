@@ -65,7 +65,7 @@ import tarfile
 import tempfile
 import zipfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.request import urlretrieve
 
@@ -87,6 +87,12 @@ class Target:
     # contents get hashed individually). Override values come from CLI flags.
     default_inputs: dict[str, object]
     fetch: Callable[[dict[str, object]], None]
+    # ROOT-relative paths this target installs. A marker records that the
+    # *inputs* have not changed; it says nothing about whether the outputs
+    # are still on disk. Without this, deleting an artifact by hand (or a
+    # `clean` that misses a marker) leaves a hit that skips the work which
+    # would restore it. Empty means "cannot be checked".
+    outputs: list[str] = field(default_factory=list)
 
 
 # Resolve the input dict into a fully-concrete dict suitable for hashing.
@@ -161,14 +167,26 @@ def write_marker(kind: str, target: str, resolved: dict[str, object], digest: st
     marker_path(kind, target).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
-def cache_status(kind: str, target: str, digest: str) -> str:
-    """Return one of 'hit', 'stale', 'miss'."""
+def missing_outputs(target: Target) -> list[str]:
+    """ROOT-relative outputs the target declares but that are not on disk."""
+    return [rel for rel in target.outputs if not (ROOT / rel).exists()]
+
+
+def cache_status(kind: str, target: str, digest: str, missing: list[str] | None = None) -> str:
+    """Return one of 'hit', 'stale', 'miss'.
+
+    `missing` are declared outputs absent from disk. Any of them demotes an
+    otherwise-matching marker to 'miss': the inputs agree, but the artifacts
+    they describe are gone, so the work still needs doing.
+    """
     marker = read_marker(kind, target)
     if marker is None:
         return "miss"
-    if marker.get("hash") == digest:
-        return "hit"
-    return "stale"
+    if marker.get("hash") != digest:
+        return "stale"
+    if missing:
+        return "miss"
+    return "hit"
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +584,12 @@ FETCH_TARGETS: dict[str, Target] = {
         description="ggml-stack xcframeworks (Ggml + LlamaCpp + Whisper + StableDiffusion)",
         default_inputs={"version": "0.4.2"},
         fetch=fetch_stack,
+        outputs=[
+            "thirdparty/Ggml.xcframework",
+            "thirdparty/LlamaCpp.xcframework",
+            "thirdparty/Whisper.xcframework",
+            "thirdparty/StableDiffusion.xcframework",
+        ],
     ),
     "sqlitevec": Target(
         name="sqlitevec",
@@ -578,6 +602,7 @@ FETCH_TARGETS: dict[str, Target] = {
             "patches": ["scripts/patches/sqlitevec/**/*"],
         },
         fetch=fetch_sqlitevec,
+        outputs=["thirdparty/SQLiteVec"],
     ),
     "tree-sitter-qmd": Target(
         name="tree-sitter-qmd",
@@ -588,12 +613,14 @@ FETCH_TARGETS: dict[str, Target] = {
             "commit": "c925e444df03c1f7b7b4cccb5f0a2e72fc130885",
         },
         fetch=fetch_tree_sitter_qmd,
+        outputs=["thirdparty/tree-sitter-qmd"],
     ),
     "tree-sitter-python": Target(
         name="tree-sitter-python",
         description="Vendored tree-sitter-python grammar + queries",
         default_inputs={"tag": "v0.25.0"},
         fetch=fetch_tree_sitter_python,
+        outputs=["thirdparty/tree-sitter-python"],
     ),
     "webassets": Target(
         name="webassets",
@@ -603,6 +630,7 @@ FETCH_TARGETS: dict[str, Target] = {
             "hljs_version": "11.11.1",
         },
         fetch=fetch_webassets,
+        outputs=["thirdparty/webassets"],
     ),
     "python": Target(
         name="python",
@@ -612,6 +640,7 @@ FETCH_TARGETS: dict[str, Target] = {
             "py_pkgs": "",
         },
         fetch=fetch_python,
+        outputs=["thirdparty/Python.framework"],
     ),
 }
 
@@ -628,6 +657,12 @@ BUILD_TARGETS: dict[str, Target] = {
             "stack_version": "0.2.16",
         },
         fetch=build_stack,
+        outputs=[
+            "thirdparty/Ggml.xcframework",
+            "thirdparty/LlamaCpp.xcframework",
+            "thirdparty/Whisper.xcframework",
+            "thirdparty/StableDiffusion.xcframework",
+        ],
     ),
 }
 
@@ -688,9 +723,12 @@ def _run_targets(kind: str, args: argparse.Namespace) -> int:
         inputs = merge_overrides(target, overrides if args.target != "all" else {})
         resolved = resolve_inputs(inputs)
         digest = hash_inputs(resolved)
-        status = cache_status(kind, name, digest)
+        missing = missing_outputs(target)
+        status = cache_status(kind, name, digest, missing)
 
         print(f"[{kind}:{name}] {status} (hash={digest[:12]})")
+        if missing:
+            print(f"[{kind}:{name}] missing output(s): {', '.join(missing)}")
 
         if args.check:
             rc = rc or (0 if status == "hit" else 1)
@@ -726,7 +764,7 @@ def cmd_list(_args: argparse.Namespace) -> int:
         for name, target in registry.items():
             resolved = resolve_inputs(target.default_inputs)
             digest = hash_inputs(resolved)
-            status = cache_status(kind, name, digest)
+            status = cache_status(kind, name, digest, missing_outputs(target))
             print(f"{kind:<6} {name:<12} {status:<8} {digest[:12]:<14} {target.description}")
     return 0
 

@@ -127,9 +127,9 @@ clean-mlx-cache:
 	esac
 
 # Remove the four ggml-stack xcframeworks AND every cache marker that
-# would tell a subsequent fetch "you've already done this." Two layers
-# need clearing for the pair `make clean-stack && make fetch-stack` to
-# actually re-fetch:
+# would tell a subsequent run "you've already done this." Three files
+# need clearing for `make clean-stack && make {fetch,build}-stack` to
+# actually rebuild the frameworks:
 #   1. `thirdparty/.stack-<version>` — Make's marker file. Without
 #      removing it, Make's dependency on $(STACK_MARKER) short-circuits
 #      the rule and prints "Nothing to be done."
@@ -137,10 +137,15 @@ clean-mlx-cache:
 #      marker. Without removing it, the recipe fires but manage.py
 #      reports "hit, skipping" because its hash is computed from inputs
 #      (version string) rather than from the on-disk artifacts.
+#   3. `thirdparty/.cache/build-stack.json` — the same marker for the
+#      build path. It is a separate file (see manage.py's marker_path),
+#      so clearing only the fetch one left `clean-stack && build-stack`
+#      deleting the frameworks and then skipping the build that would
+#      replace them.
 clean-stack:
 	@rm -rf ${GGML_XCFRAMEWORK} ${LLAMACPP_XCFRAMEWORK} ${WHISPER_XCFRAMEWORK} ${SD_XCFRAMEWORK}
 	@rm -f thirdparty/.stack-*
-	@rm -f thirdparty/.cache/fetch-stack.json
+	@rm -f thirdparty/.cache/fetch-stack.json thirdparty/.cache/build-stack.json
 
 # Fast test path. Skips suites whose name ends in `ExternalTests` —
 # those hit real binaries / network / models and are run via
@@ -204,18 +209,24 @@ test-all:
 # (Make 3.81 — what ships with macOS — predates grouped targets, so the
 # common idiom of "one rule with multiple outputs" is encoded as a
 # marker file the per-framework targets depend on.)
+#
+# The four directories also carry the recipe themselves, so a framework
+# deleted by hand is re-fetched even though the marker still stands. The
+# marker is an ORDER-ONLY prerequisite (`|`): it must exist, but its
+# timestamp is ignored. A normal prerequisite would rebuild all four on
+# every run, since `touch $@` always leaves the marker newer than the
+# directories it just produced. manage.py's own cache makes the second
+# and later invocations no-ops, so the repeated call is cheap.
 STACK_MARKER := thirdparty/.stack-$(STACK_VERSION)
 
 $(STACK_MARKER):
 	@./scripts/manage.py fetch stack --set version=$(STACK_VERSION)
 	@touch $@
 
-$(GGML_XCFRAMEWORK): $(STACK_MARKER)
-$(LLAMACPP_XCFRAMEWORK): $(STACK_MARKER)
-$(WHISPER_XCFRAMEWORK): $(STACK_MARKER)
-$(SD_XCFRAMEWORK): $(STACK_MARKER)
+$(GGML_XCFRAMEWORK) $(LLAMACPP_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SD_XCFRAMEWORK): | $(STACK_MARKER)
+	@./scripts/manage.py fetch stack --set version=$(STACK_VERSION)
 
-fetch-stack: $(STACK_MARKER)
+fetch-stack: $(STACK_MARKER) $(GGML_XCFRAMEWORK) $(LLAMACPP_XCFRAMEWORK) $(WHISPER_XCFRAMEWORK) $(SD_XCFRAMEWORK)
 
 # Local build counterpart to fetch-stack. Clones llama.cpp / whisper.cpp /
 # stable-diffusion.cpp at their pinned tags into build/, builds shared dylibs,
@@ -240,7 +251,6 @@ endif
 build-stack:
 	@./scripts/manage.py build stack $(BUILD_STACK_SETS)
 	@touch $(STACK_MARKER)
-	@echo "build-stack: installed locally-built xcframeworks into thirdparty/"
 
 $(WEBASSETS_MARKER):
 	@./scripts/manage.py fetch webassets
