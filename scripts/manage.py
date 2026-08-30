@@ -564,7 +564,7 @@ FETCH_TARGETS: dict[str, Target] = {
     "stack": Target(
         name="stack",
         description="ggml-stack xcframeworks (Ggml + LlamaCpp + Whisper + StableDiffusion)",
-        default_inputs={"version": "0.4.0"},
+        default_inputs={"version": "0.4.2"},
         fetch=fetch_stack,
     ),
     "sqlitevec": Target(
@@ -622,9 +622,9 @@ BUILD_TARGETS: dict[str, Target] = {
         default_inputs={
             # Match build_xcframeworks.DEFAULT_* so a bare `manage.py build
             # stack` and a bare `build_xcframeworks.py` are equivalent.
-            "llama_version": "b9010",
-            "whisper_version": "v1.8.4",
-            "sd_version": "master-593-3d6064b",
+            "llama_version": "v0.3.0",
+            "whisper_version": "v1.9.2",
+            "sd_version": "master-816-487de75",
             "stack_version": "0.2.16",
         },
         fetch=build_stack,

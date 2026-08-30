@@ -48,12 +48,13 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Defaults
 
-# Default upstream tags. These are the same versions the cyllama 0.2.14
-# release zip was cut against, so a build at the defaults is drop-in
-# compatible with what `make fetch-stack` currently installs.
-DEFAULT_LLAMA_VERSION = "b9010"
-DEFAULT_WHISPER_VERSION = "v1.8.4"
-DEFAULT_SD_VERSION = "master-593-3d6064b"
+# Default upstream tags, kept in step with cyllama's scripts/manage.py
+# (LLAMACPP_VERSION / WHISPERCPP_VERSION / SDCPP_VERSION) so a local build
+# and a `make fetch-stack` download are cut against the same upstream.
+# Mirrored in manage.py's build-stack input defaults -- bump both.
+DEFAULT_LLAMA_VERSION = "v0.3.0"
+DEFAULT_WHISPER_VERSION = "v1.9.2"
+DEFAULT_SD_VERSION = "master-816-487de75"
 DEFAULT_STACK_VERSION = "0.2.16"
 
 LLAMA_REPO = "https://github.com/ggml-org/llama.cpp.git"
@@ -332,8 +333,9 @@ def build_chatfmt_dylib() -> None:
     shipping it inside LlamaCpp.framework lets Swift render arbitrary
     chat templates directly from the GGUF.
 
-    Built independently of libllama (no llama symbols touched); only
-    relies on standard library + the in-tree common/jinja code.
+    Built independently of libllama (no llama symbols touched); relies
+    on the standard library, the in-tree common/jinja code, and
+    libggml-base for ggml_abort (see the link flags below).
     """
     out = LLAMA_DYN / "libchatfmt.dylib"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -348,6 +350,10 @@ def build_chatfmt_dylib() -> None:
         # `src/unicode.cpp` which is for vocab tokenisation), pure
         # stdlib-only.
         common / "unicode.cpp",
+        # `common_json` is the pimpl JSON wrapper the jinja engine takes
+        # its input through; the header alone declares it, the out-of-line
+        # bodies (and the nlohmann backing) are all here.
+        common / "json.cpp",
         facade / "chat_facade.cpp",
     ]
     missing = [str(s) for s in sources if not s.exists()]
@@ -366,13 +372,27 @@ def build_chatfmt_dylib() -> None:
         f"-mmacosx-version-min={MIN_MACOS}",
         f"-I{common}",
         f"-I{LLAMA_SRC / 'vendor'}",
+        # `common/log.h` (transitively pulled in by `common/jinja/caps.cpp`)
+        # includes <ggml.h> for ggml_log_level; `common/json.cpp` uses it
+        # for GGML_ASSERT.
+        f"-I{LLAMA_SRC / 'ggml' / 'include'}",
         f"-I{facade}",
         "-o",
         str(out),
         "-install_name",
         install_name,
+        # _normalize_libs rewrites this dylib's load commands to longer
+        # @rpath/<Framework>.framework/... paths and adds an LC_RPATH; without
+        # the pad install_name_tool has no room and fails. cmake passes this
+        # by default, a bare clang link does not.
+        "-Wl,-headerpad_max_install_names",
     ]
     cmd += [str(s) for s in sources]
+    # `common/json.cpp` routes the JSON library's assert through GGML_ASSERT,
+    # so the only ggml symbol pulled in is ggml_abort. libggml-base already
+    # ships in Ggml.framework and _normalize_libs rewrites the dependency
+    # path there, same as it does for libllama.
+    cmd += [f"-L{LLAMA_DYN}", "-lggml-base"]
     run(cmd)
     os.chmod(out, 0o755)
     print(f"  built {out.name}")
