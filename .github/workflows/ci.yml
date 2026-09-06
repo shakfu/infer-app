@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # MLX + mlx-swift-lm require Xcode 16.3+ / Swift 6.1+. Pin a recent
       # stable Xcode; swap for `sudo xcode-select -s /Applications/Xcode_16.x.app`
