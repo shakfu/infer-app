@@ -28,7 +28,7 @@ Target is **multi-step local tool use** — scope (2) from the prior conversatio
 
 1. **Local-first.** No cloud providers. Agents run on `LlamaRunner` or `MLXRunner`. API-key-gated services are out of scope as a product decision, not a technical one.
 
-2. **Runner asymmetry persists.** `LlamaRunner` hand-renders the chat template and streams deltas; it is the natural home for tool-call parsing. `MLXRunner` goes through `ChatSession`, which has no tool-call hook today. Agents ship on llama first; MLX gets agents when its runner grows a tool-call seam (deferred — see `plugins.md`).
+2. **Runner asymmetry persists.** `LlamaRunner` hand-renders the chat template and streams deltas; it is the natural home for tool-call parsing. `MLXRunner` goes through `ChatSession`, which has no tool-call hook today. Agents ship on llama first; MLX gets agents when its runner grows a tool-call layer (deferred — see `plugins.md`).
 
 3. **Tool-call format is model-specific.** GGUF chat templates encode their own tool-call conventions (Llama 3.1 `<|python_tag|>`, Qwen `<tool_call>`, Hermes XML, etc.). An agent must declare a template family; detection is by fingerprint table over the GGUF's embedded Jinja template, not regex. If the loaded model's template doesn't match the agent's declared family, activation fails loudly — the agent picker shows the mismatch and refuses to select the agent until the user either loads a compatible model or explicitly ticks "override: use plain chat (no tools)." Silent degradation to chat was the prior design and was rejected: a user who enabled tools and saw nothing happen is a support ticket, not a feature.
 
@@ -393,7 +393,7 @@ Out of PR 1: any tool calls, any loop steps, any MCP wiring, `AgentStateStore` (
 
 ## Appendix: agent patterns in circulation
 
-Reference material for where Infer's design sits in the broader landscape. These are design patterns, not a standards list — naming varies by paper/framework, and real systems usually blend several. Infer's default loop is a ReAct-style single-agent loop with tool-use fine-tuning; the `Agent.run` escape hatch (see protocol sketch above) is the seam where other patterns can be experimented with without rewriting the substrate.
+Reference material for where Infer's design sits in the broader landscape. These are design patterns, not a standards list — naming varies by paper/framework, and real systems usually blend several. Infer's default loop is a ReAct-style single-agent loop with tool-use fine-tuning; the `Agent.run` escape hatch (see protocol sketch above) is the layer where other patterns can be experimented with without rewriting the substrate.
 
 ### Loop / control patterns
 

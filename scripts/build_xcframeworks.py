@@ -413,7 +413,7 @@ def _build_shared_cmake(
     `require` lists basenames that MUST appear in `dst` after collection;
     the function fails loudly otherwise (catches silent static-lib builds).
 
-    Note: GGML_BACKEND_DL=OFF in `extra_cmake` is load-bearing for the
+    Note: GGML_BACKEND_DL=OFF in `extra_cmake` is structural for the
     umbrella's `-reexport_library` step. With BACKEND_DL=ON, ggml backends
     are built as CMake MODULE libs (MH_BUNDLE on Apple) which cannot be
     re-exported. OFF gives us proper MH_DYLIB output.

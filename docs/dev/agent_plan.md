@@ -232,6 +232,6 @@ When PR 5.5a lands:
 ## 8. What this doc does not change
 
 - The `Agent` protocol surface in `Agent.swift`. `kind` is metadata on `PromptAgent`, not a protocol requirement. `DefaultAgent` is implicitly a persona; if a `kind: AgentKind { get }` requirement is ever added, default extensions can derive it.
-- Runner asymmetry. MLX still gets agents only when its runner grows a tool-call seam (PR 6 in `agents.md`). Personas, by contrast, work on MLX from PR 1.5 since they need no tool-call hook.
+- Runner asymmetry. MLX still gets agents only when its runner grows a tool-call layer (PR 6 in `agents.md`). Personas, by contrast, work on MLX from PR 1.5 since they need no tool-call hook.
 - The "transcript is the memory" principle. Composition operates within a turn; no cross-turn state is introduced.
 - Anti-goals not specifically addressed above (no autonomous background agents, no agent-authored model downloads, no mocking tool results) — all preserved.

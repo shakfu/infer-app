@@ -157,7 +157,7 @@ final class ChatViewModelTests: XCTestCase {
     }
 
     /// `reset()` clears the transcript on a **later** main-actor hop,
-    /// not synchronously, and that is load-bearing rather than
+    /// not synchronously, and that is structural rather than
     /// incidental: an in-flight turn is suspended inside the stream loop
     /// holding an index into `messages`, so clearing the array
     /// immediately would leave that index dangling and crash when the

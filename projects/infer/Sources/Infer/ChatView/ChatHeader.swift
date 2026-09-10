@@ -17,7 +17,7 @@ extension ChatView {
             // chat header used to duplicate it for users who'd
             // hidden the sidebar; that path is reachable via the
             // sidebar toggle above (one click) so the duplication
-            // isn't load-bearing.
+            // isn't structural.
             AgentPickerMenu(vm: vm, sidebarOpen: $sidebarOpen)
             generationRateView
             contextPercentView

@@ -263,7 +263,7 @@ def fetch_stack(inputs: dict[str, object]) -> None:
         print(f"  extracting {zip_path.name}")
         safe_extract_zip(zip_path, tmp)
 
-        # The archive's outer dir layout is not load-bearing — find by name
+        # The archive's outer dir layout is not structural — find by name
         # so a future wrapper directory (e.g. ggml-cpp-stack-...-X.Y.Z/)
         # doesn't break the script.
         for fw in frameworks:

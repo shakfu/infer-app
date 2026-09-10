@@ -168,7 +168,7 @@ final class PluginLoaderTests: XCTestCase {
         XCTAssertEqual(fallback, PluginConfig.empty.json)
     }
 
-    /// The load-bearing test for cross-plugin tool dispatch: a
+    /// The structural test for cross-plugin tool dispatch: a
     /// plugin captures the `ToolInvoker` during `register` and the
     /// invoker dispatches against the registry as it stands at
     /// *call time*, not register time. We simulate that by handing

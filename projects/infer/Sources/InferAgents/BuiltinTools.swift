@@ -719,7 +719,7 @@ public struct MathComputeTool: BuiltinTool {
     /// them as exponent markers when sandwiched between digits, and any
     /// other use ("eat") would also be rejected as a syntax error by
     /// `NSExpression` — but the regex check rejects the input before
-    /// `NSExpression` sees it, which is the load-bearing guarantee.
+    /// `NSExpression` sees it, which is the structural guarantee.
     static let whitelistRegex = try! NSRegularExpression(
         pattern: #"^[0-9eE+\-*/().,\s]+$"#
     )

@@ -19,7 +19,7 @@ final class WikipediaExternalTests: XCTestCase {
         }
     }
 
-    /// "Ada Lovelace" is the load-bearing query: stable title, well-
+    /// "Ada Lovelace" is the structural query: stable title, well-
     /// indexed, unambiguous, and unlikely to be deleted or merged.
     /// Same logic as the WebSearch external test — we don't pin
     /// ranking, only that *some* sane result comes back.
@@ -64,7 +64,7 @@ final class WikipediaExternalTests: XCTestCase {
         }
         XCTAssertNil(result.error, "got error: \(result.error ?? "")")
         XCTAssertFalse(result.output.isEmpty)
-        // Body should mention some load-bearing facts that have been
+        // Body should mention some structural facts that have been
         // in the lead for years and are unlikely to change.
         let lower = result.output.lowercased()
         XCTAssertTrue(lower.contains("byron"), "lead missing 'byron'; output=\(result.output.prefix(200))")

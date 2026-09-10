@@ -153,7 +153,7 @@ Per-agent or shared?
 
 ### Cancellation propagation
 
-A user `requestStop` must propagate through the composition tree. The controller holds a per-composition `CancelFlag`; each child agent's `run` checks it between steps via `AgentContext`. Already feasible — `Agent.shouldContinue(after:context:)` can read it. The C decode loop's existing cancellation seam is unchanged.
+A user `requestStop` must propagate through the composition tree. The controller holds a per-composition `CancelFlag`; each child agent's `run` checks it between steps via `AgentContext`. Already feasible — `Agent.shouldContinue(after:context:)` can read it. The C decode loop's existing cancellation layer is unchanged.
 
 ### Model swaps mid-composition
 

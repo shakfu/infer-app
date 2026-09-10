@@ -121,7 +121,7 @@ Verified directly against the code, not inferred from doc presence.
 ### Missing
 
 - **`AgentEvent` async stream.** No `AgentEvent` type, no
-  `AsyncStream<AgentEvent>` on `AgentController`. The seam UX plan Phase
+  `AsyncStream<AgentEvent>` on `AgentController`. The layer UX plan Phase
   0.2 names a prerequisite is absent. `Generation.maybeRunToolLoop`
   mutates `messages[i].steps` directly in three stages.
 - **Schema v2 (`agent_kinds.md`).** `AgentKind` enum not in `AgentTypes.swift`.
@@ -173,7 +173,7 @@ Verified directly against the code, not inferred from doc presence.
   `TemplateFamily` enum was scaffolded broader.
 - **`AgentEvent` stream vs. direct mutation.** UX plan Phase 0.2 mandates
   the stream; code uses three-stage direct stamping. Final `StepTrace`
-  shape ends up identical, but the seam is missing.
+  shape ends up identical, but the layer is missing.
 - **Composition anti-goal in `agents.md` not yet revised.** That doc still
   reads "No DSL for agent composition." `agent_plan.md` §7 schedules the
   edit for when PR 1.5 lands. Doc maintenance, not a code drift.

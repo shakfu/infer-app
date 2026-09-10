@@ -153,7 +153,7 @@ public protocol CloudClient: Sendable {
 ///
 /// Also serves the `.openaiCompatible` provider — same wire format, just a
 /// different `baseURL`. That's why `baseURL` is a public init parameter
-/// rather than locked down: it's load-bearing for compat support, not
+/// rather than locked down: it's structural for compat support, not
 /// just a test seam. For canonical OpenAI the runner passes the default.
 public struct OpenAIClient: CloudClient {
     public let apiKey: String

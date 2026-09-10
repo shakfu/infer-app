@@ -126,7 +126,7 @@ public struct ToolCatalog: Sendable, Equatable {
 /// Explicitly **not** in `AgentContext`: the runner actor reference, the
 /// `ChatViewModel`, `InferSettings` (agents override via `decodingParams`,
 /// not by reading user prefs), the `PluginHost`, or any mutable UI state.
-/// The absence list is load-bearing — once a conformance depends on
+/// The absence list is structural — once a conformance depends on
 /// something here, the shape is frozen, so this surface stays thin.
 public struct AgentContext: Sendable {
     public let runner: RunnerHandle

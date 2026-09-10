@@ -7,7 +7,7 @@ import XCTest
 /// without Quarto, so the suite stays green on CI runners that don't
 /// install it.
 ///
-/// **Naming convention.** The `External` suffix is load-bearing: the
+/// **Naming convention.** The `External` suffix is structural: the
 /// `make test` target uses `--skip ExternalTests` to keep the fast
 /// path under three seconds, and `make test-integration` uses
 /// `--filter ExternalTests` to run *only* this sort of test. Suites
