@@ -73,11 +73,28 @@ public final class LayeredJSONConfig<Payload: Decodable & Sendable>: @unchecked 
         return value
     }
 
+    /// The user-override layer alone, or nil when absent or unparseable.
+    /// Lets a consumer tell user-authored values from bundled ones.
+    public func resolveUserOverride() -> Payload? {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let cachedUserOverride { return cachedUserOverride }
+        cachedUserOverride = .some(loadUserOverride())
+        return cachedUserOverride ?? nil
+    }
+
+    private var cachedUserOverride: Payload??
+
+    private func loadUserOverride() -> Payload? {
+        guard let userURL = userOverrideURL,
+              let data = try? Data(contentsOf: userURL)
+        else { return nil }
+        return try? JSONDecoder().decode(Payload.self, from: data)
+    }
+
     private func resolveOnce() -> Payload {
         // 1. User override.
-        if let userURL = userOverrideURL,
-           let data = try? Data(contentsOf: userURL),
-           let parsed = try? JSONDecoder().decode(Payload.self, from: data) {
+        if let parsed = loadUserOverride() {
             return parsed
         }
         // 2. Bundled.

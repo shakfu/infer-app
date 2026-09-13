@@ -85,6 +85,10 @@ final class ChatViewModel {
     var cloudCompatPresetId: String = UserDefaults.standard.string(forKey: PersistKey.cloudCompatPresetId) ?? "" {
         didSet { UserDefaults.standard.set(cloudCompatPresetId, forKey: PersistKey.cloudCompatPresetId) }
     }
+    /// Incremented after each model-list fetch so the picker re-reads
+    /// `CloudModelCatalog`'s cache, which is not observable itself.
+    var cloudModelCatalogRevision = 0
+    var isRefreshingCloudModels = false
 
     // MARK: - Stable Diffusion state
 

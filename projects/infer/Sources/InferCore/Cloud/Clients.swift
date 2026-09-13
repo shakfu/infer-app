@@ -155,6 +155,10 @@ public protocol CloudClient: Sendable {
 /// different `baseURL`. That's why `baseURL` is a public init parameter
 /// rather than locked down: it's structural for compat support, not
 /// just a test seam. For canonical OpenAI the runner passes the default.
+///
+/// `baseURL` includes the API version segment (`https://api.openai.com/v1`,
+/// `https://openrouter.ai/api/v1`, `http://localhost:11434/v1`), matching
+/// the OpenAI SDK `base_url` convention that compat providers document.
 public struct OpenAIClient: CloudClient {
     public let apiKey: String
     public let baseURL: URL
@@ -162,7 +166,7 @@ public struct OpenAIClient: CloudClient {
 
     public init(
         apiKey: String,
-        baseURL: URL = URL(string: "https://api.openai.com")!,
+        baseURL: URL = CloudProvider.openAIBaseURL,
         session: URLSession = CloudClients.sharedSession
     ) {
         self.apiKey = apiKey
@@ -195,7 +199,7 @@ public struct OpenAIClient: CloudClient {
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let url = baseURL.appendingPathComponent("/v1/chat/completions")
+                    let url = baseURL.appendingPathComponent("chat/completions")
                     var req = URLRequest(url: url)
                     req.httpMethod = "POST"
                     req.timeoutInterval = 60
@@ -247,14 +251,10 @@ public struct OpenAIClient: CloudClient {
                     if let cacheKey = params.promptCacheKey, !cacheKey.isEmpty {
                         body["prompt_cache_key"] = cacheKey
                     }
-                    req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-                    let (bytes, response) = try await session.bytes(for: req)
-                    try Task.checkCancellation()
-                    try await CloudClients.checkHTTP(
-                        response: response,
-                        bytes: bytes,
-                        apiKey: apiKey
+                    let bytes = try await CloudClients.openStream(
+                        request: req, body: body, model: model,
+                        session: session, apiKey: apiKey
                     )
 
                     for try await line in bytes.lines {
@@ -347,7 +347,9 @@ public struct AnthropicClient: CloudClient {
                     //
                     // `thinking` is mutually exclusive with non-default
                     // `temperature`: when extended thinking is enabled the
-                    // API requires `temperature = 1.0`, so clamp.
+                    // API requires `temperature = 1.0`, so clamp. Models that
+                    // reject `temperature` or `thinking.type: enabled`
+                    // outright are handled by `CloudClients.openStream`.
                     let thinkingEnabled = (params.thinkingBudgetTokens ?? 0) > 0
                     let effectiveTemperature: Double = thinkingEnabled ? 1.0 : params.temperature
 
@@ -387,14 +389,10 @@ public struct AnthropicClient: CloudClient {
                     if let tier = params.serviceTier, !tier.isEmpty {
                         body["service_tier"] = tier
                     }
-                    req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-                    let (bytes, response) = try await session.bytes(for: req)
-                    try Task.checkCancellation()
-                    try await CloudClients.checkHTTP(
-                        response: response,
-                        bytes: bytes,
-                        apiKey: apiKey
+                    let bytes = try await CloudClients.openStream(
+                        request: req, body: body, model: model,
+                        session: session, apiKey: apiKey
                     )
 
                     for try await line in bytes.lines {
@@ -440,6 +438,115 @@ public struct AnthropicClient: CloudClient {
 // MARK: - Shared helpers
 
 public enum CloudClients {
+    /// POST `body` and return the SSE byte stream once the response is 2xx.
+    ///
+    /// Newer models reject sampling fields that older ones require
+    /// (`claude-opus-4-7`: non-default `temperature`; gpt-5.x with reasoning
+    /// on: `temperature`, `top_p`; adaptive-only Claude models:
+    /// `thinking.type: enabled`). On a 400 naming one of those fields, the
+    /// field is relaxed and the request resent. Relaxations are memoized per
+    /// endpoint + model so later turns skip the failing round trip. Chosen
+    /// over a model-id allowlist, which goes stale with each release. Other
+    /// 400s surface unchanged.
+    static func openStream(
+        request: URLRequest,
+        body: [String: Any],
+        model: String,
+        session: URLSession,
+        apiKey: String
+    ) async throws -> URLSession.AsyncBytes {
+        var req = request
+        var body = body
+        let memoKey = "\(request.url?.absoluteString ?? "")|\(model)"
+        for relaxation in ParamRelaxation.known(for: memoKey) {
+            _ = relaxation.apply(to: &body)
+        }
+        while true {
+            req.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (bytes, response) = try await session.bytes(for: req)
+            try Task.checkCancellation()
+            do {
+                try await checkHTTP(response: response, bytes: bytes, apiKey: apiKey)
+                return bytes
+            } catch CloudError.http(400, let errorBody) {
+                // Each relaxation removes or rewrites a field, so the loop
+                // ends after at most `ParamRelaxation.allCases.count` retries.
+                guard let relaxation = ParamRelaxation.matching(errorBody: errorBody, body: body)
+                else { throw CloudError.http(status: 400, body: errorBody) }
+                _ = relaxation.apply(to: &body)
+                ParamRelaxation.remember(relaxation, for: memoKey)
+            }
+        }
+    }
+
+    /// A request-body change that makes a model accept the request.
+    enum ParamRelaxation: CaseIterable, Sendable {
+        case dropTemperature
+        case dropTopP
+        case adaptiveThinking
+
+        private static let lock = NSLock()
+        nonisolated(unsafe) private static var memo: [String: Set<ParamRelaxation>] = [:]
+
+        static func known(for key: String) -> Set<ParamRelaxation> {
+            lock.lock(); defer { lock.unlock() }
+            return memo[key] ?? []
+        }
+
+        static func remember(_ r: ParamRelaxation, for key: String) {
+            lock.lock(); defer { lock.unlock() }
+            memo[key, default: []].insert(r)
+        }
+
+        /// Returns true when `body` changed.
+        func apply(to body: inout [String: Any]) -> Bool {
+            switch self {
+            case .dropTemperature:
+                return body.removeValue(forKey: "temperature") != nil
+            case .dropTopP:
+                return body.removeValue(forKey: "top_p") != nil
+            case .adaptiveThinking:
+                guard let thinking = body["thinking"] as? [String: Any],
+                      thinking["type"] as? String == "enabled"
+                else { return false }
+                body["thinking"] = ["type": "adaptive"]
+                return true
+            }
+        }
+
+        /// The relaxation a 400 error body asks for, if it names a field
+        /// present in `body`. OpenAI reports `error.param` plus an
+        /// `unsupported_*` code; Anthropic names the field in `error.message`.
+        static func matching(errorBody: String, body: [String: Any]) -> ParamRelaxation? {
+            let error = (try? JSONSerialization.jsonObject(with: Data(errorBody.utf8)))
+                .flatMap { ($0 as? [String: Any])?["error"] as? [String: Any] }
+            let param = error?["param"] as? String
+            let code = error?["code"] as? String ?? ""
+            let message = error?["message"] as? String ?? ""
+            let unsupported = code.hasPrefix("unsupported")
+                || message.contains("deprecated")
+                || message.contains("not supported")
+
+            func names(_ field: String) -> Bool {
+                guard unsupported else { return false }
+                return param == field || message.contains("`\(field)`")
+                    || message.contains("'\(field)'")
+            }
+
+            for r in allCases {
+                var probe = body
+                guard r.apply(to: &probe) else { continue }
+                switch r {
+                case .dropTemperature where names("temperature"): return r
+                case .dropTopP where names("top_p"): return r
+                case .adaptiveThinking where message.contains("thinking.type.enabled"): return r
+                default: continue
+                }
+            }
+            return nil
+        }
+    }
+
     /// Shared URLSession tuned for streaming SSE: no response caching, and a
     /// generous per-resource timeout since long completions naturally exceed
     /// the default 60s when many tokens are requested.

@@ -88,20 +88,13 @@ extension SidebarView {
                 .textFieldStyle(.roundedBorder)
                 .disabled(vm.isLoadingModel || vm.isGenerating)
                 .onSubmit { vm.loadCurrentBackend() }
-            let suggestions = recommendedModelsForCurrentProvider()
-            if !suggestions.isEmpty {
-                Menu {
-                    ForEach(suggestions, id: \.self) { id in
-                        Button(id) { cloudActiveModelBinding.wrappedValue = id }
-                    }
-                } label: {
-                    Image(systemName: "list.bullet")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("Recommended models for \(vm.makeCloudProvider()?.displayName ?? vm.cloudProviderKind.label)")
+            if vm.makeCloudProvider() != nil {
+                cloudModelMenu
             }
         }
+        // Fetches the provider's model list on first show and on provider
+        // change; skipped while the cached list is fresh.
+        .task(id: vm.makeCloudProvider()) { vm.refreshCloudModelCatalog(force: false) }
 
         cloudKeyStatusRow
 
@@ -170,9 +163,45 @@ extension SidebarView {
         return KeyStatus(icon: "exclamationmark.circle", label: "No API key set", tint: .orange)
     }
 
+    /// Model ids grouped by `vendor/` prefix into submenus when any id has
+    /// one (OpenRouter lists hundreds); flat otherwise.
+    @ViewBuilder
+    private var cloudModelMenu: some View {
+        let _ = vm.cloudModelCatalogRevision
+        let suggestions = recommendedModelsForCurrentProvider()
+        let groups = Dictionary(grouping: suggestions) { id in
+            id.contains("/") ? String(id.prefix { $0 != "/" }) : ""
+        }
+        Menu {
+            if groups.keys.contains(where: { !$0.isEmpty }) {
+                ForEach(groups.keys.sorted(), id: \.self) { vendor in
+                    Menu(vendor.isEmpty ? "other" : vendor) {
+                        ForEach(groups[vendor] ?? [], id: \.self) { id in
+                            Button(id) { cloudActiveModelBinding.wrappedValue = id }
+                        }
+                    }
+                }
+            } else {
+                ForEach(suggestions, id: \.self) { id in
+                    Button(id) { cloudActiveModelBinding.wrappedValue = id }
+                }
+            }
+            Divider()
+            Button(vm.isRefreshingCloudModels ? "Refreshing model list..." : "Refresh model list") {
+                vm.refreshCloudModelCatalog(force: true)
+            }
+            .disabled(vm.isRefreshingCloudModels)
+        } label: {
+            Image(systemName: "list.bullet")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Models available from \(vm.makeCloudProvider()?.displayName ?? vm.cloudProviderKind.label)")
+    }
+
     private func recommendedModelsForCurrentProvider() -> [String] {
-        // Reuses the layered loader (user override → bundled JSON →
-        // hardcoded fallback) via `suggestions(for:)`. Don't resurrect
+        // Reuses the layered loader (user override → fetched list → bundled
+        // JSON → hardcoded fallback) via `suggestions(for:)`. Don't resurrect
         // the per-provider static accessors that lived here previously
         // — they bypassed the loader and would diverge from the picker
         // dropdown's other surfaces.
@@ -353,7 +382,7 @@ extension SidebarView {
         Toggle("Extended thinking", isOn: $draft.cloudExtendedThinkingEnabled)
             .toggleStyle(.switch)
             .controlSize(.small)
-            .help("Enable Anthropic's extended-thinking mode. Uses 'Thinking budget' from the Parameters card as the budget. Forces temperature to 1.0 — the API rejects other values combined with thinking.")
+            .help("Enable Anthropic's extended-thinking mode. Uses 'Thinking budget' from the Parameters card as the budget. Forces temperature to 1.0 — the API rejects other values combined with thinking. Models that only support adaptive thinking ignore the budget.")
         if draft.cloudExtendedThinkingEnabled, draft.thinkingBudget <= 0 {
             Text("Set Thinking budget > 0 above for this to take effect.")
                 .font(.caption2)
@@ -445,7 +474,7 @@ struct CloudKeySheet: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("API Key — \(providerDisplayName)")
                 .font(.headline)
-            Text("Stored in your macOS keychain, scoped to this app's signature. Not synced via iCloud.")
+            Text("Stored in your macOS keychain. Not synced via iCloud.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -502,6 +531,7 @@ struct CloudKeySheet: View {
         let trimmed = keyInput.trimmingCharacters(in: .whitespaces)
         do {
             try APIKeyStore.set(trimmed, for: provider)
+            vm.refreshCloudModelCatalog(force: false)
             keyInput = ""
             errorMessage = nil
             isPresented = false

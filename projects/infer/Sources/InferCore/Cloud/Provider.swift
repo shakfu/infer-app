@@ -28,6 +28,17 @@ public enum CloudProvider: Sendable, Hashable {
     /// the route is a single source of truth, not duplicated at the
     /// `OpenAIClient` construction site.
     public static let openRouterBaseURL = URL(string: "https://openrouter.ai/api/v1")!
+    public static let openAIBaseURL = URL(string: "https://api.openai.com/v1")!
+
+    /// API root including the version segment. Request paths append to it.
+    public var baseURL: URL {
+        switch self {
+        case .openai: return Self.openAIBaseURL
+        case .anthropic: return URL(string: "https://api.anthropic.com/v1")!
+        case .openrouter: return Self.openRouterBaseURL
+        case .openaiCompatible(_, let url): return url
+        }
+    }
 
     /// Human-readable label for UI surfaces.
     public var displayName: String {
@@ -143,7 +154,20 @@ extension CloudProvider {
 /// the project (cloud-providers.json, etc.). Repeating it preserves the
 /// "drop a file in Application Support to customize" UX across the app.
 public enum CloudRecommendedModels {
-    public static func suggestions(for provider: CloudProvider) -> [String] {
+    /// Precedence: a list the user wrote in `cloud-models.json`, then the
+    /// list last fetched from the provider (`CloudModelCatalog`), then the
+    /// bundled / hardcoded list.
+    public static func suggestions(
+        for provider: CloudProvider,
+        cacheDirectory: URL? = CloudModelCatalog.defaultCacheDirectory
+    ) -> [String] {
+        if let user = loader.resolveUserOverride(), let pinned = user.list(for: provider) {
+            return pinned
+        }
+        if let fetched = CloudModelCatalog.cached(for: provider, cacheDirectory: cacheDirectory)?.models,
+           !fetched.isEmpty {
+            return fetched
+        }
         let lists = effectiveLists()
         switch provider {
         case .openai: return lists.openai
@@ -185,9 +209,7 @@ public enum CloudRecommendedModels {
             "gpt-5.4-nano",
             "gpt-5.4-mini",
             "gpt-5.4",
-            "gpt-5.4-pro",
             "gpt-5.5",
-            "gpt-5.5-pro",
         ],
         anthropic: [
             "claude-opus-4-7",
@@ -223,6 +245,15 @@ public enum CloudRecommendedModels {
         var openai: [String]?
         var anthropic: [String]?
         var openrouter: [String]?
+
+        func list(for provider: CloudProvider) -> [String]? {
+            switch provider {
+            case .openai: return openai
+            case .anthropic: return anthropic
+            case .openrouter: return openrouter
+            case .openaiCompatible: return nil
+            }
+        }
     }
 
     /// Layered loader (user override → bundled → empty payload). The

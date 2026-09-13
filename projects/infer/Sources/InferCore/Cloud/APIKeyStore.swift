@@ -11,13 +11,14 @@ import Security
 /// code signature: other processes cannot request access via the user-consent
 /// dialog, and the items do not appear in Keychain Access.app.
 ///
-/// Caveat: the code-signing scoping above only holds for **signed builds with
-/// a stable Team ID**. Unsigned debug builds run under an ad-hoc signing
-/// identity, share that identity across rebuilds, and don't get the same
-/// isolation. Treat dev keychain entries as belonging to your dev
-/// environment, not as a security boundary.
+/// Ad-hoc-signed builds (`make bundle`, `swift test`, `infer-cli`) lack the
+/// entitlement that keychain requires, and every write fails with
+/// `errSecMissingEntitlement` (-34018). Those builds fall back to the login
+/// keychain. There, items are visible in Keychain Access.app and macOS may
+/// ask to allow access after each rebuild, because the ad-hoc signature
+/// changes. Reads and deletes consult both keychains.
 public enum APIKeyStore {
-    private static let service = "com.infer.apikey"
+    static let service = "com.infer.apikey"
 
     public enum KeychainError: Error, LocalizedError {
         case unexpectedStatus(OSStatus)
@@ -33,49 +34,29 @@ public enum APIKeyStore {
 
     /// Base query common to every operation. Must match exactly across add /
     /// update / read / delete, or the OS treats them as different items.
-    private static func baseQuery(for provider: CloudProvider) -> [String: Any] {
-        [
+    private static func baseQuery(
+        service: String,
+        account: String,
+        dataProtection: Bool
+    ) -> [String: Any] {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: provider.keychainAccount,
-            kSecUseDataProtectionKeychain as String: true,
+            kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: false,
         ]
+        if dataProtection {
+            query[kSecUseDataProtectionKeychain as String] = true
+        }
+        return query
     }
 
     public static func set(_ key: String, for provider: CloudProvider) throws {
-        guard let data = key.data(using: .utf8) else { throw KeychainError.encodingFailed }
-
-        let query = baseQuery(for: provider)
-        // `SecItemUpdate` doesn't upsert, so try update first and fall back to add.
-        let updateStatus = SecItemUpdate(
-            query as CFDictionary,
-            [kSecValueData as String: data] as CFDictionary
-        )
-        switch updateStatus {
-        case errSecSuccess:
-            return
-        case errSecItemNotFound:
-            var add = query
-            add[kSecValueData as String] = data
-            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-            let addStatus = SecItemAdd(add as CFDictionary, nil)
-            guard addStatus == errSecSuccess else {
-                throw KeychainError.unexpectedStatus(addStatus)
-            }
-        default:
-            throw KeychainError.unexpectedStatus(updateStatus)
-        }
+        try set(key, service: service, account: provider.keychainAccount)
     }
 
     public static func get(for provider: CloudProvider) -> String? {
-        var query = baseQuery(for: provider)
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var out: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &out)
-        guard status == errSecSuccess, let data = out as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        get(service: service, account: provider.keychainAccount)
     }
 
     public static func hasKey(for provider: CloudProvider) -> Bool {
@@ -83,7 +64,51 @@ public enum APIKeyStore {
     }
 
     public static func clear(for provider: CloudProvider) {
-        _ = SecItemDelete(baseQuery(for: provider) as CFDictionary)
+        clear(service: service, account: provider.keychainAccount)
+    }
+
+    // Service-parameterized so tests can use a throwaway service name.
+
+    static func set(_ key: String, service: String, account: String) throws {
+        guard let data = key.data(using: .utf8) else { throw KeychainError.encodingFailed }
+        var status = upsert(data, query: baseQuery(service: service, account: account, dataProtection: true))
+        if status == errSecMissingEntitlement {
+            status = upsert(data, query: baseQuery(service: service, account: account, dataProtection: false))
+        }
+        guard status == errSecSuccess else { throw KeychainError.unexpectedStatus(status) }
+    }
+
+    static func get(service: String, account: String) -> String? {
+        for dataProtection in [true, false] {
+            var query = baseQuery(service: service, account: account, dataProtection: dataProtection)
+            query[kSecReturnData as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            var out: CFTypeRef?
+            if SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess,
+               let data = out as? Data {
+                return String(data: data, encoding: .utf8)
+            }
+        }
+        return nil
+    }
+
+    static func clear(service: String, account: String) {
+        for dataProtection in [true, false] {
+            _ = SecItemDelete(baseQuery(service: service, account: account, dataProtection: dataProtection) as CFDictionary)
+        }
+    }
+
+    /// `SecItemUpdate` doesn't upsert, so update first and fall back to add.
+    private static func upsert(_ data: Data, query: [String: Any]) -> OSStatus {
+        let updateStatus = SecItemUpdate(
+            query as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        guard updateStatus == errSecItemNotFound else { return updateStatus }
+        var add = query
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        return SecItemAdd(add as CFDictionary, nil)
     }
 
     /// Resolve the active key for a provider: Keychain first, then the

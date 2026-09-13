@@ -211,6 +211,36 @@ extension ChatViewModel {
         }
     }
 
+    /// Fetch the active provider's model list into `CloudModelCatalog`.
+    /// Without `force`, skips when the cached list is still fresh. Failures
+    /// are logged; a forced (user-initiated) refresh also shows them.
+    func refreshCloudModelCatalog(force: Bool) {
+        guard !isRefreshingCloudModels,
+              let provider = makeCloudProvider(),
+              let resolved = APIKeyStore.resolve(for: provider)
+        else { return }
+        if !force, CloudModelCatalog.isFresh(CloudModelCatalog.cached(for: provider)) { return }
+        isRefreshingCloudModels = true
+        Task {
+            do {
+                let models = try await CloudModelCatalog.refresh(provider: provider, apiKey: resolved.key)
+                logs.log(.info, source: "cloud", message: "Fetched \(models.count) models from \(provider.displayName)")
+            } catch {
+                logs.log(
+                    .warning,
+                    source: "cloud",
+                    message: "Model list fetch failed for \(provider.displayName)",
+                    payload: error.localizedDescription
+                )
+                if force {
+                    errorMessage = "Could not fetch models from \(provider.displayName): \(error.localizedDescription)"
+                }
+            }
+            isRefreshingCloudModels = false
+            cloudModelCatalogRevision += 1
+        }
+    }
+
     /// Active model id for the current cloud provider. Read-only; setting
     /// goes through the provider-specific @Observable property so SwiftUI
     /// invalidates the right field.
