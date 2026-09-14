@@ -69,9 +69,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - **Cloud chat failed for OpenRouter, custom endpoints, `claude-opus-4-7`, and `gpt-5.5`, and the app could not store API keys.** Four independent faults:
+
   - `OpenAIClient` appended `/v1/chat/completions` to base URLs that already end in `/v1`, so OpenRouter (since it was added) and documented compat URLs such as `http://localhost:11434/v1` got 404. Base URLs now include the version segment, per the OpenAI SDK convention.
+
   - Newer models reject fields the clients always sent: non-default `temperature` (Opus 4.7), `temperature` / `top_p` when reasoning is on (gpt-5.x), and `thinking.type: enabled` (adaptive-only Claude models). On a 400 naming one of these, the client drops the field (or switches to adaptive thinking), resends, and remembers the change for that endpoint and model. Chosen over a model-id allowlist, which is what went stale here.
+
   - `APIKeyStore` used only the data-protection keychain, which returns `errSecMissingEntitlement` (-34018) for the ad-hoc-signed `make bundle` app; env vars do not reach apps launched with `open`. Writes now fall back to the login keychain on -34018, and reads and deletes check both.
+
   - `gpt-5.4-pro` and `gpt-5.5-pro` were removed from the bundled list; they are not served on `/v1/chat/completions`.
 
 - **`make clean-stack && make build-stack` deleted the four xcframeworks, then skipped the build that replaces them.** `clean-stack` cleared `thirdparty/.cache/fetch-stack.json` but not `build-stack.json` -- `marker_path()` namespaces the two kinds into separate files -- so the build reported a cache hit and `continue`d past `build_stack()`, which is where both the compile and the `dist/` -> `thirdparty/` copy live. The result was an empty `thirdparty/` and an exit 0. Nothing else in the repo removed that marker, leaving `manage.py build stack --force` as the only escape. `clean-stack` now clears both. The `build-stack` recipe's trailing "installed locally-built xcframeworks" echo is dropped with it: it was unconditional, so it printed on the skip path too, and `manage.py` already logs each install.
