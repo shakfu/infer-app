@@ -127,9 +127,16 @@ actor WhisperRunner {
     /// Decode the given audio file to 16 kHz mono Float32 and run whisper on
     /// it. Returns concatenated segment text, trimmed.
     func transcribeFile(url: URL, translate: Bool) throws -> String {
-        guard let ctx else { throw WhisperError.modelNotLoaded }
+        guard ctx != nil else { throw WhisperError.modelNotLoaded }
         let pcm = try AudioDecoder.decode16kMono(url: url)
         guard !pcm.isEmpty else { throw WhisperError.audioDecodeFailed("no audio samples") }
+        return try transcribe(samples: pcm, translate: translate)
+    }
+
+    /// Run whisper on 16 kHz mono Float32 samples. Returns concatenated
+    /// segment text, trimmed.
+    func transcribe(samples pcm: [Float], translate: Bool) throws -> String {
+        guard let ctx else { throw WhisperError.modelNotLoaded }
 
         let threads = Int32(max(1, ProcessInfo.processInfo.activeProcessorCount - 1))
         let status: Int32 = pcm.withUnsafeBufferPointer { buf in

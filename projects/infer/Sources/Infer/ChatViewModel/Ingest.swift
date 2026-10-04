@@ -86,13 +86,16 @@ extension ChatViewModel {
         // Register the workspace with the vector store (compatibility
         // check on subsequent scans). Hard-fails if the user swapped
         // embedding models out from under an existing corpus.
+        // The stored chunk geometry wins over the defaults, so an
+        // existing index never mixes chunk sizes.
+        let meta: VectorWorkspaceMeta
         do {
-            try await vectorStore.ensureInitialized(
+            meta = try await vectorStore.ensureInitialized(
                 workspaceId: workspaceId,
                 embeddingModel: EmbeddingModelRef.filename,
                 dimension: EmbeddingModelRef.expectedDimension,
-                chunkSize: 512,
-                chunkOverlap: 50
+                chunkSize: TextSplitter.defaultChunkSize,
+                chunkOverlap: TextSplitter.defaultChunkOverlap
             )
         } catch {
             let detail = String(describing: error)
@@ -118,7 +121,7 @@ extension ChatViewModel {
             return
         }
 
-        let splitter = TextSplitter(chunkSize: 512, chunkOverlap: 50)
+        let splitter = TextSplitter(chunkSize: meta.chunkSize, chunkOverlap: meta.chunkOverlap)
         var ingested = 0
         var skipped = 0
         var failed = 0
@@ -181,6 +184,7 @@ extension ChatViewModel {
             }
 
             let chunks = splitter.split(loaded.content)
+            let outline = SectionOutline(loaded.content)
             if chunks.isEmpty {
                 // Non-empty file that produced zero chunks — rare
                 // but possible (e.g., a file of only separator chars).
@@ -206,7 +210,8 @@ extension ChatViewModel {
                         content: chunk.content,
                         offsetStart: chunk.offsetStart,
                         offsetEnd: chunk.offsetEnd,
-                        embedding: vec
+                        embedding: vec,
+                        section: outline.label(for: chunk, overlap: splitter.chunkOverlap)
                     ))
                 } catch {
                     logs.log(

@@ -431,6 +431,7 @@ extension ChatViewModel {
         loadTask = Task {
             do {
                 try Task.checkCancellation()
+                await runner.setStopSequences(s.stopSequences)
                 try await runner.load(
                     path: path,
                     nCtx: UInt32(Swift.max(1024, s.nCtx)),
@@ -513,6 +514,7 @@ extension ChatViewModel {
             }
             do {
                 try Task.checkCancellation()
+                await runner.setStopSequences(s.stopSequences)
                 try await runner.load(
                     hfId: id,
                     systemPrompt: s.systemPrompt,

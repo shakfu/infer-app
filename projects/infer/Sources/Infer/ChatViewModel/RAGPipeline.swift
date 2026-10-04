@@ -363,7 +363,10 @@ extension ChatViewModel {
     ) -> String {
         var body = "Use the following context to answer the question. If the context doesn't contain the information needed, say so.\n\nContext:\n"
         for (i, hit) in chunks.enumerated() {
-            let label = (hit.sourceURI as NSString).lastPathComponent
+            // "file.md > Section > Subsection" orients the model on
+            // summarize / where-in-X questions.
+            let file = (hit.sourceURI as NSString).lastPathComponent
+            let label = hit.section.map { file + SectionOutline.separator + $0 } ?? file
             body += "\n[\(i + 1)] (\(label), chunk \(hit.ord))\n"
             body += hit.content
             body += "\n"

@@ -250,19 +250,22 @@ extension SidebarView {
         }
     }
 
+    /// Shared with the local Parameters section; the runners apply it
+    /// client-side via `StopSequenceMatcher`.
     @ViewBuilder
-    private var stopSequencesRow: some View {
+    var stopSequencesRow: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Stop sequences")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             TextEditor(text: Binding(
                 get: { draft.stopSequences.joined(separator: "\n") },
+                // Empty lines are kept so Return can start a new line;
+                // consumers drop them.
                 set: { s in
                     draft.stopSequences = s
                         .split(separator: "\n", omittingEmptySubsequences: false)
                         .map(String.init)
-                        .filter { !$0.isEmpty }
                 }
             ))
             .font(.caption.monospaced())

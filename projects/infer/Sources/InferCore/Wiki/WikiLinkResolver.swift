@@ -18,9 +18,9 @@ import Foundation
 ///     wiki references.
 ///   - Embeds (`![[Page]]`) — same target resolution as `[[Page]]`,
 ///     but render differently in the editor; treated identically here.
-///   - Folder paths in wikilinks (`[[folder/Page]]`) — the v1 wiki is
-///     flat, so we just match by stem; nested wikis are a Phase 2+
-///     concern.
+///
+/// Folder-qualified links (`[[folder/Page]]`) resolve by full path;
+/// bare names fall back to basename match (see `resolveKey`).
 public enum WikiLinkResolver {
     /// Result of one transitive walk: the included pages (deduped) and
     /// any link targets that didn't resolve to an existing page.

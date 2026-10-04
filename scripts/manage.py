@@ -582,7 +582,7 @@ FETCH_TARGETS: dict[str, Target] = {
     "stack": Target(
         name="stack",
         description="ggml-stack xcframeworks (Ggml + LlamaCpp + Whisper + StableDiffusion)",
-        default_inputs={"version": "0.4.2"},
+        default_inputs={"version": "0.6.0"},
         fetch=fetch_stack,
         outputs=[
             "thirdparty/Ggml.xcframework",

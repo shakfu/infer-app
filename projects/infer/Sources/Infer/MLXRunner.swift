@@ -6,6 +6,7 @@ import MLXLMCommon
 import MLXHuggingFace
 import HuggingFace
 import Tokenizers
+import InferCore
 
 enum MLXRunnerError: Error {
     case notLoaded
@@ -23,6 +24,9 @@ actor MLXRunner {
     /// Optional fixed seed. Applied via `MLXRandom.seed` immediately before
     /// each generation. nil = non-deterministic (MLX's default RNG state).
     private var seed: UInt64?
+    /// User stop sequences (`InferSettings.stopSequences`). Applied to
+    /// conversation turns only, not `generateOneShot`.
+    private var stopSequences: [String] = []
 
     /// Completed conversation turns. Does NOT include the in-flight user turn
     /// being sent — that is added only after the assistant reply streams to
@@ -115,6 +119,10 @@ actor MLXRunner {
         self.systemPrompt = systemPrompt?.isEmpty == true ? nil : systemPrompt
         self.genParams = GenerateParameters(temperature: temperature, topP: topP)
         self.seed = seed
+    }
+
+    func setStopSequences(_ stops: [String]) {
+        stopSequences = stops
     }
 
     /// Replace the runner's conversation history wholesale. Used by
@@ -214,9 +222,11 @@ actor MLXRunner {
             }
 
             isGenerating = true
+            let stops = stopSequences
             let task = Task {
                 defer { Task { self.finishGeneration() } }
                 var reply = ""
+                var matcher = StopSequenceMatcher(stops)
                 do {
                     let stream = session.streamResponse(
                         to: text,
@@ -228,8 +238,19 @@ actor MLXRunner {
                             continuation.finish(throwing: MLXRunnerError.cancelled)
                             return
                         }
-                        reply += piece
-                        continuation.yield(piece)
+                        let out = matcher.feed(piece)
+                        if !out.isEmpty {
+                            reply += out
+                            continuation.yield(out)
+                        }
+                        // Leaving the loop drops the iterator, which
+                        // cancels ChatSession's generation task.
+                        if matcher.stopped { break }
+                    }
+                    let tail = matcher.flush()
+                    if !tail.isEmpty {
+                        reply += tail
+                        continuation.yield(tail)
                     }
                     // Only record on clean completion; a cancelled/failed
                     // generation leaves history untouched so the next send

@@ -83,6 +83,9 @@ actor LlamaRunner {
     /// string `</think>` inside their reasoning.
     private var thinkOpenTokenId: llama_token?
     private var thinkCloseTokenId: llama_token?
+    /// User stop sequences (`InferSettings.stopSequences`). Applied to
+    /// conversation turns only, not `generateOneShot`.
+    private var stopSequences: [String] = []
     private var messages: [(role: String, content: String)] = []
     /// Length (in bytes) of the last template render with `add_ass=false`.
     /// Used to compute the prompt delta for each new turn.
@@ -322,6 +325,10 @@ actor LlamaRunner {
     }
 
     /// Update the system prompt. Triggers a conversation reset.
+    func setStopSequences(_ stops: [String]) {
+        stopSequences = stops
+    }
+
     func setSystemPrompt(_ sp: String?) {
         let normalized = (sp?.isEmpty == true) ? nil : sp
         self.systemPrompt = normalized
@@ -461,6 +468,7 @@ actor LlamaRunner {
             let handles = LlamaHandles(ctx: ctx, sampler: sampler, vocab: vocab)
             let openId = self.thinkOpenTokenId
             let closeId = self.thinkCloseTokenId
+            let stops = self.stopSequences
 
             Task.detached {
                 var assistant = ""
@@ -471,7 +479,8 @@ actor LlamaRunner {
                         prompt: promptDelta, maxTokens: maxTokens,
                         cancel: flag,
                         thinkOpenTokenId: openId,
-                        thinkCloseTokenId: closeId
+                        thinkCloseTokenId: closeId,
+                        stopSequences: stops
                     ) { piece in
                         continuation.yield(piece)
                         assistant += piece
@@ -553,6 +562,7 @@ actor LlamaRunner {
             let handles = LlamaHandles(ctx: ctx, sampler: sampler, vocab: vocab)
             let openId = self.thinkOpenTokenId
             let closeId = self.thinkCloseTokenId
+            let stops = self.stopSequences
 
             Task.detached {
                 var assistant = ""
@@ -563,7 +573,8 @@ actor LlamaRunner {
                         prompt: promptDelta, maxTokens: maxTokens,
                         cancel: flag,
                         thinkOpenTokenId: openId,
-                        thinkCloseTokenId: closeId
+                        thinkCloseTokenId: closeId,
+                        stopSequences: stops
                     ) { piece in
                         continuation.yield(piece)
                         assistant += piece
@@ -882,6 +893,7 @@ actor LlamaRunner {
         cancel: CancelFlag,
         thinkOpenTokenId: llama_token? = nil,
         thinkCloseTokenId: llama_token? = nil,
+        stopSequences: [String] = [],
         onPiece: (String) -> Void
     ) throws {
         // Tokenize and submit the prompt delta.
@@ -916,6 +928,15 @@ actor LlamaRunner {
         // Flushed at end-of-loop and on EOG.
         var pending: [UInt8] = []
 
+        // On a stop-sequence match the KV cache keeps the tokens of the
+        // stop text while the committed turn drops them; the same kind
+        // of drift as the never-decoded EOG token.
+        var matcher = StopSequenceMatcher(stopSequences)
+        func emit(_ s: String) {
+            let out = matcher.feed(s)
+            if !out.isEmpty { onPiece(out) }
+        }
+
         var produced = 0
         while produced < maxTokens {
             if cancel.isSet { throw LlamaError.cancelled }
@@ -941,9 +962,9 @@ actor LlamaRunner {
                 if !pending.isEmpty {
                     let str = String(decoding: pending, as: UTF8.self)
                     pending.removeAll()
-                    if !str.isEmpty { onPiece(str) }
+                    if !str.isEmpty { emit(str) }
                 }
-                onPiece(isThinkOpen
+                emit(isThinkOpen
                     ? ThinkBlockStreamFilter.openSentinel
                     : ThinkBlockStreamFilter.closeSentinel)
             } else {
@@ -955,10 +976,12 @@ actor LlamaRunner {
                         let chunk = pending.prefix(safe)
                         let str = String(decoding: chunk, as: UTF8.self)
                         pending.removeFirst(safe)
-                        if !str.isEmpty { onPiece(str) }
+                        if !str.isEmpty { emit(str) }
                     }
                 }
             }
+
+            if matcher.stopped { break }
 
             var one = [next]
             let rc = one.withUnsafeMutableBufferPointer { buf -> Int32 in
@@ -975,8 +998,10 @@ actor LlamaRunner {
         // rather than swallow.
         if !pending.isEmpty {
             let str = String(decoding: pending, as: UTF8.self)
-            if !str.isEmpty { onPiece(str) }
+            if !str.isEmpty { emit(str) }
         }
+        let tail = matcher.flush()
+        if !tail.isEmpty { onPiece(tail) }
     }
 
     /// Tokenize `text` against the vocab with `parse_special=true`. If the

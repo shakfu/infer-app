@@ -45,6 +45,16 @@ extension ChatViewModel {
             }
         }
 
+        if previous.stopSequences != new.stopSequences {
+            let llama = self.llama
+            let mlx = self.mlx
+            let stops = new.stopSequences
+            Task {
+                await llama.setStopSequences(stops)
+                await mlx.setStopSequences(stops)
+            }
+        }
+
         // Re-register the Quarto tool against the new override path so
         // the next render uses the right binary. Cheap (no process is
         // spawned at registration time) and safe to do unconditionally,

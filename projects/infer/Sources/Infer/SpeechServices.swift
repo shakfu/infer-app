@@ -4,9 +4,25 @@ import AVFoundation
 
 // MARK: - Speech recognition (dictation)
 
+/// Common verbs of the composer's dictation engines (`SpeechRecognizer`,
+/// `WhisperDictation`). `onUpdate` receives baseline + transcript so far.
+@MainActor
+protocol DictationEngine: AnyObject {
+    var state: SpeechRecognizer.State { get }
+    var isRecording: Bool { get }
+    var isStarting: Bool { get }
+    func start(baseline: String, onUpdate: @escaping (String) -> Void)
+    /// Stop capture; a final transcript may still arrive via `onUpdate`.
+    func stop()
+    /// Stop capture and return once the final transcript was delivered.
+    func stopAndFinalize() async
+    /// Stop without delivering further updates.
+    func cancel()
+}
+
 @MainActor
 @Observable
-final class SpeechRecognizer {
+final class SpeechRecognizer: DictationEngine {
     enum State: Equatable {
         case idle
         case unavailable(String)
@@ -31,6 +47,9 @@ final class SpeechRecognizer {
     /// Text already committed when recording started. Partial transcripts are
     /// appended to this baseline so the caller's field isn't clobbered.
     private var baseline: String = ""
+
+    /// Resumed by `teardown`, which runs after the final result or error.
+    private var finalizeWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(locale: Locale = Locale(identifier: "en-US")) {
         self.recognizer = SFSpeechRecognizer(locale: locale)
@@ -166,6 +185,27 @@ final class SpeechRecognizer {
         if case .recording = state { state = .idle }
     }
 
+    func stopAndFinalize() async {
+        guard task != nil else {
+            stop()
+            return
+        }
+        stop()
+        // The recognizer normally delivers its final result well within
+        // this; the timeout keeps a lost callback from hanging the caller.
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            self?.resumeFinalizeWaiters()
+        }
+        await withCheckedContinuation { finalizeWaiters.append($0) }
+    }
+
+    private func resumeFinalizeWaiters() {
+        let waiters = finalizeWaiters
+        finalizeWaiters = []
+        waiters.forEach { $0.resume() }
+    }
+
     /// Abort without waiting for a final callback; drops in-flight audio.
     func cancel() {
         task?.cancel()
@@ -180,6 +220,7 @@ final class SpeechRecognizer {
         request = nil
         task = nil
         if case .recording = state { state = .idle }
+        resumeFinalizeWaiters()
     }
 }
 

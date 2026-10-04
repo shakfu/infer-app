@@ -43,13 +43,19 @@ public struct TextChunk: Equatable, Sendable {
 public struct TextSplitter: Sendable {
     public let chunkSize: Int
     public let chunkOverlap: Int
+
+    /// Defaults for new workspaces. Sized for prose: a scene or section
+    /// spans several paragraphs, and 512 chars is about one. Existing
+    /// workspaces keep the values stored in `workspace_meta`.
+    public static let defaultChunkSize = 1024
+    public static let defaultChunkOverlap = 100
     public let separators: [String]
 
     public static let defaultSeparators: [String] = ["\n\n", "\n", ". ", " ", ""]
 
     public init(
-        chunkSize: Int = 512,
-        chunkOverlap: Int = 50,
+        chunkSize: Int = TextSplitter.defaultChunkSize,
+        chunkOverlap: Int = TextSplitter.defaultChunkOverlap,
         separators: [String] = TextSplitter.defaultSeparators
     ) {
         precondition(chunkSize > 0, "chunkSize must be > 0")

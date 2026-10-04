@@ -1,5 +1,6 @@
 import XCTest
 @testable import InferRAG
+import SQLiteVec
 
 /// Stateful coverage for `VectorStore` — the actor that owns
 /// `vectors.sqlite`. The pre-existing `InferRAGTests` cover only pure
@@ -116,6 +117,22 @@ final class VectorStoreTests: XCTestCase {
 
         let stored = try await store.workspaceMeta(workspaceId: 1)
         XCTAssertEqual(stored, first)
+    }
+
+    func testEnsureInitializedKeepsStoredChunkGeometry() async throws {
+        // Ingest splits with the returned geometry, so a later default
+        // change must not alter an existing workspace's chunk size.
+        let store = makeStore()
+        try await initialize(store, workspace: 1)
+        let later = try await store.ensureInitialized(
+            workspaceId: 1,
+            embeddingModel: model,
+            dimension: VectorStore.dimension,
+            chunkSize: 1024,
+            chunkOverlap: 100
+        )
+        XCTAssertEqual(later.chunkSize, 512)
+        XCTAssertEqual(later.chunkOverlap, 64)
     }
 
     func testWorkspaceMetaIsNilBeforeInitialization() async throws {
@@ -293,6 +310,60 @@ final class VectorStoreTests: XCTestCase {
         XCTAssertEqual(hits.count, 3)
         XCTAssertEqual(hits.first?.content, "bananas on axis one")
         XCTAssertEqual(hits.first?.distance ?? 1, 0, accuracy: 1e-5, "self-match is cosine distance 0")
+    }
+
+    /// SQLiteVec decodes every row with the first row's column types,
+    /// so a NULL `section` next to a non-NULL one must not crash or
+    /// drop values, whichever comes first.
+    func testSectionRoundTripsAcrossMixedNullRows() async throws {
+        let store = makeStore()
+        try await initialize(store, workspace: 1)
+        try await store.ingest(
+            workspaceId: 1, uri: "/s.md", contentHash: "hs", kind: "markdown",
+            chunks: [
+                VectorChunk(content: "intro", offsetStart: 0, offsetEnd: 5,
+                            embedding: embedding(axis: 0)),
+                VectorChunk(content: "schema", offsetStart: 5, offsetEnd: 11,
+                            embedding: embedding(axis: 1), section: "Plan > Schema"),
+            ]
+        )
+        for axis in [0, 1] {
+            let hits = try await store.search(
+                workspaceId: 1, queryEmbedding: embedding(axis: axis), queryText: "schema intro", k: 2
+            )
+            let byContent = Dictionary(uniqueKeysWithValues: hits.map { ($0.content, $0.section) })
+            XCTAssertEqual(byContent.count, 2)
+            XCTAssertEqual(byContent["intro"], .some(nil))
+            XCTAssertEqual(byContent["schema"], "Plan > Schema")
+        }
+    }
+
+    /// Databases created before the `section` column get it added at
+    /// bootstrap instead of failing every insert.
+    func testBootstrapAddsSectionColumnToOlderDatabase() async throws {
+        let url = directory.appending(path: "old.sqlite")
+        do {
+            let old = try Database(.uri(url.path))
+            _ = try await old.execute("""
+                CREATE TABLE chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id INTEGER NOT NULL,
+                    ord INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    offset_start INTEGER NOT NULL,
+                    offset_end INTEGER NOT NULL
+                )
+            """)
+        }
+        let store = VectorStore(url: url)
+        try await initialize(store, workspace: 1)
+        try await store.ingest(
+            workspaceId: 1, uri: "/o.md", contentHash: "ho", kind: "markdown",
+            chunks: [VectorChunk(content: "body", offsetStart: 0, offsetEnd: 4,
+                                 embedding: embedding(axis: 3), section: "Intro")]
+        )
+        let hits = try await store.search(workspaceId: 1, queryEmbedding: embedding(axis: 3), k: 1)
+        XCTAssertEqual(hits.first?.section, "Intro")
     }
 
     func testSearchRespectsK() async throws {

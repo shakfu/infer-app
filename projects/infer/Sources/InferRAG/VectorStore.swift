@@ -32,6 +32,9 @@ public struct VectorSearchHit: Sendable, Equatable {
     /// converting to similarity if needed (`1 - distance / 2` under
     /// cosine, roughly).
     public let distance: Double
+    /// Heading path of the chunk (`SectionOutline`). Nil for chunks
+    /// without a heading or ingested before the column existed.
+    public let section: String?
 
     public init(
         chunkId: Int64,
@@ -39,7 +42,8 @@ public struct VectorSearchHit: Sendable, Equatable {
         sourceURI: String,
         ord: Int,
         content: String,
-        distance: Double
+        distance: Double,
+        section: String? = nil
     ) {
         self.chunkId = chunkId
         self.sourceId = sourceId
@@ -47,6 +51,7 @@ public struct VectorSearchHit: Sendable, Equatable {
         self.ord = ord
         self.content = content
         self.distance = distance
+        self.section = section
     }
 }
 
@@ -84,12 +89,20 @@ public struct VectorChunk: Sendable {
     public let offsetStart: Int
     public let offsetEnd: Int
     public let embedding: [Float]
+    public let section: String?
 
-    public init(content: String, offsetStart: Int, offsetEnd: Int, embedding: [Float]) {
+    public init(
+        content: String,
+        offsetStart: Int,
+        offsetEnd: Int,
+        embedding: [Float],
+        section: String? = nil
+    ) {
         self.content = content
         self.offsetStart = offsetStart
         self.offsetEnd = offsetEnd
         self.embedding = embedding
+        self.section = section
     }
 }
 
@@ -281,9 +294,17 @@ public actor VectorStore {
                 ord INTEGER NOT NULL,
                 content TEXT NOT NULL,
                 offset_start INTEGER NOT NULL,
-                offset_end INTEGER NOT NULL
+                offset_end INTEGER NOT NULL,
+                section TEXT
             )
         """)
+        // `section` postdates the first schema. Add it to databases
+        // created before it; their existing chunks keep NULL until
+        // re-ingested.
+        let chunkColumns = try await db.query("SELECT name FROM pragma_table_info('chunks')")
+        if !chunkColumns.contains(where: { ($0["name"] as? String) == "section" }) {
+            try await db.execute("ALTER TABLE chunks ADD COLUMN section TEXT")
+        }
         try await db.execute("""
             CREATE INDEX IF NOT EXISTS idx_chunks_source
                 ON chunks(source_id, ord)
@@ -504,10 +525,13 @@ public actor VectorStore {
                 try await db.execute(
                     """
                         INSERT INTO chunks
-                            (source_id, ord, content, offset_start, offset_end)
-                            VALUES (?, ?, ?, ?, ?)
+                            (source_id, ord, content, offset_start, offset_end, section)
+                            VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    params: [sourceId, ord, chunk.content, chunk.offsetStart, chunk.offsetEnd]
+                    params: [
+                        sourceId, ord, chunk.content, chunk.offsetStart, chunk.offsetEnd,
+                        (chunk.section as (any Sendable)?) ?? (NSNull() as any Sendable),
+                    ]
                 )
                 let chunkId = await db.lastInsertRowId
                 // vec_items.rowid mirrors chunks.id so the JOIN in
@@ -789,6 +813,7 @@ public actor VectorStore {
                    chunks.source_id AS source_id,
                    chunks.ord AS ord,
                    chunks.content AS content,
+                   COALESCE(chunks.section, '') AS section,
                    sources.uri AS uri,
                    v.distance AS distance
                 FROM vec_items v
@@ -834,6 +859,7 @@ public actor VectorStore {
                    chunks.source_id AS source_id,
                    chunks.ord AS ord,
                    chunks.content AS content,
+                   COALESCE(chunks.section, '') AS section,
                    sources.uri AS uri,
                    vec_distance_cosine(
                        (SELECT embedding FROM vec_items WHERE rowid = chunks.id),
@@ -851,6 +877,10 @@ public actor VectorStore {
         return rows.compactMap(Self.decodeHit)
     }
 
+    /// SQLiteVec reads every row with the column types of the first
+    /// row, so a nullable TEXT column crashes or drops values across
+    /// mixed rows. The queries COALESCE `section` to '' for that reason.
+    ///
     /// Row → `VectorSearchHit` with the same double-typed-fallback
     /// dance as elsewhere in this file (SQLiteVec returns INTEGER
     /// columns as `Int`, but some paths surface them as `Int64`).
@@ -869,7 +899,8 @@ public actor VectorStore {
             sourceURI: uri,
             ord: ord,
             content: content,
-            distance: distance
+            distance: distance,
+            section: (row["section"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 

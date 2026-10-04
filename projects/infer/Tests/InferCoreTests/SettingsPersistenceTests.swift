@@ -64,6 +64,16 @@ final class SettingsPersistenceTests: XCTestCase {
         XCTAssertEqual(loaded.maxTokens, InferSettings.defaults.maxTokens)
     }
 
+    /// The sidebar editor keeps blank lines so Return works; they must
+    /// not reach a provider as empty stop strings, nor survive a reload.
+    func testBlankStopSequenceLinesAreDropped() {
+        var s = InferSettings.defaults
+        s.stopSequences = ["END", "", "---", ""]
+        XCTAssertEqual(s.cloudParams().stopSequences, ["END", "---"])
+        s.save(to: defaults)
+        XCTAssertEqual(InferSettings.load(from: defaults).stopSequences, ["END", "---"])
+    }
+
     func testSaveOverwritesPreviousValues() {
         InferSettings(systemPrompt: "a", temperature: 0.1, topP: 0.2, maxTokens: 10).save(to: defaults)
         InferSettings(systemPrompt: "b", temperature: 0.9, topP: 0.8, maxTokens: 999).save(to: defaults)

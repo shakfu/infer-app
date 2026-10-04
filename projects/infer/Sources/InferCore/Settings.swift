@@ -104,6 +104,9 @@ public enum PersistKey {
     public static let continuousVoice = "infer.continuousVoice"
     public static let voiceSendSilenceSeconds = "infer.voiceSendSilenceSeconds"
     public static let bargeInEnabled = "infer.bargeInEnabled"
+    public static let dictationBackend = "infer.dictationBackend"
+    public static let dictationMode = "infer.dictationMode"
+    public static let pushToTalkKey = "infer.pushToTalkKey"
     public static let ggufDirectory = "infer.ggufDirectory"
 
     /// Cloud-backend selections. Persisted separately from the local
@@ -479,7 +482,7 @@ public struct InferSettings: Equatable, Sendable {
             topP: topP,
             maxTokens: maxTokens,
             seed: seed,
-            stopSequences: stopSequences,
+            stopSequences: stopSequences.filter { !$0.isEmpty },
             thinkingBudgetTokens: (cloudExtendedThinkingEnabled && thinkingBudget > 0) ? thinkingBudget : nil,
             reasoningEffort: reasoningEffort,
             promptCacheKey: promptCacheKey,

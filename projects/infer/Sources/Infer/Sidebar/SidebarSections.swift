@@ -186,6 +186,11 @@ extension SidebarView {
 
             seedRow
 
+            // Cloud shows this row in its own provider section.
+            if vm.backend != .cloud {
+                stopSequencesRow
+            }
+
             DisclosureGroup(isExpanded: $showSystemPrompt) {
                 TextEditor(text: $draft.systemPrompt)
                     .font(.body)
@@ -202,7 +207,17 @@ extension SidebarView {
                     Text("System prompt").font(.caption).foregroundStyle(.secondary)
                     WorkspaceOverrideClearButton(field: .systemPrompt, vm: vm)
                     Spacer()
+                    systemPromptPresetMenu
                 }
+            }
+            .alert("Save system prompt as persona", isPresented: $showSavePresetAlert) {
+                TextField("Name", text: $presetName)
+                Button("Save") {
+                    vm.saveSystemPromptAsPersona(name: presetName, systemPrompt: draft.systemPrompt)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Saved prompts appear under Personas in the Agents library, where they can be deleted.")
             }
 
             modelLoadParamsGroup
@@ -218,6 +233,35 @@ extension SidebarView {
             .padding(.top, 4)
         }
         }
+    }
+
+    /// Preset picker: loads a persona's system prompt into the draft
+    /// (Apply still commits it), or saves the draft as a new persona.
+    var systemPromptPresetMenu: some View {
+        Menu {
+            let personas = vm.availableAgents.filter { $0.kind == .persona && !$0.isDefault }
+            ForEach(personas) { listing in
+                Button(listing.name) {
+                    Task {
+                        if let prompt = await vm.personaSystemPrompt(id: listing.id) {
+                            draft.systemPrompt = prompt
+                        }
+                    }
+                }
+            }
+            if !personas.isEmpty { Divider() }
+            Button("Save current as persona…") {
+                presetName = ""
+                showSavePresetAlert = true
+            }
+            .disabled(draft.systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        } label: {
+            Image(systemName: "text.badge.star")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("System prompt presets")
     }
 
     /// llama.cpp load-time parameters (context size, batch size). The
@@ -357,6 +401,8 @@ extension SidebarView {
             storageKey: "sidebar.fold.voice.realtime"
         ) {
         VStack(alignment: .leading, spacing: 10) {
+            dictationControls
+
             Toggle("Read responses aloud", isOn: Binding(
                 get: { vm.ttsEnabled },
                 set: { vm.setTTSEnabled($0) }
@@ -468,13 +514,13 @@ extension SidebarView {
             }
             .padding(.top, 4)
 
-            if !vm.speechRecognizer.supportsOnDevice {
+            if vm.dictationBackend == .system, !vm.speechRecognizer.supportsOnDevice {
                 Text("On-device dictation unavailable for this locale.")
                     .font(.caption2)
                     .foregroundStyle(.orange)
             }
 
-            switch vm.speechRecognizer.state {
+            switch vm.dictation.state {
             case .error(let msg):
                 Text(msg)
                     .font(.caption2)
@@ -499,6 +545,61 @@ extension SidebarView {
             Divider().padding(.vertical, 4)
 
             whisperSubsection
+        }
+    }
+
+    /// Engine (System / Whisper), arming mode, and push-to-talk key.
+    @ViewBuilder
+    var dictationControls: some View {
+        HStack {
+            Text("Dictation engine").font(.caption)
+            Spacer()
+            Picker("", selection: Binding(
+                get: { vm.dictationBackend },
+                set: { vm.dictationBackend = $0 }
+            )) {
+                ForEach(DictationBackend.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+        }
+        if vm.dictationBackend == .whisper {
+            Text("Uses the model from File Transcription (\(vm.whisperModels.selected.label)). Partial text updates every 1.5 s.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        HStack {
+            Text("Mic mode").font(.caption)
+            Spacer()
+            Picker("", selection: Binding(
+                get: { vm.dictationMode },
+                set: { vm.dictationMode = $0 }
+            )) {
+                ForEach(DictationMode.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+        }
+        if vm.dictationMode == .pushToTalk {
+            HStack {
+                Text("Hold key").font(.caption)
+                Spacer()
+                Picker("", selection: Binding(
+                    get: { vm.pushToTalkKey },
+                    set: { vm.pushToTalkKey = $0 }
+                )) {
+                    ForEach(PushToTalkKey.allCases, id: \.self) { Text($0.label).tag($0) }
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
+            Text("Hold while Infer is active to dictate; release to send. Pressing another key during the hold cancels, so the key still works in shortcuts.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

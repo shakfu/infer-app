@@ -50,12 +50,12 @@ extension ChatViewModel {
         Task { [weak self] in
             do {
                 try await self?.ensureEmbeddingModelLoaded()
-                try await store.ensureInitialized(
+                let meta = try await store.ensureInitialized(
                     workspaceId: workspaceId,
                     embeddingModel: EmbeddingModelRef.filename,
                     dimension: EmbeddingModelRef.expectedDimension,
-                    chunkSize: 512,
-                    chunkOverlap: 50
+                    chunkSize: TextSplitter.defaultChunkSize,
+                    chunkOverlap: TextSplitter.defaultChunkOverlap
                 )
                 // Replace the prior source row for this URI before
                 // ingesting the new content. Empty bodies just clear
@@ -73,8 +73,9 @@ extension ChatViewModel {
                     return
                 }
 
-                let splitter = TextSplitter(chunkSize: 512, chunkOverlap: 50)
+                let splitter = TextSplitter(chunkSize: meta.chunkSize, chunkOverlap: meta.chunkOverlap)
                 let chunks = splitter.split(content)
+                let outline = SectionOutline(content)
                 guard !chunks.isEmpty else { return }
 
                 var vectorChunks: [VectorChunk] = []
@@ -85,7 +86,8 @@ extension ChatViewModel {
                         content: chunk.content,
                         offsetStart: chunk.offsetStart,
                         offsetEnd: chunk.offsetEnd,
-                        embedding: vec
+                        embedding: vec,
+                        section: outline.label(for: chunk, overlap: splitter.chunkOverlap)
                     ))
                 }
                 let hash = SourceLoader.contentHash(of: Data(content.utf8))

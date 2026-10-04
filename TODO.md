@@ -6,28 +6,6 @@ Roughly prioritized by user-facing impact / effort ratio. Items within a tier ar
 
 ## High
 
-### P1 — feature completeness
-
-- [ ] **Per-workspace wiki — Phase 4f (rename + sidebar search + sort).** Rename via context menu on rows (today rename happens implicitly via title edit on the page; folder rename has no path). Sidebar fuzzy-search field at the top of the tree (filter pages by basename + folder name; navigate with Cmd+K-style fuzzy picker). Sort options on the toolbar — alphabetical / modified date / pin-first. Batched single-pass wikilink rewrite on `moveFolder` so very-large folder moves stay O(N) instead of O(N²) in pages.
-
-- [ ] **Wiki editor — STTextView migration.** Swap `MarkdownTextView`'s NSTextView base for [STTextView](https://github.com/krzyzanowskim/STTextView) (TextKit 2 + decoration-provider API designed for styled markdown overlays; same author as the markdown-focused MarkEdit). Pays for itself if/when we layer additional in-editor features beyond the current inline render — hover previews, image embeds, math-block rendering, etc. — because TextKit 2's range / hit-testing APIs and the plugin / decoration system are cleaner than the hand-rolled `NSTextStorageDelegate` we maintain today. Cost: re-implement bidirectional binding, `[[` trigger detection, popover cursor-rect anchoring, Cmd-click navigation, and the inline markdown styling delegate against STTextView's APIs. Risk: re-introduce regressions around drag-vs-tap, IME, undo, find — all of which the current NSTextView gives us free. Don't do this for cleanliness alone; only pull the trigger when committing to the next round of editor features.
-
-- [ ] **Per-workspace wiki — Phase 3 (polish).** `[[wikilink]]` autocomplete in the editor (NSTextView delegate matching `[[` prefix → page-id picker), live-updating backlinks panel as edits land, drag-to-rename with link rewrite, optional inject-budget visualisation in the sidebar ("12 pages / 8.2k tokens / 3 dropped"), per-folder wiki structure (today's storage layer is flat — nested pages would need link resolution to handle `[[folder/Page]]`).
-
-- [ ] **System prompt presets.** Named library of system prompts (Coding Assistant, Research, Concise, Creative, etc.). Small JSON file in `Application Support/` + a picker in the sidebar's System Prompt disclosure. Save-current-as and delete actions. Pairs naturally with the existing System Prompt field.
-
-- [ ] **Stop sequences.** User-defined strings in settings that halt generation when emitted. llama has per-token stop handling in the sampler loop; MLX takes `extraEOSTokens`. Handy for forcing structured output boundaries (e.g. `---`, `</answer>`).
-
-- [ ] **Hold-to-talk (push-to-talk).** Alternative to the current mic-toggle: hold a hotkey (Fn or a configurable modifier) while Infer is key window → mic on for the hold duration, release → stop + submit. Add a sidebar setting "Dictation mode: Toggle | Push-to-talk". Toggle mode is easy to forget is on; PTT is what most dictation-savvy users expect.
-
-- [ ] **Whisper.cpp as live-mic ASR backend.** Extends the file-transcription work above to the live mic path. Today the mic button is wired exclusively to `SFSpeechRecognizer`; swap it behind a segmented control (SFSpeechRecognizer vs Whisper) in the Speech sidebar section so the existing mic button can drive either backend. Needs a streaming/chunked capture path feeding `WhisperRunner` (SFSpeechRecognizer is continuous; whisper.cpp is batch — likely capture to a rolling buffer and transcribe on stop, or run fixed-window chunks for partial results).
-
-### P1 — RAG quality
-
-- [ ] **Larger chunks for prose.** 512 chars ≈ one paragraph; a scene or section spans 3–5. For narrative or argumentative documents, 1024/100 often retrieves better context. Changes existing indexes, forces re-ingest. Could be a per-workspace setting later; for MVP, bump the default and leave the workspace metadata's `chunk_size` column as the source of truth.
-
-- [ ] **Structural / section metadata.** Detect markdown `## Heading` boundaries during ingestion and store heading paths alongside chunks (e.g. `rag.plan.md > 3.1 Schema`). Inject the path as a prefix in the prompt's context block so the model sees "chunk from section X of file Y" — dramatically improves orientation on "summarize" / "where in X" queries. For plain `.txt` novels, detect `Chapter N` or `PART N` markers with a fallback regex. Medium effort; changes the chunk schema.
-
 ## Medium
 
 ### High-value, higher implementation cost

@@ -382,15 +382,20 @@ struct WikiSidebar: View {
             .disabled(vm.activeWorkspaceId == nil)
 
             if let stats = vm.wikiContextStats {
+                // Pages are never dropped to fit the budget; over-budget
+                // is a warning to unpin, not a truncation.
+                let overBudget = stats.approximateTokens > vm.wikiBudgetTokens
                 HStack(spacing: 4) {
-                    Image(systemName: "pin.fill")
+                    Image(systemName: overBudget ? "exclamationmark.triangle.fill" : "pin.fill")
                         .font(.caption2)
                         .foregroundStyle(.orange)
-                    Text("\(stats.pageCount)/\(WikiStore.maxPinCount) pinned · ~\(formattedTokens(stats.approximateTokens)) tok every turn")
+                    Text("\(stats.pageCount)/\(WikiStore.maxPinCount) pinned · ~\(formattedTokens(stats.approximateTokens))/\(formattedTokens(vm.wikiBudgetTokens)) tok every turn")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(overBudget ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
                 }
-                .help("Pinned pages always inject. The rest of the wiki is searchable via RAG (when the embedding model is downloaded).")
+                .help(overBudget
+                    ? "Pinned pages exceed the wiki token budget. All of them still inject every turn; unpin some to cut the cost."
+                    : "Pinned pages always inject. The rest of the wiki is searchable via RAG (when the embedding model is downloaded).")
             }
             Spacer()
         }

@@ -145,7 +145,11 @@ let package = Package(
         ),
         .testTarget(
             name: "InferRAGTests",
-            dependencies: ["InferRAG"],
+            dependencies: [
+                "InferRAG",
+                // Direct `Database` access to build a pre-migration schema.
+                .product(name: "SQLiteVec", package: "SQLiteVec"),
+            ],
             path: "Tests/InferRAGTests"
         ),
         // Pure-Swift nucleus of the chat view-model that *can* live

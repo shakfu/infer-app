@@ -441,7 +441,9 @@ final class ChatViewModel {
     let speechRecognizer = SpeechRecognizer()
     let speechSynthesizer = SpeechSynthesizer()
     let bargeInMonitor = TTSBargeInMonitor()
-    let whisperModels = WhisperModelManager()
+    let whisperModels: WhisperModelManager
+    let whisperDictation: WhisperDictation
+    let pushToTalkMonitor = PushToTalkMonitor()
     let audioRecorder = AudioFileRecorder()
 
     /// True while a dropped audio file is being transcribed. Mutually
@@ -624,6 +626,44 @@ final class ChatViewModel {
             }
         }
     }
+    var dictationBackend: DictationBackend = UserDefaults.standard.string(forKey: PersistKey.dictationBackend)
+        .flatMap(DictationBackend.init(rawValue:)) ?? .system {
+        didSet {
+            guard dictationBackend != oldValue else { return }
+            UserDefaults.standard.set(dictationBackend.rawValue, forKey: PersistKey.dictationBackend)
+            // The other engine may be mid-recording; it is no longer
+            // reachable through `dictation`.
+            cancelSilenceTimer()
+            engine(for: oldValue).cancel()
+        }
+    }
+    var dictationMode: DictationMode = UserDefaults.standard.string(forKey: PersistKey.dictationMode)
+        .flatMap(DictationMode.init(rawValue:)) ?? .toggle {
+        didSet {
+            UserDefaults.standard.set(dictationMode.rawValue, forKey: PersistKey.dictationMode)
+            configurePushToTalk()
+        }
+    }
+    var pushToTalkKey: PushToTalkKey = UserDefaults.standard.string(forKey: PersistKey.pushToTalkKey)
+        .flatMap(PushToTalkKey.init(rawValue:)) ?? .rightOption {
+        didSet {
+            UserDefaults.standard.set(pushToTalkKey.rawValue, forKey: PersistKey.pushToTalkKey)
+            configurePushToTalk()
+        }
+    }
+    /// Composer text before a push-to-talk hold, restored on a chord.
+    private var pushToTalkBaseline: String?
+
+    /// The engine behind the mic button, push-to-talk, and voice loop.
+    var dictation: any DictationEngine { engine(for: dictationBackend) }
+
+    private func engine(for backend: DictationBackend) -> any DictationEngine {
+        switch backend {
+        case .system: return speechRecognizer
+        case .whisper: return whisperDictation
+        }
+    }
+
     /// Pending silence-timeout submit. Armed on each partial transcript;
     /// fires `send()` if it survives `voiceSendSilenceSeconds` of no updates.
     private var silenceTimer: Task<Void, Never>?
@@ -660,6 +700,9 @@ final class ChatViewModel {
         self.wiki = wiki
         self.logs = logs
         self.runnerOverride = runner
+        let whisperModels = WhisperModelManager()
+        self.whisperModels = whisperModels
+        self.whisperDictation = WhisperDictation(models: whisperModels)
         // Build the agent controller with a warning sink that routes
         // hook failures into the Console. Keeps a strong ref to the
         // log center via `[weak logs]` — `logs` outlives the
@@ -726,14 +769,16 @@ final class ChatViewModel {
     /// `voiceSendSilenceSeconds` is set. Otherwise partial transcripts
     /// overwrite `input` each update.
     func startDictation() {
-        guard !speechRecognizer.isRecording, !speechRecognizer.isStarting else { return }
+        let dictation = self.dictation
+        guard !dictation.isRecording, !dictation.isStarting else { return }
         cancelSilenceTimer()
-        speechRecognizer.start(baseline: input) { [weak self] text in
+        dictation.start(baseline: input) { [weak self] text in
             guard let self else { return }
             if let stripped = Self.stripTrailingTrigger(text, phrase: self.voiceSendPhrase) {
                 self.cancelSilenceTimer()
+                self.pushToTalkBaseline = nil
                 self.input = stripped
-                self.speechRecognizer.cancel()
+                dictation.cancel()
                 if self.modelLoaded, !stripped.isEmpty { self.send() }
             } else {
                 self.input = text
@@ -756,8 +801,9 @@ final class ChatViewModel {
                 guard let self else { return }
                 self.silenceTimer = nil
                 let text = self.input.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty, self.modelLoaded, self.speechRecognizer.isRecording else { return }
-                self.speechRecognizer.cancel()
+                guard !text.isEmpty, self.modelLoaded, self.dictation.isRecording else { return }
+                self.pushToTalkBaseline = nil
+                self.dictation.cancel()
                 self.send()
             }
         }
@@ -771,11 +817,55 @@ final class ChatViewModel {
     /// Toggle dictation the way the mic button does — the existing inline
     /// logic in `ChatComposer`'s `micButton` is now in one place.
     func toggleDictation() {
-        if speechRecognizer.isRecording {
+        if dictation.isRecording {
             cancelSilenceTimer()
-            speechRecognizer.stop()
+            dictation.stop()
         } else {
             startDictation()
+        }
+    }
+
+    /// Install or remove the push-to-talk key monitor to match settings.
+    /// Called from the window's `onAppear` rather than `init`, so a VM
+    /// built under test never installs an `NSEvent` monitor.
+    func configurePushToTalk() {
+        if dictationMode == .pushToTalk {
+            pushToTalkMonitor.install(key: pushToTalkKey) { [weak self] action in
+                self?.handlePushToTalk(action)
+            }
+        } else {
+            pushToTalkMonitor.uninstall()
+        }
+    }
+
+    func handlePushToTalk(_ action: PushToTalkGesture.Action) {
+        switch action {
+        case .begin:
+            guard !dictation.isRecording, !dictation.isStarting else { return }
+            pushToTalkBaseline = input
+            startDictation()
+        case .chord:
+            // The modifier was part of a shortcut or a typed character.
+            guard let baseline = pushToTalkBaseline else { return }
+            pushToTalkBaseline = nil
+            cancelSilenceTimer()
+            dictation.cancel()
+            input = baseline
+        case .end:
+            // Nil when a trigger phrase or the silence timer already sent.
+            guard let baseline = pushToTalkBaseline else { return }
+            pushToTalkBaseline = nil
+            cancelSilenceTimer()
+            let dictation = self.dictation
+            Task { [weak self] in
+                await dictation.stopAndFinalize()
+                guard let self else { return }
+                // Unchanged input means nothing was transcribed; do not
+                // send a draft the user typed before the hold.
+                let text = self.input.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard self.modelLoaded, !text.isEmpty, self.input != baseline else { return }
+                self.send()
+            }
         }
     }
 

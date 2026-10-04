@@ -192,8 +192,8 @@ extension ChatView {
     }
 
     var micButton: some View {
-        let recording = vm.speechRecognizer.isRecording
-        let starting = vm.speechRecognizer.isStarting
+        let recording = vm.dictation.isRecording
+        let starting = vm.dictation.isStarting
         let active = recording || starting
         return Button {
             vm.toggleDictation()
@@ -206,7 +206,7 @@ extension ChatView {
         }
         .buttonStyle(.borderless)
         .disabled(starting && !recording)
-        .help(recording ? "Stop dictation" : "Dictate (on-device)")
+        .help(recording ? "Stop dictation" : "Dictate (\(vm.dictationBackend.label))")
     }
 
     var collapsedField: some View {

@@ -813,10 +813,42 @@ extension ChatViewModel {
             return
         }
 
+        writeUserPersona(payload, toast: "Duplicated \"\(listing.name)\"")
+    }
+
+    /// System prompt of a JSON-backed persona, for loading into the
+    /// Default agent's editor as a preset. Nil for compiled agents.
+    func personaSystemPrompt(id: AgentID) async -> String? {
+        (await agentController.registry.agent(id: id) as? PromptAgent)?.authoredSystemPrompt
+    }
+
+    /// Save `systemPrompt` as a new user persona named `name`. Personas
+    /// double as the system-prompt preset library, so presets get the
+    /// Agents library's listing, reveal, and delete actions.
+    func saveSystemPromptAsPersona(name: String, systemPrompt: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let timestamp = Int(Date().timeIntervalSince1970)
+        let payload = PromptAgent(
+            id: AgentID("user.preset.\(timestamp)"),
+            kind: .persona,
+            metadata: AgentMetadata(
+                name: trimmed,
+                description: "Saved from the System prompt field.",
+                author: "user"
+            ),
+            requirements: AgentRequirements(),
+            decodingParams: DecodingParams(from: settings),
+            systemPrompt: systemPrompt
+        )
+        writeUserPersona(payload, toast: "Saved \"\(trimmed)\"")
+    }
+
+    private func writeUserPersona(_ payload: PromptAgent, toast: String) {
         let dir = (payload.kind == .agent)
             ? Self.userAgentsDirectory()
             : Self.userPersonasDirectory()
-        let fileName = copyId.rawValue.replacingOccurrences(of: "/", with: "_")
+        let fileName = payload.id.rawValue.replacingOccurrences(of: "/", with: "_")
         let fileURL = dir.appendingPathComponent("\(fileName).json")
         do {
             try FileManager.default.createDirectory(
@@ -833,7 +865,7 @@ extension ChatViewModel {
 
         bootstrapAgents()
         toasts.show(
-            "Duplicated \"\(listing.name)\" → \(fileURL.lastPathComponent)",
+            "\(toast) → \(fileURL.lastPathComponent)",
             actionTitle: "Reveal",
             action: {
                 NSWorkspace.shared.activateFileViewerSelecting([fileURL])

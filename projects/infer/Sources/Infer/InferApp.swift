@@ -38,6 +38,7 @@ struct InferApp: App {
                 .onAppear {
                     appDelegate.chatVM = chatVM
                     chatVM.autoLoadLastModel()
+                    chatVM.configurePushToTalk()
                 }
         }
         .defaultSize(width: 780, height: 640)
