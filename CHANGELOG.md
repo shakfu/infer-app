@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **`STACK_VERSION` 0.6.0 -> 0.7.0** (also the `manage.py fetch stack` default). Brings llama.cpp `b11669`. Verified by `make build`, `make test` and `make test-integration`. The stale `thirdparty/.stack-0.6.0` marker is removed.
+
 ## [0.6.0]
 
 ### Added
