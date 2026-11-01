@@ -43,19 +43,33 @@ public func decodeHTMLEntities(_ s: String) -> String {
     return out
 }
 
-/// Reduces an HTML page to readable text. Drops non-content elements, keeps
-/// block boundaries as line breaks, and collapses whitespace. A regex pass
-/// over a real parser, so page navigation text stays in the result.
+/// Reduces an HTML page to readable text: the `<main>` or `<article>` content
+/// when the page marks one, otherwise the body without its header and footer.
+/// Uses regexes over a parser because no HTML5 parser is available here, so a
+/// nested `<nav>` can leave a fragment behind.
 public func htmlToPlainText(_ html: String) -> String {
-    var text = html
-    let rules: [(String, String)] = [
-        ("(?s)<!--.*?-->", ""),
-        ("(?is)<(script|style|head|noscript|template|svg)\\b.*?</\\1\\s*>", ""),
-        ("(?i)</?(p|div|br|hr|li|ul|ol|tr|table|h[1-6]|section|article|header|footer|nav|main|blockquote|pre)\\b[^>]*>", "\n"),
-    ]
-    for (pattern, replacement) in rules {
-        text = text.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+    let page = html.replacingOccurrences(of: "(?s)<!--.*?-->", with: "", options: .regularExpression)
+    for tag in ["main", "article"] {
+        if let range = page.range(of: "(?is)<\(tag)\\b[^>]*>.*</\(tag)\\s*>", options: .regularExpression) {
+            let text = plainText(String(page[range]), dropping: [])
+            if !text.isEmpty { return text }
+        }
     }
+    return plainText(page, dropping: ["header", "footer"])
+}
+
+private func plainText(_ html: String, dropping extraElements: [String]) -> String {
+    let dropped = ["script", "style", "head", "noscript", "template", "svg", "nav", "aside", "form", "button", "select"] + extraElements
+    var text = html.replacingOccurrences(
+        of: "(?is)<(\(dropped.joined(separator: "|")))\\b.*?</\\1\\s*>",
+        with: "",
+        options: .regularExpression
+    )
+    text = text.replacingOccurrences(
+        of: "(?i)</?(p|div|br|hr|li|ul|ol|tr|table|h[1-6]|section|article|header|footer|main|blockquote|pre)\\b[^>]*>",
+        with: "\n",
+        options: .regularExpression
+    )
     text = decodeHTMLEntities(stripHTMLTags(text))
     text = text.replacingOccurrences(of: "[ \\t\u{00A0}]+", with: " ", options: .regularExpression)
     text = text.replacingOccurrences(of: "(?m)^ | $", with: "", options: .regularExpression)

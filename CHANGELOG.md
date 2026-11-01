@@ -12,7 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **`whisper.transcribe` tool, enabled for the Scratch persona.** Transcribes a sandboxed audio file with the model selected in the Speech sidebar. Files over 30 minutes are refused because the whisper.cpp bridge has no abort hook, so Stop cannot end a run. Streaming partials wait for a bridge change. A tool call never downloads a model. Design: `docs/dev/whisper-ingest-tools.md`.
 
-- **Add a file or URL to a workspace's RAG corpus.** The RAG tab gains "Add file..." and "Add URL", and neither needs a data folder. This is a user action over the proposed `workspace.ingest` agent tool, because ingested text returns in later turns and a fetched page could carry persistent prompt injection. Agents still cannot write to the corpus. Files accept txt, md and json; URLs accept text, HTML and JSON up to 10 MB. Design: `docs/dev/whisper-ingest-tools.md`.
+- **Add a file or URL to a workspace's RAG corpus, and remove one source.** Both workspace sheets gain "Add file...", "Add URL" and a source list with a remove button, and none of them needs a data folder. This is a user action over the proposed `workspace.ingest` agent tool, because ingested text returns in later turns and a fetched page could carry persistent prompt injection. Agents still cannot write to the corpus. Wiki pages stay out of the list because the next save would restore them. Design: `docs/dev/whisper-ingest-tools.md`.
+
+- **PDF ingestion.** `SourceLoader` now accepts PDFs, so folder scans pick them up too and the next scan of a folder with PDFs embeds them. Extraction uses PDFKit's text layer, so scanned PDFs without one return an error and multi-column reading order can be wrong.
+
+- **URL sources accept any declared encoding and stop oversize downloads early.** Text and JSON are limited to 10 MB and PDFs to 50 MB, and the download stops as soon as the limit is passed. Non-UTF-8 pages are decoded from the HTTP charset, a `<meta>` charset, or Windows-1252. HTML is reduced to its `<main>` or `<article>` content when marked, and otherwise loses its header and footer; navigation, forms and asides are always dropped. It uses regexes because no HTML5 parser is available, so a nested `<nav>` can leave a fragment.
 
 ### Fixed
 

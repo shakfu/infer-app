@@ -115,7 +115,7 @@ Three independent context channels feed every chat turn. Use whichever fits the 
 |---|---|---|---|
 | **Pinned pages** | Every turn | Pin icon on a sidebar row (max 20 pinned per workspace) | Sidebar footer — `3/20 pinned · ~4.2k tok every turn` |
 | **`[[Page]]` mentions** | Only on the turn that contains them | Type `[[` in the composer | Below Send — `2 mentions · ~3.1k tok` (hidden when none) |
-| **RAG retrieval** | When the workspace has an indexed source and your message looks like a question | Scan a data folder, or use "Add file..." / "Add URL" in the workspace's RAG tab | (no cost badge — retrieval is bounded) |
+| **RAG retrieval** | When the workspace has an indexed source and your message looks like a question | Scan a data folder (txt, md, json, pdf), or use "Add file..." / "Add URL" in the workspace sheet | (no cost badge — retrieval is bounded) |
 
 **To reference a wiki page in a single chat message:**
 

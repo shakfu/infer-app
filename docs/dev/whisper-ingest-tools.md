@@ -62,7 +62,7 @@ Built-in tools have no per-call consent. `MCPApproval` approves a server at boot
 
 - **Entry point:** `WorkspaceManager.ingest(url:)` did not exist. `DocumentIngest.ingest` now holds the split, embed and store sequence for every caller.
 - **Host allowlist:** `http.fetch` allows two hosts, so the proposed search, fetch, ingest flow failed on most results. The user action has no allowlist, because a person chooses each URL.
-- **File types:** files accept `txt`, `md` and `json`, as `SourceLoader` does. HTML is reduced to text by a regex pass, so page navigation text stays in the corpus. PDFs are not accepted.
+- **File types:** files and URLs accept text, JSON and PDF, and URLs also accept HTML. HTML reduction uses regexes and keeps `<main>` or `<article>` content when marked. A nested `<nav>` can leave a fragment. PDF text comes from PDFKit, so scans fail.
 - **Duplicates:** `sourceURI(workspaceId:contentHash:)` detects them before embedding.
 - **Changed content:** added sources replace older content at the same URI, after embedding succeeds.
 - **Concurrency:** the action shares `ingestProgress` with scans, so the two cannot overlap. `EmbeddingRunner.embed` does not suspend, so the actor already serializes embedder calls.
@@ -72,7 +72,7 @@ Built-in tools have no per-call consent. `MCPApproval` approves a server at boot
 
 | | A: confirm per call | B: user action only | C: no gate |
 |---|---|---|---|
-| Change | Tool plus a new confirmation seam | "Add file..." and "Add URL" in the RAG tab, no tool | Tool only |
+| Change | Tool plus a new confirmation seam | "Add file..." and "Add URL" in the workspace sheets, no tool | Tool only |
 | Injection risk | User reviews each source | User chooses each source | Open |
 | Agent autonomy | Pauses for the user | None | Full |
 | Cost | Highest | Lowest | Low |

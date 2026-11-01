@@ -81,6 +81,42 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(hasSource)
     }
 
+    // MARK: - Source removal
+
+    func testRemovalListsOnlyNonWikiSourcesAndDeletesByURI() async throws {
+        _ = chatViewModelTestsRAGInit
+        let vm = makeViewModel()
+        _ = try await vm.vectorStore.ensureInitialized(
+            workspaceId: 1,
+            embeddingModel: "test",
+            dimension: VectorStore.dimension,
+            chunkSize: 512,
+            chunkOverlap: 64
+        )
+        for (uri, kind) in [("https://x.test/a", "url"), ("/notes/b.md", "md"), ("wiki://c", "wiki")] {
+            try await vm.vectorStore.ingest(
+                workspaceId: 1,
+                uri: uri,
+                contentHash: uri,
+                kind: kind,
+                chunks: [VectorChunk(
+                    content: "text",
+                    offsetStart: 0,
+                    offsetEnd: 4,
+                    embedding: [Float](repeating: 0.1, count: VectorStore.dimension)
+                )]
+            )
+        }
+        let listed = await vm.removableSources(workspaceId: 1)
+        XCTAssertEqual(Set(listed.map(\.uri)), ["https://x.test/a", "/notes/b.md"])
+
+        await vm.removeSource(workspaceId: 1, uri: "https://x.test/a")
+
+        let remaining = try await vm.vectorStore.listSources(workspaceId: 1)
+        XCTAssertEqual(Set(remaining.map(\.uri)), ["/notes/b.md", "wiki://c"])
+        XCTAssertNil(vm.errorMessage)
+    }
+
     // MARK: - Construction
 
     func testConstructsAgainstInjectedStores() {

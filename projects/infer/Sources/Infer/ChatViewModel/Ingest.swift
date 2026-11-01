@@ -168,7 +168,8 @@ extension ChatViewModel {
 
             let loaded: LoadedSource
             do {
-                loaded = try SourceLoader.load(url)
+                // Off the main actor: PDF extraction can take seconds.
+                loaded = try await Task.detached { try SourceLoader.load(url) }.value
             } catch SourceLoaderError.empty {
                 // Empty files aren't worth an error — skip quietly.
                 skipped += 1
@@ -280,7 +281,7 @@ extension ChatViewModel {
     func addFileToWorkspace(workspaceId: Int64) {
         let types = SourceLoader.supportedExtensions.compactMap { UTType(filenameExtension: $0) }
         guard let url = FileDialogs.openFile(
-            message: "Choose a text, Markdown or JSON file to add to this workspace.",
+            message: "Choose a text, Markdown, JSON or PDF file to add to this workspace.",
             contentTypes: types
         ) else { return }
         addSource(workspaceId: workspaceId, uri: url.path, label: url.lastPathComponent) {
@@ -294,6 +295,27 @@ extension ChatViewModel {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         addSource(workspaceId: workspaceId, uri: trimmed, label: trimmed) {
             try await RemoteSourceLoader.load(trimmed)
+        }
+    }
+
+    /// Sources the user can remove. See `WorkspaceSourcesList`.
+    func removableSources(workspaceId: Int64) async -> [VectorSourceSummary] {
+        do {
+            return try await vectorStore.listSources(workspaceId: workspaceId).filter { $0.kind != "wiki" }
+        } catch {
+            logs.log(.warning, source: "rag", message: "listSources failed", payload: String(describing: error))
+            return []
+        }
+    }
+
+    /// Removes every source stored under `uri`.
+    func removeSource(workspaceId: Int64, uri: String) async {
+        do {
+            try await vectorStore.deleteSourcesByURI(workspaceId: workspaceId, uri: uri)
+            refreshCorpusStats(workspaceId: workspaceId)
+        } catch {
+            logs.log(.warning, source: "rag", message: "remove source failed for \(uri)", payload: String(describing: error))
+            errorMessage = "Could not remove the source: \(error)"
         }
     }
 

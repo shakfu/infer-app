@@ -121,7 +121,7 @@ struct WorkspaceSheet: View {
         // Embedding-model status. RAG needs an embedding model
         // downloaded locally; surface the state inline so users can
         // one-click download without navigating elsewhere.
-        if !dataFolder.isEmpty {
+        if !dataFolder.isEmpty || editingWorkspace != nil {
             embeddingModelStatus
             scanSection
         }
@@ -129,8 +129,8 @@ struct WorkspaceSheet: View {
 
     // MARK: - Scan
 
-    /// Scan button + progress / stats row. Visible once a data folder
-    /// is configured. Disabled until the embedding model is local.
+    /// Scan and add controls, progress, stats and the source list. Disabled
+    /// until the embedding model is local.
     @ViewBuilder
     private var scanSection: some View {
         if let ws = editingWorkspace {
@@ -138,12 +138,16 @@ struct WorkspaceSheet: View {
                 if let progress = vm.ingestProgress, progress.workspaceId == ws.id {
                     ingestProgressView(progress)
                 } else {
-                    scanControls(ws)
+                    if !dataFolder.isEmpty {
+                        scanControls(ws)
+                    }
+                    WorkspaceAddSourceControls(vm: vm, workspaceId: ws.id)
                     if let stats = vm.corpusStats, stats.workspaceId == ws.id, stats.sources > 0 {
                         Text("Corpus: \(stats.sources) source\(stats.sources == 1 ? "" : "s"), \(stats.chunks) chunk\(stats.chunks == 1 ? "" : "s")")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
+                    WorkspaceSourcesList(vm: vm, workspaceId: ws.id)
                 }
                 retrievalTogglesSection(ws)
             }
