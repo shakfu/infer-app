@@ -2,6 +2,8 @@ import XCTest
 import InferCore
 @testable import InferSession
 
+private struct StubFailure: Error {}
+
 /// Stub `CloudClient` yielding canned deltas so `ChatSession` can be driven
 /// end-to-end without the network. Records the messages it was handed on the
 /// most recent call so tests can assert the transcript the session built.
@@ -14,18 +16,27 @@ private final class StubCloudClient: CloudClient, @unchecked Sendable {
         return _calls
     }
 
-    init(deltas: [String]) { self.deltas = deltas }
+    /// Throw after yielding `deltas` on the call with this 0-based index.
+    let failOnCall: Int?
+
+    init(deltas: [String], failOnCall: Int? = nil) {
+        self.deltas = deltas
+        self.failOnCall = failOnCall
+    }
 
     func streamChat(
         messages: [CloudChatMessage],
         model: String,
         params: CloudGenerationParams
     ) -> AsyncThrowingStream<String, Error> {
-        lock.lock(); _calls.append(messages); lock.unlock()
+        lock.lock()
+        let shouldFail = _calls.count == failOnCall
+        _calls.append(messages)
+        lock.unlock()
         let deltas = self.deltas
         return AsyncThrowingStream { continuation in
             for d in deltas { continuation.yield(d) }
-            continuation.finish()
+            continuation.finish(throwing: shouldFail ? StubFailure() : nil)
         }
     }
 }
@@ -91,6 +102,26 @@ final class ChatSessionTests: XCTestCase {
         // first-user, first-assistant, second-user
         XCTAssertEqual(secondOutbound.map(\.role), [.user, .assistant, .user])
         XCTAssertEqual(secondOutbound.map(\.content), ["first", "reply", "second"])
+    }
+
+    /// `infer-cli --repl` continues after a failed turn, so a mid-stream throw
+    /// must leave neither the user turn nor the partial reply in the context
+    /// the next `send` transmits.
+    func testFailedTurnIsExcludedFromNextSend() async throws {
+        let stub = StubCloudClient(deltas: ["reply"], failOnCall: 1)
+        let s = session(stub)
+        try await configure(s)
+
+        _ = try await s.send("first")
+        do {
+            _ = try await s.send("doomed")
+            XCTFail("expected throw")
+        } catch {}
+        let reply = try await s.send("third")
+
+        XCTAssertEqual(reply, "reply")
+        let outbound = try XCTUnwrap(stub.calls.last)
+        XCTAssertEqual(outbound.map(\.content), ["first", "reply", "third"])
     }
 
     /// `reset` clears the transcript while keeping the provider configured,

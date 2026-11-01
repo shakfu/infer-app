@@ -57,14 +57,9 @@ extension ChatViewModel {
                     chunkSize: TextSplitter.defaultChunkSize,
                     chunkOverlap: TextSplitter.defaultChunkOverlap
                 )
-                // Replace the prior source row for this URI before
-                // ingesting the new content. Empty bodies just clear
-                // the index entry.
-                _ = try await store.deleteSourcesByURI(
-                    workspaceId: workspaceId,
-                    uri: uri
-                )
+                // An empty body only clears the index entry.
                 guard !trimmed.isEmpty else {
+                    _ = try await store.deleteSourcesByURI(workspaceId: workspaceId, uri: uri)
                     self?.logs.log(
                         .debug,
                         source: "wiki",
@@ -72,36 +67,21 @@ extension ChatViewModel {
                     )
                     return
                 }
-
-                let splitter = TextSplitter(chunkSize: meta.chunkSize, chunkOverlap: meta.chunkOverlap)
-                let chunks = splitter.split(content)
-                let outline = SectionOutline(content)
-                guard !chunks.isEmpty else { return }
-
-                var vectorChunks: [VectorChunk] = []
-                vectorChunks.reserveCapacity(chunks.count)
-                for chunk in chunks {
-                    let vec = try await embedder.embed(chunk.content)
-                    vectorChunks.append(VectorChunk(
-                        content: chunk.content,
-                        offsetStart: chunk.offsetStart,
-                        offsetEnd: chunk.offsetEnd,
-                        embedding: vec,
-                        section: outline.label(for: chunk, overlap: splitter.chunkOverlap)
-                    ))
-                }
-                let hash = SourceLoader.contentHash(of: Data(content.utf8))
-                _ = try await store.ingest(
+                let result = try await DocumentIngest.ingest(
+                    into: store,
                     workspaceId: workspaceId,
                     uri: uri,
-                    contentHash: hash,
+                    text: content,
+                    contentHash: SourceLoader.contentHash(of: Data(content.utf8)),
                     kind: "wiki",
-                    chunks: vectorChunks
+                    splitter: TextSplitter(chunkSize: meta.chunkSize, chunkOverlap: meta.chunkOverlap),
+                    replacingURI: true,
+                    embed: { try await embedder.embed($0) }
                 )
                 self?.logs.log(
                     .debug,
                     source: "wiki",
-                    message: "indexed \(pageId) (\(vectorChunks.count) chunk\(vectorChunks.count == 1 ? "" : "s"))"
+                    message: "indexed \(pageId): \(result)"
                 )
             } catch {
                 self?.logs.log(

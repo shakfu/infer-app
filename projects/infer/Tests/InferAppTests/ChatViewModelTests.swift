@@ -20,6 +20,9 @@ import XCTest
 /// `GenerationTests`, which became possible once `imageURLs` was lifted
 /// onto `ChatRunner.respondToUser` and `send()` stopped switching on the
 /// backend to reach the concrete runners.
+/// Registers vec0 once for this bundle; see `VectorStoreTests` for why.
+private let chatViewModelTestsRAGInit: Void = { try? RAG.initialize() }()
+
 @MainActor
 final class ChatViewModelTests: XCTestCase {
     private var directory: URL!
@@ -44,6 +47,38 @@ final class ChatViewModelTests: XCTestCase {
             wiki: WikiStore(rootURL: directory.appending(path: "wiki")),
             logs: LogCenter(persister: nil)
         )
+    }
+
+    // MARK: - Retrieval gate
+
+    /// Sources added without a data folder must be retrievable.
+    func testCorpusDoesNotRequireADataFolder() async throws {
+        _ = chatViewModelTestsRAGInit
+        let vm = makeViewModel()
+        let hasNone = await vm.workspaceHasCorpus(1)
+        XCTAssertFalse(hasNone)
+
+        _ = try await vm.vectorStore.ensureInitialized(
+            workspaceId: 1,
+            embeddingModel: "test",
+            dimension: VectorStore.dimension,
+            chunkSize: 512,
+            chunkOverlap: 64
+        )
+        try await vm.vectorStore.ingest(
+            workspaceId: 1,
+            uri: "https://x.test/a",
+            contentHash: "h",
+            kind: "url",
+            chunks: [VectorChunk(
+                content: "text",
+                offsetStart: 0,
+                offsetEnd: 4,
+                embedding: [Float](repeating: 0.1, count: VectorStore.dimension)
+            )]
+        )
+        let hasSource = await vm.workspaceHasCorpus(1)
+        XCTAssertTrue(hasSource)
     }
 
     // MARK: - Construction

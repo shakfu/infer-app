@@ -6,8 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **`json.query` tool.** Extracts values from JSON with a JSONPath subset. It takes a `url` as well as the planned inline `json`: with `json` alone, the model must copy a body it already holds into its arguments, which adds context instead of saving it. `url` goes through `http.fetch`, so that tool's allowlist and cap apply. No shipped persona allows it yet.
+
+- **`whisper.transcribe` tool, enabled for the Scratch persona.** Transcribes a sandboxed audio file with the model selected in the Speech sidebar. Files over 30 minutes are refused because the whisper.cpp bridge has no abort hook, so Stop cannot end a run. Streaming partials wait for a bridge change. A tool call never downloads a model. Design: `docs/dev/whisper-ingest-tools.md`.
+
+- **Add a file or URL to a workspace's RAG corpus.** The RAG tab gains "Add file..." and "Add URL", and neither needs a data folder. This is a user action over the proposed `workspace.ingest` agent tool, because ingested text returns in later turns and a fetched page could carry persistent prompt injection. Agents still cannot write to the corpus. Files accept txt, md and json; URLs accept text, HTML and JSON up to 10 MB. Design: `docs/dev/whisper-ingest-tools.md`.
+
+### Fixed
+
+- **`infer-cli --repl` survives a failed turn.** One send error, such as a network failure or provider 5xx, exited the process and lost the conversation. The REPL now reports the error on stderr and reads the next line, with the failed turn excluded from context. It exits 1 at end of input if any turn failed, so scripts still detect the failure.
+
 ### Changed
 
+- **Folder scans, wiki saves and the new add action share one ingest path.** Content the workspace already holds now skips embedding. Scans count it as skipped, where they previously counted it as ingested, so a rescan with no changes reports "No new files to ingest". Replacing a source's content now removes the old chunks only after embedding succeeds, so a failed embed keeps the old content searchable.
+- **RAG retrieval no longer requires a data folder.** It previously checked for a folder before looking for sources, which would have hidden added sources. This also makes auto-indexed wiki pages retrievable in workspaces without a folder, so those workspaces now load the embedder and augment matching turns.
+- **CI targets `macos-26` and fetches the ggml stack.** `mlx-swift` needs Swift 6.3, which `macos-14` could not be relied on to provide. The release zip now ships `libchatfmt.dylib`, so the source build and its cache are gone.
 - **`STACK_VERSION` 0.6.0 -> 0.7.0** (also the `manage.py fetch stack` default). Brings llama.cpp `b11669`. Verified by `make build`, `make test` and `make test-integration`. The stale `thirdparty/.stack-0.6.0` marker is removed.
 
 ## [0.6.0]

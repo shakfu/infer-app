@@ -42,3 +42,23 @@ public func decodeHTMLEntities(_ s: String) -> String {
     }
     return out
 }
+
+/// Reduces an HTML page to readable text. Drops non-content elements, keeps
+/// block boundaries as line breaks, and collapses whitespace. A regex pass
+/// over a real parser, so page navigation text stays in the result.
+public func htmlToPlainText(_ html: String) -> String {
+    var text = html
+    let rules: [(String, String)] = [
+        ("(?s)<!--.*?-->", ""),
+        ("(?is)<(script|style|head|noscript|template|svg)\\b.*?</\\1\\s*>", ""),
+        ("(?i)</?(p|div|br|hr|li|ul|ol|tr|table|h[1-6]|section|article|header|footer|nav|main|blockquote|pre)\\b[^>]*>", "\n"),
+    ]
+    for (pattern, replacement) in rules {
+        text = text.replacingOccurrences(of: pattern, with: replacement, options: .regularExpression)
+    }
+    text = decodeHTMLEntities(stripHTMLTags(text))
+    text = text.replacingOccurrences(of: "[ \\t\u{00A0}]+", with: " ", options: .regularExpression)
+    text = text.replacingOccurrences(of: "(?m)^ | $", with: "", options: .regularExpression)
+    text = text.replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
+    return text.trimmingCharacters(in: .whitespacesAndNewlines)
+}

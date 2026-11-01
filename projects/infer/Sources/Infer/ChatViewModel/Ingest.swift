@@ -1,5 +1,6 @@
 import Foundation
 import InferRAG
+import UniformTypeIdentifiers
 
 /// Published state of an in-flight folder scan. Exposed on the VM as
 /// `ingestProgress`; the workspace sheet observes it for a progress
@@ -183,74 +184,38 @@ extension ChatViewModel {
                 continue
             }
 
-            let chunks = splitter.split(loaded.content)
-            let outline = SectionOutline(loaded.content)
-            if chunks.isEmpty {
-                // Non-empty file that produced zero chunks — rare
-                // but possible (e.g., a file of only separator chars).
-                // Log so a silent skip doesn't look like a success.
-                logs.log(
-                    .warning,
-                    source: "rag",
-                    message: "skipped \(url.lastPathComponent): splitter produced 0 chunks"
+            do {
+                let embedder = self.embedder
+                let result = try await DocumentIngest.ingest(
+                    into: vectorStore,
+                    workspaceId: workspaceId,
+                    uri: url.path,
+                    text: loaded.content,
+                    contentHash: hash,
+                    kind: loaded.kind,
+                    splitter: splitter,
+                    embed: { try await embedder.embed($0) }
                 )
-                skipped += 1
-                continue
-            }
-
-            // Embed chunks. Sequential — the embedder is a single
-            // context and internally throws on concurrent calls.
-            var vectorChunks: [VectorChunk] = []
-            vectorChunks.reserveCapacity(chunks.count)
-            var embedFailed = false
-            for chunk in chunks {
-                do {
-                    let vec = try await embedder.embed(chunk.content)
-                    vectorChunks.append(VectorChunk(
-                        content: chunk.content,
-                        offsetStart: chunk.offsetStart,
-                        offsetEnd: chunk.offsetEnd,
-                        embedding: vec,
-                        section: outline.label(for: chunk, overlap: splitter.chunkOverlap)
-                    ))
-                } catch {
+                switch result {
+                case .added(let chunks):
+                    // Debug level, so the default Console view stays quiet.
+                    logs.log(
+                        .debug,
+                        source: "rag",
+                        message: "ingested \(url.lastPathComponent) (\(chunks) chunk\(chunks == 1 ? "" : "s"))"
+                    )
+                    ingested += 1
+                case .duplicate:
+                    skipped += 1
+                case .empty:
+                    // Non-empty file with zero chunks, such as only separators.
                     logs.log(
                         .warning,
                         source: "rag",
-                        message: "embed failed for chunk of \(url.lastPathComponent)",
-                        payload: String(describing: error)
+                        message: "skipped \(url.lastPathComponent): splitter produced 0 chunks"
                     )
-                    embedFailed = true
-                    break
+                    skipped += 1
                 }
-            }
-            if embedFailed {
-                failed += 1
-                continue
-            }
-
-            // Store. ingest() is idempotent on (workspaceId, hash)
-            // so if the user re-scans, duplicates return fast.
-            do {
-                _ = try await vectorStore.ingest(
-                    workspaceId: workspaceId,
-                    uri: url.path,
-                    contentHash: hash,
-                    kind: loaded.kind,
-                    chunks: vectorChunks
-                )
-                // Per-file success line at debug level so users who
-                // want to verify every file landed can filter the
-                // Console to source=rag + level=debug and see the
-                // full list, without flooding the default view.
-                // Dedup-vs-new isn't distinguished here — see the
-                // "known debt" note in rag.plan.
-                logs.log(
-                    .debug,
-                    source: "rag",
-                    message: "ingested \(url.lastPathComponent) (\(vectorChunks.count) chunk\(vectorChunks.count == 1 ? "" : "s"))"
-                )
-                ingested += 1
             } catch {
                 logs.log(
                     .warning,
@@ -309,6 +274,92 @@ extension ChatViewModel {
 
         try? await Task.sleep(nanoseconds: 600_000_000)
         ingestProgress = nil
+    }
+
+    /// Ask for one file and add it to the workspace's corpus.
+    func addFileToWorkspace(workspaceId: Int64) {
+        let types = SourceLoader.supportedExtensions.compactMap { UTType(filenameExtension: $0) }
+        guard let url = FileDialogs.openFile(
+            message: "Choose a text, Markdown or JSON file to add to this workspace.",
+            contentTypes: types
+        ) else { return }
+        addSource(workspaceId: workspaceId, uri: url.path, label: url.lastPathComponent) {
+            let data = try Data(contentsOf: url)
+            return (try SourceLoader.load(url), SourceLoader.contentHash(of: data))
+        }
+    }
+
+    /// Fetch one URL the user entered and add it to the workspace's corpus.
+    func addURLToWorkspace(workspaceId: Int64, urlString: String) {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        addSource(workspaceId: workspaceId, uri: trimmed, label: trimmed) {
+            try await RemoteSourceLoader.load(trimmed)
+        }
+    }
+
+    /// Shares `ingestProgress` with folder scans, so the two cannot overlap.
+    private func addSource(
+        workspaceId: Int64,
+        uri: String,
+        label: String,
+        load: @escaping @Sendable () async throws -> (LoadedSource, String)
+    ) {
+        guard ingestProgress == nil else {
+            toasts.show("An ingest is already running.")
+            return
+        }
+        guard embeddingModelPresent else {
+            errorMessage = "Embedding model not downloaded. Download it first."
+            return
+        }
+        ingestProgress = IngestProgress(
+            workspaceId: workspaceId,
+            totalFiles: 1,
+            processedFiles: 0,
+            currentFile: label,
+            ingested: 0,
+            skippedDuplicates: 0,
+            failed: 0
+        )
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.ingestProgress = nil }
+            do {
+                let (loaded, hash) = try await load()
+                try await self.ensureEmbeddingModelLoaded()
+                let meta = try await self.vectorStore.ensureInitialized(
+                    workspaceId: workspaceId,
+                    embeddingModel: EmbeddingModelRef.filename,
+                    dimension: EmbeddingModelRef.expectedDimension,
+                    chunkSize: TextSplitter.defaultChunkSize,
+                    chunkOverlap: TextSplitter.defaultChunkOverlap
+                )
+                let embedder = self.embedder
+                let result = try await DocumentIngest.ingest(
+                    into: self.vectorStore,
+                    workspaceId: workspaceId,
+                    uri: uri,
+                    text: loaded.content,
+                    contentHash: hash,
+                    kind: loaded.kind,
+                    splitter: TextSplitter(chunkSize: meta.chunkSize, chunkOverlap: meta.chunkOverlap),
+                    replacingURI: true,
+                    embed: { try await embedder.embed($0) }
+                )
+                switch result {
+                case .added(let chunks):
+                    self.toasts.show("Added \(label) (\(chunks) chunk\(chunks == 1 ? "" : "s")).")
+                case .duplicate:
+                    self.toasts.show("This workspace already has that content.")
+                case .empty:
+                    self.errorMessage = "\(label) has no text to add."
+                }
+                self.refreshCorpusStats(workspaceId: workspaceId)
+            } catch {
+                self.logs.log(.warning, source: "rag", message: "add source failed for \(label)", payload: String(describing: error))
+                self.errorMessage = "Could not add \(label): \(error)"
+            }
+        }
     }
 
     /// Walk `folder` recursively, return URLs of files with

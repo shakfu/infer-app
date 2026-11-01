@@ -18,8 +18,12 @@ import InferSession
 // environment via `APIKeyStore.resolve` (e.g. OPENAI_API_KEY,
 // ANTHROPIC_API_KEY, OPENROUTER_API_KEY).
 
-func fail(_ message: String, code: Int32 = 1) -> Never {
+func report(_ message: String) {
     FileHandle.standardError.write(Data(("infer-cli: " + message + "\n").utf8))
+}
+
+func fail(_ message: String, code: Int32 = 1) -> Never {
+    report(message)
     exit(code)
 }
 
@@ -68,7 +72,9 @@ func parse(_ argv: [String]) -> Options {
             One-shot: prompt is the trailing arguments, or all of stdin if none.
             --repl:   multi-turn; reads one user turn per line of stdin, keeping
                       conversation context across turns (replies separated by a
-                      blank line). Ignores positional PROMPT.
+                      blank line). Ignores positional PROMPT. A failed turn
+                      is reported on stderr and dropped from the context;
+                      the exit code is 1 if any turn failed.
             API key is read from the keychain or the provider's env var
             (OPENAI_API_KEY / ANTHROPIC_API_KEY / OPENROUTER_API_KEY).
             """)
@@ -127,14 +133,23 @@ do {
         // Multi-turn: each stdin line is a user turn; the session keeps
         // context across turns. JSON mode is not offered here — repl is for
         // interactive / scripted conversations, not single-object capture.
+        var anyTurnFailed = false
         while let line = readLine(strippingNewline: true) {
             let turn = line.trimmingCharacters(in: .whitespaces)
             if turn.isEmpty { continue }
-            _ = try await session.send(turn, maxTokens: opts.maxTokens) { chunk in
-                FileHandle.standardOutput.write(Data(chunk.utf8))
+            do {
+                _ = try await session.send(turn, maxTokens: opts.maxTokens) { chunk in
+                    FileHandle.standardOutput.write(Data(chunk.utf8))
+                }
+            } catch {
+                // `CloudRunner` rolls the failed turn out of its history, so
+                // the next line continues from the last completed turn.
+                anyTurnFailed = true
+                report("\(error)")
             }
             FileHandle.standardOutput.write(Data("\n\n".utf8))
         }
+        if anyTurnFailed { exit(1) }
     } else {
         let prompt = readPrompt(opts)
         let streamToStdout = opts.stream && !opts.json

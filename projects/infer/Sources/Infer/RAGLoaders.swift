@@ -1,10 +1,11 @@
 import Foundation
+import InferAgents
 
 /// Result of loading a file into plain text. Plus the kind tag that
 /// ends up in `sources.kind`, which the UI can use to choose an icon
 /// or render the source differently.
 struct LoadedSource {
-    let kind: String        // "txt" | "md" | "json"
+    let kind: String        // "txt" | "md" | "json" | "url"
     let content: String
 }
 
@@ -80,6 +81,60 @@ enum SourceLoader {
         // cosmetic annoyance, not a safety issue.
         let digest = Insecure_MD5.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+enum RemoteSourceError: Error, CustomStringConvertible {
+    case invalidURL
+    case http(Int)
+    case unsupportedContentType(String)
+    case tooLarge(Int)
+    case notUTF8
+    case empty
+
+    var description: String {
+        switch self {
+        case .invalidURL: return "enter a full http or https URL"
+        case .http(let status): return "the server returned HTTP \(status)"
+        case .unsupportedContentType(let type): return "unsupported content type '\(type)' (text and JSON accepted)"
+        case .tooLarge(let limit): return "the response exceeds \(limit / (1024 * 1024)) MB"
+        case .notUTF8: return "the response is not valid UTF-8"
+        case .empty: return "the response has no text"
+        }
+    }
+}
+
+/// Fetches a URL the user entered. No host allowlist: unlike `http.fetch`, a
+/// person chooses every URL here.
+enum RemoteSourceLoader {
+    static let maxBytes = 10 * 1024 * 1024
+
+    /// Returns the source and a hash of the raw body.
+    static func load(_ urlString: String, session: URLSession = .shared) async throws -> (LoadedSource, String) {
+        guard let url = URL(string: urlString),
+              let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              url.host?.isEmpty == false
+        else { throw RemoteSourceError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 60
+        let (body, response) = try await session.data(for: request)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw RemoteSourceError.http(http.statusCode)
+        }
+        guard body.count <= maxBytes else { throw RemoteSourceError.tooLarge(maxBytes) }
+
+        let mime = (response.mimeType ?? "").lowercased()
+        let isHTML = mime == "text/html" || mime == "application/xhtml+xml"
+        guard isHTML || mime.hasPrefix("text/") || mime == "application/json" || mime.hasSuffix("+json") else {
+            throw RemoteSourceError.unsupportedContentType(mime.isEmpty ? "unknown" : mime)
+        }
+        guard let raw = String(data: body, encoding: .utf8) else { throw RemoteSourceError.notUTF8 }
+        let content = isHTML ? htmlToPlainText(raw) : raw
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw RemoteSourceError.empty
+        }
+        return (LoadedSource(kind: "url", content: content), SourceLoader.contentHash(of: body))
     }
 }
 

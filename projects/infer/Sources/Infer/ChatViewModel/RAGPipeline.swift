@@ -55,17 +55,10 @@ extension ChatViewModel {
     /// a missed match can turn a correct answer into a hallucination.
     fileprivate static let ragDistanceThreshold: Double = 1.2
 
-    /// True if the active (or passed) workspace has retrieval set up:
-    /// a data folder is configured and the vector store has at least
-    /// one indexed source. Used to decide whether to augment a user
-    /// turn. We don't expose an explicit per-workspace on/off toggle
-    /// in MVP — the user's action of scanning the folder is the
-    /// enable signal.
+    /// True if the workspace has at least one indexed source. Sources can come
+    /// from a folder scan, a wiki save or "Add to workspace", so a data folder
+    /// is not required.
     func workspaceHasCorpus(_ workspaceId: Int64) async -> Bool {
-        guard let ws = workspaces.first(where: { $0.id == workspaceId }),
-              let folder = ws.dataFolder,
-              !folder.isEmpty
-        else { return false }
         do {
             let (nSources, _) = try await vectorStore.sourceStatistics(
                 workspaceId: workspaceId

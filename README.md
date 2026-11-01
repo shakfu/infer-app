@@ -115,7 +115,7 @@ Three independent context channels feed every chat turn. Use whichever fits the 
 |---|---|---|---|
 | **Pinned pages** | Every turn | Pin icon on a sidebar row (max 20 pinned per workspace) | Sidebar footer — `3/20 pinned · ~4.2k tok every turn` |
 | **`[[Page]]` mentions** | Only on the turn that contains them | Type `[[` in the composer | Below Send — `2 mentions · ~3.1k tok` (hidden when none) |
-| **RAG retrieval** | When the workspace has a `data_folder` and your message looks like a question | Set the workspace's data folder + scan once | (no cost badge — retrieval is bounded) |
+| **RAG retrieval** | When the workspace has an indexed source and your message looks like a question | Scan a data folder, or use "Add file..." / "Add URL" in the workspace's RAG tab | (no cost badge — retrieval is bounded) |
 
 **To reference a wiki page in a single chat message:**
 
@@ -216,6 +216,8 @@ Agents can opt into a per-agent allowlist of these tools through their JSON conf
 | `wikipedia.article` | Fetch chrome-stripped plain-text body of a Wikipedia article (`extracts` API) | 256 KB cap; missing-title surfaces a recoverable error pointing at `wikipedia.search`; optional `lead: true` for just the intro |
 | `web.search` | Web search via DuckDuckGo HTML scrape (default) or SearXNG JSON (opt-in via Tools settings) | DDG parser pinned by unit tests + an external test that hits real DDG; SearXNG endpoint validated; result URLs aren't fetched (use `http.fetch` with its own allowlist) |
 | `http.fetch` | HTTPS GET with strict host allowlist | Default allowlist: `en.wikipedia.org`, `raw.githubusercontent.com`; 256 KB body cap; 60 s timeout; redirects re-checked against allowlist |
+| `json.query` | Extract values from inline JSON or a URL with a JSONPath subset (`.a.b`, `.a[0]`, `.a[*].b`) | `url` goes through `http.fetch`, so its allowlist and cap apply; bodies over the cap are an error; 64 KB output cap |
+| `whisper.transcribe` | Transcribe a local audio file with the Whisper model selected in the Speech sidebar | Same sandbox as `fs.read` plus in-app recordings; 30-minute limit; 64 KB output cap; never downloads a model; cannot be interrupted |
 | `clipboard.get` / `clipboard.set` | Read / replace the macOS clipboard | 64 KB cap on writes; `set` clears prior representations |
 | `math.compute` | Arithmetic via `NSExpression` (digits, `+ - * / ( )`, scientific notation) | Whitelist regex blocks `FUNCTION:` / variable references; integer literals coerced to doubles so `1/3` returns `0.333…` not `0` |
 | `builtin.quarto.render` | Render `.qmd` source to HTML/PDF/DOCX/PPTX/etc. via an external Quarto install | Streaming-tool — emits per-line stderr as live progress; output staged under `~/Library/Caches/quarto-renders/` |
@@ -232,7 +234,7 @@ Bundled agents that demonstrate these:
 
 - **Research assistant** — `vault.search`, `wikipedia.search`, `wikipedia.article`, `web.search`. Decision policy in the persona's system prompt: vault-first for personal-corpus questions, Wikipedia-first for encyclopedic / definitional / biographical / historical, web-search for current events / public docs. Caps at 3 tool calls per turn, cites sources inline.
 
-- **Scratch** — `clipboard.get`, `clipboard.set`, `math.compute`, `wikipedia.search`, `wikipedia.article`, `builtin.clock.now`. Lightweight everyday assistant for short, well-scoped tasks. Caps at 1-2 tool calls per turn — the persona's value is speed. Use for "what's 0.0825 × 12 × 30?", "summarise what I just copied", "copy a polite decline email to my clipboard", "who designed the Eiffel Tower?".
+- **Scratch** — `clipboard.get`, `clipboard.set`, `math.compute`, `wikipedia.search`, `wikipedia.article`, `builtin.clock.now`, `whisper.transcribe`. Lightweight everyday assistant for short, well-scoped tasks. Caps at 1-2 tool calls per turn — the persona's value is speed. Use for "what's 0.0825 × 12 × 30?", "summarise what I just copied", "copy a polite decline email to my clipboard", "who designed the Eiffel Tower?".
 
 - **Python coder** — `python.run`, `python.eval`, `math.compute`, `fs.read`, `builtin.clock.now`. Runs Python 3 in an embedded subprocess for calculations, parsing, and quick experiments mid-conversation. Backed by `plugin_python_tools` (requires `make fetch-python`); falls back gracefully if the framework's absent — the agent loads but `python.*` calls return errors. Default 10 s timeout per call, max 120 s. Packages baked in: `openai`, `anthropic` (override with `PY_PKGS=...`).
 

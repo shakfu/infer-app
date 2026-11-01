@@ -27,6 +27,7 @@ struct WorkspaceSettingsSheet: View {
     @State private var selectedTab: Tab = .general
     @State private var name: String = ""
     @State private var dataFolder: String = ""
+    @State private var sourceURL: String = ""
     @State private var outputDirectory: String = ""
     @State private var seededWorkspaceId: Int64 = -1
     @State private var confirmDelete: Bool = false
@@ -265,9 +266,7 @@ struct WorkspaceSettingsSheet: View {
     private var ragTab: some View {
         VStack(alignment: .leading, spacing: 10) {
             embeddingModelStatus
-            if !dataFolder.isEmpty {
-                scanSection
-            }
+            scanSection
             retrievalTogglesSection
         }
     }
@@ -698,20 +697,46 @@ struct WorkspaceSettingsSheet: View {
         }
     }
 
+    private func addSourceURL() {
+        guard !sourceURL.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        vm.addURLToWorkspace(workspaceId: workspace.id, urlString: sourceURL)
+        sourceURL = ""
+    }
+
     @ViewBuilder
     private var scanSection: some View {
         if let progress = vm.ingestProgress, progress.workspaceId == workspace.id {
             ingestProgressView(progress)
         } else {
+            let embedderReady = vm.embeddingModelPresent && !vm.embeddingModelDownloading
             HStack(spacing: 6) {
+                if !dataFolder.isEmpty {
+                    Button {
+                        vm.scanAndIngest(workspaceId: workspace.id)
+                    } label: {
+                        Label("Scan folder", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .controlSize(.small)
+                    .disabled(!embedderReady)
+                }
                 Button {
-                    vm.scanAndIngest(workspaceId: workspace.id)
+                    vm.addFileToWorkspace(workspaceId: workspace.id)
                 } label: {
-                    Label("Scan folder", systemImage: "doc.text.magnifyingglass")
+                    Label("Add file...", systemImage: "doc.badge.plus")
                 }
                 .controlSize(.small)
-                .disabled(!(vm.embeddingModelPresent && !vm.embeddingModelDownloading))
+                .disabled(!embedderReady)
                 Spacer()
+            }
+            HStack(spacing: 6) {
+                TextField("https://example.com/page", text: $sourceURL)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    .accessibilityLabel("URL to add")
+                    .onSubmit(addSourceURL)
+                Button("Add URL", action: addSourceURL)
+                    .controlSize(.small)
+                    .disabled(!embedderReady || sourceURL.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             if let stats = vm.corpusStats, stats.workspaceId == workspace.id, stats.sources > 0 {
                 Text("\(stats.sources) source\(stats.sources == 1 ? "" : "s") · \(stats.chunks) chunk\(stats.chunks == 1 ? "" : "s")")
@@ -773,7 +798,7 @@ struct WorkspaceSettingsSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text("Scanning \(progress.processedFiles)/\(progress.totalFiles)")
+                Text("Ingesting \(progress.processedFiles)/\(progress.totalFiles)")
                     .font(.caption)
                 Spacer()
             }

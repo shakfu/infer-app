@@ -168,10 +168,14 @@ extension ChatViewModel {
     func bootstrapAgents() {
         let firstParty = Self.firstPartyPersonaURLs()
         let retriever = self.makeAgentRetriever()
-        Task { [weak self, controller = self.agentController, registry = self.toolRegistry, settings = self.settings, logs = self.logs, mcpHost = self.mcpHost, retriever] in
+        Task { [weak self, controller = self.agentController, registry = self.toolRegistry, settings = self.settings, whisperModels = self.whisperModels, logs = self.logs, mcpHost = self.mcpHost, retriever] in
             // Register the PR 2 built-ins. Tool registrations and the
             // controller bootstrap happen in the same task so the
             // first switchAgent after launch sees a populated catalog.
+            let urlFetch = URLFetchTool(allowedHosts: [
+                "en.wikipedia.org",
+                "raw.githubusercontent.com",
+            ])
             await registry.register([
                 ClockNowTool(),
                 WordCountTool(),
@@ -197,7 +201,7 @@ extension ChatViewModel {
                 // user's Documents directory + the Infer Application
                 // Support root so agents can read user-authored notes
                 // and persona JSON without exposing arbitrary disk.
-                // The http.fetch allowlist is intentionally narrow and
+                // The http.fetch allowlist (`urlFetch`) is intentionally narrow and
                 // points at canonical sources of structured public
                 // content (Wikipedia HTML/JSON, raw GitHub files); it
                 // can be extended by users authoring custom agents
@@ -237,6 +241,15 @@ extension ChatViewModel {
                         .appendingPathComponent("Documents", isDirectory: true),
                     Self.userAgentsRootDirectory(),
                 ]),
+                // Same sandbox as `fs.read`, plus in-app recordings.
+                WhisperTranscribeTool(
+                    allowedRoots: [
+                        URL(fileURLWithPath: NSHomeDirectory())
+                            .appendingPathComponent("Documents", isDirectory: true),
+                        Self.userAgentsRootDirectory(),
+                    ] + [try? AudioFileRecorder.recordingsDirectory()].compactMap { $0 },
+                    transcriber: WhisperToolTranscriber(models: whisperModels)
+                ),
                 // Clipboard read/write. Wired to the system pasteboard
                 // (`NSPasteboard.general`); tests use a private
                 // pasteboard so they don't trample the user's clipboard.
@@ -247,10 +260,8 @@ extension ChatViewModel {
                 // exposing this as a tool eliminates that failure mode
                 // for any agent that opts into it.
                 MathComputeTool(),
-                URLFetchTool(allowedHosts: [
-                    "en.wikipedia.org",
-                    "raw.githubusercontent.com",
-                ]),
+                urlFetch,
+                JSONQueryTool(fetcher: urlFetch),
                 // Web search. Backend chosen by `searxngEndpoint`
                 // setting — empty/nil = DDG fallback (no setup),
                 // non-empty = SearXNG JSON. Re-registered on settings

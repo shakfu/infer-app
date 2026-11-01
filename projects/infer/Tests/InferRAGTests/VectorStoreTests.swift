@@ -20,7 +20,7 @@ import SQLiteVec
 /// module: vec0". It registers a process-wide auto-extension, so run it
 /// exactly once for the whole bundle rather than per test; repeated
 /// registration is not documented as safe at the C layer.
-private let ragInitFailure: String? = {
+let ragInitFailure: String? = {
     do {
         try RAG.initialize()
         return nil

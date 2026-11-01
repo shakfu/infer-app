@@ -545,6 +545,16 @@ public actor VectorStore {
         return sourceId
     }
 
+    /// URI of the source holding this content, if the workspace has one.
+    public func sourceURI(workspaceId: Int64, contentHash: String) async throws -> String? {
+        let db = try await db()
+        let rows = try await db.query(
+            "SELECT uri FROM sources WHERE workspace_id = ? AND content_hash = ? LIMIT 1",
+            params: [workspaceId, contentHash]
+        )
+        return rows.first?["uri"] as? String
+    }
+
     /// Delete every source row matching `uri` for this workspace,
     /// along with its chunks + vec_items. Used by the wiki auto-
     /// ingest path: re-saving a wiki page deletes the prior source
